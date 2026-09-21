@@ -1,0 +1,53 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', sans-serif;
+  background: #f5f7fa;
+  color: #303133;
+  font-size: 14px;
+}
+
+.page {
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.text-danger {
+  color: #f56c6c;
+}
+
+.done-title {
+  text-decoration: line-through;
+  color: #909399;
+}
+
+/* 全局搜索下拉 */
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.search-row .search-title {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.search-row .search-snippet {
+  color: #909399;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

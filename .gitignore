@@ -1,0 +1,33 @@
+# 数据与上传
+backend/data/
+backend/uploads/
+*.db
+*.sqlite
+*.sqlite3
+
+# 对话记录（隐私）
+对话记录.md
+
+# 内部开发日志（隐私）
+progress.md
+
+# 环境
+.env
+.env.local
+.venv/
+venv/
+node_modules/
+dist/
+
+# 系统
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# 构建
+build/
+*.egg-info/
+
+# 所有 .mimosa 目录（包括子目录）
+**/.mimosa/
