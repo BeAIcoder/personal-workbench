@@ -9,8 +9,10 @@ Agent 实例按 (会话, 专家, 模式) 缓存在进程内；会话消息持久
 - readonly 只读咨询：仅查询工具，不改任何数据
 - deep    深度研究：全部工具 + 更高工具轮次 + 深度分析提示词
 """
+import asyncio
 import logging
 import re
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
@@ -38,7 +40,17 @@ logger = logging.getLogger(__name__)
 
 _model = None
 _models: dict[int, object | None] = {}  # 专家绑定模型缓存：model_id → 模型实例（None 表示不可用）
-_agents: dict[tuple[str, str, str, int], object] = {}
+# 各会话 Agent 缓存（LRU：上限 64 个，超出淘汰最久未用，避免长驻服务内存无限增长）
+_AGENT_CACHE_MAX = 64
+_agents: "OrderedDict[tuple[str, str, str, int], object]" = OrderedDict()
+_agent_locks: dict[tuple[str, str, str, int], asyncio.Lock] = {}
+
+
+def _agent_cache_put(key: tuple[str, str, str, int], agent: object) -> None:
+    _agents[key] = agent
+    _agents.move_to_end(key)
+    while len(_agents) > _AGENT_CACHE_MAX:
+        _agents.popitem(last=False)
 
 # Agent 工作模式
 WORK_MODES = {
@@ -64,6 +76,7 @@ def invalidate() -> None:
     _model = None
     _models.clear()
     _agents.clear()
+    _agent_locks.clear()
 
 
 def _get_model():
@@ -196,12 +209,20 @@ async def _ensure_agent(session_id: str, spec: AgentSpec, mode: str):
     try:
         return _get_agent(session_id, spec, mode)
     except KeyError:
-        agent = await _build_agent(spec, mode)
-        history = _load_history_msgs(session_id)
-        if history:
-            agent.observe(history)
-        _agents[(session_id, spec.name, mode, spec.model_id or 0)] = agent
-        return agent
+        pass
+    # 同一 (会话,专家,模式,模型) 并发首条消息时只构建一次，避免双份历史注入互相覆盖
+    key = (session_id, spec.name, mode, spec.model_id or 0)
+    lock = _agent_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        try:
+            return _get_agent(session_id, spec, mode)
+        except KeyError:
+            agent = await _build_agent(spec, mode)
+            history = _load_history_msgs(session_id)
+            if history:
+                agent.observe(history)
+            _agent_cache_put(key, agent)
+            return agent
 
 
 def _load_history_msgs(session_id: str, limit: int | None = None) -> list:
