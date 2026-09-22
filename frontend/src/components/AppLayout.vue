@@ -31,7 +31,7 @@
           <span>AI 助手</span>
         </el-menu-item>
       </el-menu>
-      <div class="aside-footer">v1.0.0 · 数据本地存储</div>
+      <div class="aside-footer">v{{ version }} · 数据本地存储</div>
     </el-aside>
 
     <el-container>
@@ -51,12 +51,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import dayjs from 'dayjs'
+import api from '../api'
 import GlobalSearch from './GlobalSearch.vue'
 
 const route = useRoute()
 const searchRef = ref(null)
 const activeMenu = computed(() => route.path)
 const todayText = dayjs().format('YYYY年MM月DD日 dddd')
+const version = ref('')
 
 function onKeydown(e) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -65,7 +67,11 @@ function onKeydown(e) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  // 侧栏版本号与后端保持一致，获取失败则静默不显示
+  api.get('/health').then(({ data }) => { version.value = data.version || '' }).catch(() => {})
+})
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
