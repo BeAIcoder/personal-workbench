@@ -119,6 +119,17 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - API Key 存 `model_providers.api_key`（明文，本机）；回传前端脱敏为 `••••••xxxx`，掩码哨兵 `********`（8 个星号）传回表示保留现值。
 - 专家可独立绑定模型（`agent_specs.model_id`），编排器按 `model_cfg_by_id` 构建并缓存；不可用（删除/停用）时回退全局激活模型。
 
+### 3.9 QwenPaw Agent 批量导入（`scripts/import_qwenpaw_agents.py`）
+
+管道：**source files → sanitize → merge/create → DB**。
+
+1. **source files**：读取 QwenPaw 工作区下每个 Agent 的角色定义文件——SOUL.md / PROFILE.md / AGENTS.md / 00_系统总则.md / 06_协同规则.md（存在才读，按序拼接）。工作区默认 `D:/AI_Service/QwenPaw/data/workspaces`，可用 `--from` 或环境变量 `QWENPAW_WORKSPACES` 指定；都没有则友好退出。
+2. **sanitize**：脱敏——「老头子」等称呼替换为「用户」，本机绝对路径替换为 `[本地路径]`。
+3. **merge/create**：领域重叠的合并进内置专家（cre-leasing→leasing、cre-ops→operations、cre-mkt→marketing、cre-fm→property、cre-finance→it_finance、cre-it→security，追加角色定义 + 关键词取并集）；全新职责的新建专家（cre_gm 商业地产总经理、cloud_orchestrator CloudPaw 主控编排、cloud_executor CloudPaw 执行器、cloud_verifier CloudPaw 验证器、datapaw DataPaw 数据分析），`sort=7..11` 排在内置专家 0–6 之后，同分优先路由到内置。
+4. **DB**：写入 `agent_specs` 表，只进本机数据库、不进 git 仓库。`--dry-run` 只预览不写入；`--overwrite` 剥掉旧导入内容后重导；默认幂等——角色提示词带【QwenPaw 整合】标记，已导入则自动跳过不叠加。导入后 60 秒内团队缓存自动刷新，或重启服务立即生效。
+
+`AgentSpecBase/Update.role_prompt` 上限从 8000 放宽到 60000 字符（QwenPaw 角色定义约 1.4 万字符），脚本对拼接结果另做 60000 硬截断。配套测试 `backend/tests/test_import_qwenpaw_agents.py` 4 例，静态校验、不需要本机装有 QwenPaw。
+
 ## 4. 总体架构
 
 ```
@@ -159,7 +170,7 @@ FastAPI（routers/）
 
 ## 7. 测试与验证
 
-- 后端 pytest **88 例**（`backend/tests/`）：业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/连通性测试。全部离线，独立临时库，conftest 显式清空 LLM 环境变量。
+- 后端 pytest **92 例**（`backend/tests/`）：业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/连通性测试 + QwenPaw 导入脚本静态校验（4 例）。全部离线，独立临时库，conftest 显式清空 LLM 环境变量。
 - 前端 vitest 11 例（`frontend/tests/` 3 个文件：格式化/日历范围/Agent 相关工具函数）。
 - 手动验收：五页 + 设置抽屉 + 专家团队 tab + SSE 对话流 + 路由测试工具。
 

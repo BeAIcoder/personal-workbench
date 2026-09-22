@@ -156,3 +156,39 @@
 - **LLM 直接写数据**：写入工具参数校验 + 可审计轨迹；删除类操作未开放（物理删除仅在页面操作）。
 - **Bash / 插件**：默认关闭的实验能力，开启前知悉本机执行风险（详见 注意事项.md）。
 - **Windows 嵌套事件循环**：全部走 async 路由 await，不在同步上下文 `asyncio.run`。
+
+## 15. QwenPaw Agent 整合
+
+除界面手配外，可用 `backend/scripts/import_qwenpaw_agents.py` 把本机 QwenPaw 工作区里的 Agent 定义批量整合进 `agent_specs` 表，一键扩充/刷新团队。`--dry-run` 可只预览不写库。
+
+**数据流**：
+
+```
+QwenPaw 工作区文件（SOUL.md / PROFILE.md / AGENTS.md / 00_系统总则.md / 06_协同规则.md）
+  → 按序拼接 + 脱敏（「老头子」等称呼替换为「用户」，本机绝对路径替换为 [本地路径]）
+  → 合并 / 新建进 agent_specs 表（role_prompt 带【QwenPaw 整合】标记）
+```
+
+- 源目录：默认 `D:/AI_Service/QwenPaw/data/workspaces`，可用 `--from` 或环境变量 `QWENPAW_WORKSPACES` 指定；都没有则友好退出，不影响别的功能。
+
+**合并 / 新建策略**：
+
+| QwenPaw 工作区 | 处理方式 | 工作台专家 |
+| --- | --- | --- |
+| cre-leasing | 合并：追加角色定义 + 关键词并集 | `leasing` 招商专员 |
+| cre-ops | 合并 | `operations` 运营专员 |
+| cre-mkt | 合并 | `marketing` 企划策划 |
+| cre-fm | 合并 | `property` 工程物业工程师 |
+| cre-finance | 合并 | `it_finance` 信息化财务分析师 |
+| cre-it | 合并 | `security` 网络安全工程师 |
+| cre-gm | 新建 | `cre_gm` 商业地产总经理 |
+| cloud-orchestrator | 新建 | `cloud_orchestrator` CloudPaw 主控编排 |
+| cloud-executor | 新建 | `cloud_executor` CloudPaw 执行器 |
+| cloud-verifier | 新建 | `cloud_verifier` CloudPaw 验证器 |
+| datapaw | 新建 | `datapaw` DataPaw 数据分析 |
+
+**排序策略**：新建专家 `sort=7..11`（cre_gm=7、cloud_orchestrator=8、cloud_executor=9、cloud_verifier=10、datapaw=11），排在内置 7 专家（0–6）之后；关键词同分时 sort 小者优先（见第 4 节路由策略），因此同分情况下消息优先被内置专家接住。
+
+**幂等标记机制**：导入的角色提示词带【QwenPaw 整合】标记。默认模式下已导入的专家自动跳过、不会叠加；`--overwrite` 先按标记剥掉上次导入的内容再重写。导入只写本机数据库、不进 git 仓库；`agent_specs.role_prompt` 上限从 8000 放宽到 60000 字符（QwenPaw 角色定义约 1.4 万字符），脚本对拼接结果另做 60000 硬截断，防止异常文件撑爆上下文。
+
+**配套测试**：`backend/tests/test_import_qwenpaw_agents.py` 4 例，静态校验合并/新建映射表、脱敏与幂等剥离逻辑，不需要本机装有 QwenPaw，全部离线运行。
