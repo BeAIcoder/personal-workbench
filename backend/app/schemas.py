@@ -181,7 +181,7 @@ class AgentSpecBase(BaseModel):
     emoji: str = Field("🤖", max_length=8)
     color: str = Field("#409EFF", max_length=20)
     description: str = Field("", max_length=200, description="一句话职责")
-    role_prompt: str = Field("", max_length=8000, description="角色系统提示词")
+    role_prompt: str = Field("", max_length=60000, description="角色系统提示词")
     keywords: List[str] = Field(default_factory=list, description="路由关键词，最多 50 个")
     tools: Optional[List[str]] = Field(None, description="工具白名单；null 表示默认技能池")
     model_id: Optional[int] = Field(None, description="绑定模型 provider_models.id；null 跟随全局激活模型")
@@ -225,7 +225,7 @@ class AgentSpecUpdate(BaseModel):
     emoji: Optional[str] = Field(None, max_length=8)
     color: Optional[str] = Field(None, max_length=20)
     description: Optional[str] = Field(None, max_length=200)
-    role_prompt: Optional[str] = Field(None, max_length=8000)
+    role_prompt: Optional[str] = Field(None, max_length=60000)
     keywords: Optional[List[str]] = None
     tools: Optional[List[str]] = None
     model_id: Optional[int] = None
