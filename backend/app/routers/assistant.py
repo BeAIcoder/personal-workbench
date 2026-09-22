@@ -1,6 +1,7 @@
 """AI 助手接口：/api/assistant"""
 import csv as _csv
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -10,10 +11,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..agents import config_store, orchestrator
+from ..agents import team as team_mod
 from ..agents.llm import llm_status
 from ..config import UPLOAD_DIR
+from ..database import SessionLocal
+from ..models import AgentSpecModel
+from ..schemas import AgentSpecCreate, AgentSpecOut, AgentSpecUpdate
 
 router = APIRouter(prefix="/assistant", tags=["AI 助手"])
+
+logger = logging.getLogger(__name__)
 
 # 会话 ID 由前端生成（s_ + base36），仅允许字母/数字/下划线/连字符，防止路径穿越
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{6,64}")
@@ -264,6 +271,129 @@ async def upload_attachment(
     return {"name": dest.name, "path": str(dest), "kind": kind, "size": dest.stat().st_size, "note": note}
 
 
+# ---------------- 专家团队配置（agent_specs 表） ----------------
+
+def _invalidate_agents() -> None:
+    """专家配置变更后：清团队缓存 + 已构建的会话 Agent（提示词/模型可能已变）。"""
+    team_mod.invalidate_team_cache()
+    orchestrator.invalidate()
+
+
+def _spec_out(row: AgentSpecModel) -> dict:
+    return AgentSpecOut.model_validate(row).model_dump()
+
+
+@router.get("/agents", summary="专家团队列表（含停用，按 sort 排序）")
+def list_agents():
+    with SessionLocal() as db:
+        rows = db.query(AgentSpecModel).order_by(AgentSpecModel.sort.asc(), AgentSpecModel.id.asc()).all()
+        return {"agents": [_spec_out(r) for r in rows]}
+
+
+@router.post("/agents", summary="新增专家", status_code=201)
+def create_agent(payload: AgentSpecCreate):
+    with SessionLocal() as db:
+        if db.query(AgentSpecModel).filter(AgentSpecModel.name == payload.name).first():
+            raise HTTPException(status_code=400, detail=f"专家标识已存在：{payload.name}")
+        row = AgentSpecModel(
+            name=payload.name,
+            display_name=payload.display_name,
+            emoji=payload.emoji,
+            color=payload.color,
+            description=payload.description,
+            role_prompt=payload.role_prompt,
+            keywords=payload.keywords,
+            tools=payload.tools,
+            model_id=payload.model_id,
+            skills=payload.skills,
+            enabled=payload.enabled,
+            sort=payload.sort,
+            is_builtin=False,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        out = _spec_out(row)
+    _invalidate_agents()
+    return {"agent": out}
+
+
+@router.put("/agents/{agent_id}", summary="更新专家（显式传 null 可清空 model_id/tools/skills）")
+def update_agent(agent_id: int, payload: AgentSpecUpdate):
+    with SessionLocal() as db:
+        row = db.get(AgentSpecModel, agent_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="专家不存在")
+        data = payload.model_dump(exclude_unset=True)
+        if "name" in data and data["name"] != row.name:
+            if db.query(AgentSpecModel).filter(AgentSpecModel.name == data["name"]).first():
+                raise HTTPException(status_code=400, detail=f"专家标识已存在：{data['name']}")
+        for key, value in data.items():
+            setattr(row, key, value)
+        db.commit()
+        db.refresh(row)
+        out = _spec_out(row)
+    _invalidate_agents()
+    return {"agent": out}
+
+
+@router.delete("/agents/{agent_id}", summary="删除专家（内置专家允许删除，前端需自行警告）")
+def delete_agent(agent_id: int):
+    with SessionLocal() as db:
+        row = db.get(AgentSpecModel, agent_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="专家不存在")
+        name = row.name
+        db.delete(row)
+        db.commit()
+    _invalidate_agents()
+    return {"ok": True, "deleted": name}
+
+
+class RouteTestRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000, description="待测试的用户消息")
+
+
+@router.post("/agents/route-test", summary="关键词路由预览：返回会命中的专家与命中词")
+def route_test(payload: RouteTestRequest):
+    team = team_mod.load_team(force=True)
+    matches = team_mod.route_scores(payload.text, team)
+    return {
+        "routed": matches[0]["name"] if matches else team_mod.default_agent_name(team),
+        "matched_by": "关键词" if matches else "默认",
+        "matches": matches,
+    }
+
+
+@router.post("/agents/reset", summary="内置专家恢复出厂定义（按 name 覆盖/补插，不影响自定义专家）")
+def reset_agents():
+    from ..agents.team import TEAM
+
+    restored = []
+    with SessionLocal() as db:
+        for spec in sorted(TEAM.values(), key=lambda s: s.sort):
+            row = db.query(AgentSpecModel).filter(AgentSpecModel.name == spec.name).first()
+            if row is None:
+                row = AgentSpecModel(name=spec.name)
+                db.add(row)
+            row.display_name = spec.label
+            row.emoji = spec.emoji
+            row.color = spec.color
+            row.description = spec.description
+            row.role_prompt = spec.system_prompt
+            row.keywords = spec.keywords
+            row.tools = spec.tools
+            row.model_id = None
+            row.skills = None
+            row.enabled = True
+            row.sort = spec.sort
+            row.is_builtin = True
+            restored.append(spec.name)
+        db.commit()
+    _invalidate_agents()
+    return {"ok": True, "restored": restored}
+
+
 # ---------------- 会话管理 ----------------
 
 class SessionRequest(BaseModel):
@@ -301,8 +431,10 @@ async def chat(payload: ChatRequest):
         return await orchestrator.chat(
             payload.session_id, payload.message, payload.agent, payload.mode or "standard", atts
         )
-    except Exception as exc:  # 模型网络/鉴权等运行时错误，回传给对话界面渲染
-        return {"ok": False, "message": f"Agent 执行失败：{type(exc).__name__}: {exc}"}
+    except Exception:
+        # 模型网络/鉴权等运行时错误：记录完整堆栈，对外不回传内部细节
+        logger.exception("chat 接口执行失败：session_id=%s", payload.session_id)
+        raise HTTPException(status_code=502, detail="助手服务暂时不可用，请稍后重试")
 
 
 @router.post("/chat/stream", summary="与 Agent 团队对话（SSE 流式）")
@@ -319,8 +451,10 @@ async def chat_stream(payload: ChatRequest):
                 atts,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        except Exception as exc:
-            yield f"data: {json.dumps({'type': 'error', 'message': f'{type(exc).__name__}: {exc}'}, ensure_ascii=False)}\n\n"
+        except Exception:
+            # 流式端点保持 SSE 协议：记录日志后在流内发 error 事件，不回传内部细节
+            logger.exception("chat/stream 接口执行失败：session_id=%s", payload.session_id)
+            yield f"data: {json.dumps({'type': 'error', 'message': '助手服务暂时不可用，请稍后重试'}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

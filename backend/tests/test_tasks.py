@@ -113,3 +113,13 @@ def test_due_range_filter(client):
     assert client.get("/api/tasks", params={"due_after": "2026-09-20"}).json()["total"] == 1
     assert client.get("/api/tasks", params={"due_before": "2026-09-10"}).json()["total"] == 1
     assert client.get("/api/tasks", params={"due_after": "2026-09-01", "due_before": "2026-09-30"}).json()["total"] == 2
+
+
+def test_invalid_date_returns_422(client):
+    resp = client.get("/api/tasks", params={"due_before": "不是一个日期"})
+    assert resp.status_code == 422
+    assert "日期格式错误" in resp.json()["detail"]
+    assert client.get("/api/tasks", params={"due_after": "2026-13-40"}).status_code == 422
+    # schedules 路由同样模式
+    assert client.get("/api/schedules", params={"start": "abc"}).status_code == 422
+    assert client.get("/api/schedules", params={"end": "2026/09/01!!"}).status_code == 422

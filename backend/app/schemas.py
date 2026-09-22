@@ -164,6 +164,104 @@ class NoteOut(NoteBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+# ---------- Agent 团队专家配置 ----------
+def _clean_str_list(v: Optional[List[str]], item_max: int, count_max: int) -> List[str]:
+    """字符串列表清洗：去空白、截断、去重、限量。"""
+    out: List[str] = []
+    for s in v or []:
+        s = str(s).strip()[:item_max]
+        if s and s not in out:
+            out.append(s)
+    return out[:count_max]
+
+
+class AgentSpecBase(BaseModel):
+    name: str = Field(min_length=1, max_length=50, pattern=r"^[a-z][a-z0-9_]*$", description="英文标识（小写字母/数字/下划线）")
+    display_name: str = Field(min_length=1, max_length=50, description="中文名称（界面展示）")
+    emoji: str = Field("🤖", max_length=8)
+    color: str = Field("#409EFF", max_length=20)
+    description: str = Field("", max_length=200, description="一句话职责")
+    role_prompt: str = Field("", max_length=8000, description="角色系统提示词")
+    keywords: List[str] = Field(default_factory=list, description="路由关键词，最多 50 个")
+    tools: Optional[List[str]] = Field(None, description="工具白名单；null 表示默认技能池")
+    model_id: Optional[int] = Field(None, description="绑定模型 provider_models.id；null 跟随全局激活模型")
+    skills: Optional[List[str]] = Field(None, description="技能白名单；null 跟随全局技能池")
+    enabled: bool = True
+    sort: int = Field(0, ge=0, le=9999)
+
+    @field_validator("name")
+    @classmethod
+    def _clean_name(cls, v: str) -> str:
+        return v.strip().lower()
+
+    @field_validator("display_name")
+    @classmethod
+    def _clean_display_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("中文名称不能为空白")
+        return v
+
+    @field_validator("keywords")
+    @classmethod
+    def _clean_keywords(cls, v: List[str]) -> List[str]:
+        return _clean_str_list(v, 30, 50)
+
+    @field_validator("tools", "skills")
+    @classmethod
+    def _clean_optional_list(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        return _clean_str_list(v, 60, 50)
+
+
+class AgentSpecCreate(AgentSpecBase):
+    pass
+
+
+class AgentSpecUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=50, pattern=r"^[a-z][a-z0-9_]*$")
+    display_name: Optional[str] = Field(None, min_length=1, max_length=50)
+    emoji: Optional[str] = Field(None, max_length=8)
+    color: Optional[str] = Field(None, max_length=20)
+    description: Optional[str] = Field(None, max_length=200)
+    role_prompt: Optional[str] = Field(None, max_length=8000)
+    keywords: Optional[List[str]] = None
+    tools: Optional[List[str]] = None
+    model_id: Optional[int] = None
+    skills: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+    sort: Optional[int] = Field(None, ge=0, le=9999)
+
+    @field_validator("name")
+    @classmethod
+    def _clean_name(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip().lower() if v is not None else None
+
+    @field_validator("keywords")
+    @classmethod
+    def _clean_keywords(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        return _clean_str_list(v, 30, 50)
+
+    @field_validator("tools", "skills")
+    @classmethod
+    def _clean_optional_list(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        return _clean_str_list(v, 60, 50)
+
+
+class AgentSpecOut(AgentSpecBase):
+    id: int
+    is_builtin: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ---------- 全局搜索 ----------
 class SearchItem(BaseModel):
     id: int

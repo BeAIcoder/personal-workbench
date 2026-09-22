@@ -1,7 +1,39 @@
 """示例数据：仅在数据库为空时写入（首次启动或 python -m app.init_db --reset）。"""
+import logging
 from datetime import datetime, timedelta
 
-from .models import Note, Schedule, Task
+from .models import AgentSpecModel, Note, Schedule, Task
+
+logger = logging.getLogger(__name__)
+
+
+def seed_agent_specs(db) -> int:
+    """agent_specs 为空时灌入内置专家团队（仅在表为空时执行一次，不覆盖用户改动）。返回写入数量。"""
+    if db.query(AgentSpecModel).count():
+        return 0
+    from .agents.team import TEAM
+
+    for spec in sorted(TEAM.values(), key=lambda s: s.sort):
+        db.add(
+            AgentSpecModel(
+                name=spec.name,
+                display_name=spec.label,
+                emoji=spec.emoji,
+                color=spec.color,
+                description=spec.description,
+                role_prompt=spec.system_prompt,
+                keywords=spec.keywords,
+                tools=spec.tools,
+                model_id=None,
+                skills=None,
+                enabled=True,
+                sort=spec.sort,
+                is_builtin=True,
+            )
+        )
+    db.commit()
+    logger.info("已灌入内置专家团队定义：%d 位专家", len(TEAM))
+    return len(TEAM)
 
 
 def seed_if_empty(db) -> dict | None:

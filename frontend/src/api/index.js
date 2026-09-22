@@ -1,8 +1,11 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
+// SSE（fetch）与 axios 共用同一个 baseURL 来源
+export const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE || '/api',
+  baseURL: API_BASE,
   timeout: 10000,
 })
 
@@ -83,6 +86,19 @@ export const assistantApi = {
       fd.append('file', file)
       return api.post('/assistant/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 })
     },
+  },
+
+  models: {
+    list: () => api.get('/assistant/models'),
+  },
+
+  agents: {
+    list: () => api.get('/assistant/agents'),
+    create: (data) => api.post('/assistant/agents', data),
+    update: (id, data) => api.put(`/assistant/agents/${id}`, data),
+    remove: (id) => api.delete(`/assistant/agents/${id}`),
+    routeTest: (text) => api.post('/assistant/agents/route-test', { text }),
+    reset: () => api.post('/assistant/agents/reset'),
   },
 
   providers: {

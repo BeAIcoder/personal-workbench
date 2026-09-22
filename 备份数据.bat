@@ -4,24 +4,17 @@ chcp 936 >nul
 title 个人工作台 - 备份数据
 cd /d "%~dp0"
 
-if not exist "backend\data\workbench.db" (
-    echo 未找到数据库文件，请先启动一次服务让它生成数据。
+set "PY=backend\venv\Scripts\python.exe"
+if not exist "%PY%" (
+    echo 未找到后端虚拟环境：%PY%
+    echo 请先在 backend 目录创建 venv 并安装依赖，或手动运行：
+    echo     python backend\scripts\backup_db.py
     pause
     exit /b 1
 )
 
-set "backup_dir=backups"
-if not exist "%backup_dir%" mkdir "%backup_dir%"
-
-set "stamp=%date:~0,4%%date:~5,2%%date:~8,2%_%time:~0,2%%time:~3,2%%time:~6,2%"
-set "stamp=%stamp: =0%"
-set "stamp=%stamp:/=%"
-set "stamp=%stamp::=%"
-
-copy /y "backend\data\workbench.db" "%backup_dir%\workbench_%stamp%.db" >nul
+"%PY%" backend\scripts\backup_db.py
 if errorlevel 1 (
-    echo 备份失败，请检查磁盘权限。
-) else (
-    echo 备份成功：%backup_dir%\workbench_%stamp%.db
+    echo 备份失败，请检查上方提示。
 )
 pause

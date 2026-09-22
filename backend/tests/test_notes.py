@@ -31,6 +31,18 @@ def test_tag_filter(client):
     assert client.get("/api/notes", params={"tag": "税务"}).json()["total"] == 0
 
 
+def test_tag_filter_escapes_like_wildcards(client):
+    """标签含 % / _ 时按字面匹配，不错位命中其他标签。"""
+    client.post("/api/notes", json=_payload(title="百分号", tags=["100%完成"]))
+    client.post("/api/notes", json=_payload(title="下划线", tags=["a_b"]))
+    client.post("/api/notes", json=_payload(title="干扰项1", tags=["100x完成"]))
+    client.post("/api/notes", json=_payload(title="干扰项2", tags=["axb"]))
+    assert client.get("/api/notes", params={"tag": "100%完成"}).json()["total"] == 1
+    assert client.get("/api/notes", params={"tag": "a_b"}).json()["total"] == 1
+    assert client.get("/api/notes", params={"tag": "100%完成"}).json()["items"][0]["title"] == "百分号"
+    assert client.get("/api/notes", params={"tag": "a_b"}).json()["items"][0]["title"] == "下划线"
+
+
 def test_pinned_filter(client):
     client.post("/api/notes", json=_payload(title="普通", pinned=False))
     client.post("/api/notes", json=_payload(title="置顶", pinned=True))

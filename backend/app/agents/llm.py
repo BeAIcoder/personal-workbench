@@ -5,7 +5,11 @@
 
 配置来源优先级：激活模型（model_providers + provider_models，界面可管理）> backend/.env 兜底。
 """
+import logging
+
 from . import config_store
+
+logger = logging.getLogger(__name__)
 
 
 def llm_status(cfg: dict | None = None) -> dict:
@@ -47,6 +51,7 @@ def _apply_reasoning(parameters_cls, cfg: dict, protocol: str, kwargs: dict) -> 
             level = "xhigh"
         return {**kwargs, "thinking_enable": effort != "off", "reasoning_effort": level}
     except Exception:
+        logger.warning("思考深度参数映射失败，忽略该设置：effort=%s", effort, exc_info=True)
         return kwargs
 
 
@@ -68,11 +73,13 @@ def build_model(cfg: dict | None = None):
         try:
             credential = AnthropicCredential(api_key=cfg["api_key"], base_url=base_url)
         except Exception:
+            logger.warning("AnthropicCredential 关键字构造失败，改用 data 构造", exc_info=True)
             credential = AnthropicCredential(data={"api_key": cfg["api_key"], "base_url": base_url})
         param_kwargs = _apply_reasoning(AnthropicChatModel.Parameters, cfg, "anthropic", {"max_tokens": cfg.get("max_tokens") or None})
         try:
             parameters = AnthropicChatModel.Parameters(**param_kwargs)
         except Exception:
+            logger.warning("Anthropic Parameters 构造失败，回退仅 max_tokens：%s", param_kwargs, exc_info=True)
             parameters = AnthropicChatModel.Parameters(max_tokens=cfg.get("max_tokens") or None)
         return AnthropicChatModel(
             credential=credential,
@@ -92,6 +99,7 @@ def build_model(cfg: dict | None = None):
             base_url=cfg["base_url"],
         )
     except Exception:
+        logger.warning("OpenAICredential 关键字构造失败，改用 data 构造", exc_info=True)
         credential = OpenAICredential(
             data={"api_key": cfg["api_key"], "base_url": cfg["base_url"]}
         )
@@ -102,6 +110,7 @@ def build_model(cfg: dict | None = None):
     try:
         parameters = OpenAIChatModel.Parameters(**param_kwargs)
     except Exception:
+        logger.warning("OpenAI Parameters 构造失败，回退仅 max_tokens：%s", param_kwargs, exc_info=True)
         parameters = OpenAIChatModel.Parameters(max_tokens=cfg.get("max_tokens") or None)
     return OpenAIChatModel(
         credential=credential,

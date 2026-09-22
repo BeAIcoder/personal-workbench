@@ -1,5 +1,16 @@
 <template>
   <div class="page" v-loading="loading">
+    <el-result
+      v-if="loadFailed"
+      icon="error"
+      title="工作台数据加载失败"
+      sub-title="请确认后端服务已启动（默认 http://127.0.0.1:8000）"
+    >
+      <template #extra>
+        <el-button type="primary" @click="load">重试</el-button>
+      </template>
+    </el-result>
+    <template v-else>
     <div class="greeting">
       <div class="greeting-row">
         <h2 class="hello">{{ greeting }}！</h2>
@@ -114,6 +125,7 @@
         </el-card>
       </el-col>
     </el-row>
+    </template>
   </div>
 </template>
 
@@ -129,6 +141,7 @@ const router = useRouter()
 
 const data = ref(null)
 const loading = ref(false)
+const loadFailed = ref(false)
 const todayText = dayjs().format('YYYY年MM月DD日 dddd')
 
 const greeting = computed(() => {
@@ -193,15 +206,20 @@ const barOption = computed(() => {
   }
 })
 
-onMounted(async () => {
+async function load() {
   loading.value = true
+  loadFailed.value = false
   try {
     const resp = await dashboardApi.summary()
     data.value = resp.data
+  } catch {
+    loadFailed.value = true  // 拦截器已弹出错误提示，这里展示重试入口
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(load)
 
 function fmtTime(s) {
   return s ? dayjs(s).format('HH:mm') : ''

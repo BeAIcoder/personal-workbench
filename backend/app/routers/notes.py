@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Note
 from ..schemas import NoteCreate, NoteOut, NoteUpdate, Page
+from ..utils import tag_like_pattern
 
 router = APIRouter(prefix="/notes", tags=["笔记管理"])
 
@@ -47,8 +48,8 @@ def list_notes(
             )
         )
     if tag:
-        # JSON 数组按 ensure_ascii=False 序列化，形如 ["报销"]，用 LIKE 匹配标签（参数绑定）
-        query = query.filter(Note.tags.like(f'%"{tag}"%'))
+        # JSON 数组按 ensure_ascii=False 序列化，形如 ["报销"]，用 LIKE 匹配标签（特殊字符已转义）
+        query = query.filter(Note.tags.like(tag_like_pattern(tag), escape="\\"))
     if pinned is not None:
         query = query.filter(Note.pinned == pinned)
 

@@ -11,6 +11,17 @@ backend/uploads/
 # 内部开发日志（隐私）
 progress.md
 
+# 备份
+backups/
+
+# SQLite 日志/临时文件
+*.db-wal
+*.db-shm
+
+# 日志与测试缓存
+*.log
+.pytest_cache/
+
 # 环境
 .env
 .env.local

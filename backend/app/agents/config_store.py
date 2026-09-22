@@ -10,6 +10,7 @@
 import asyncio
 import base64
 import json
+import logging
 import struct
 import time
 import urllib.error
@@ -25,6 +26,8 @@ from ..models import AgentSettings, ModelProvider, ProviderModel
 
 # 前端回显密钥时使用的掩码哨兵：界面"未改动"传回该值 → 保留现值
 MASK = "********"
+
+logger = logging.getLogger(__name__)
 
 # 供应商预设（界面选择后自动填充 base_url 与候选模型；均为 OpenAI 兼容。
 # anthropic 协议供应商经 scripts/sync_zcode_models.py 从 ZCode 同步）
@@ -130,6 +133,7 @@ def _active_model():
                 return None
             return prov, pm
     except OperationalError:
+        logger.warning("读取激活模型失败（数据库暂不可用）", exc_info=True)
         return None
 
 
@@ -144,6 +148,7 @@ def load() -> dict:
     try:
         row = _row()
     except OperationalError:
+        logger.warning("读取 Agent 设置失败（数据库暂不可用），使用默认配置", exc_info=True)
         row = None
     if row is not None:
         cfg.update(
@@ -188,6 +193,38 @@ def load() -> dict:
         }
     )
     return cfg
+
+
+def model_cfg_by_id(mid: int) -> dict | None:
+    """按 provider_models.id 取完整模型配置（供应商+模型+密钥）；不存在或已停用返回 None。
+
+    供专家级模型绑定使用：在 load() 的 Agent 工作参数基础上覆盖模型级字段。
+    """
+    try:
+        with SessionLocal() as db:
+            pm = db.get(ProviderModel, int(mid))
+            if pm is None or not pm.enabled:
+                return None
+            prov = db.get(ModelProvider, pm.provider_id)
+            if prov is None or not prov.enabled:
+                return None
+            cfg = load()
+            cfg.update(
+                {
+                    "protocol": prov.protocol,
+                    "base_url": prov.base_url,
+                    "api_key": prov.api_key,
+                    "model": pm.model,
+                    "context_size": pm.context_size,
+                    "max_tokens": pm.max_tokens,
+                    "multimodal": pm.multimodal,
+                    "provider_name": prov.name,
+                }
+            )
+            return cfg
+    except OperationalError:
+        logger.warning("读取模型配置失败（数据库暂不可用）：model_id=%s", mid, exc_info=True)
+        return None
 
 
 def masked(cfg: dict) -> dict:
@@ -248,7 +285,7 @@ def provider_test_cfg(pid: int) -> dict:
                     prov = db.get(ModelProvider, pid)
                     key = prov.api_key if prov else key
             except OperationalError:
-                pass
+                logger.warning("读取供应商密钥失败（数据库暂不可用），使用占位 key", exc_info=True)
             m = models[0]
             return {
                 "protocol": p["protocol"],
@@ -271,6 +308,7 @@ def list_providers() -> list[dict]:
             provs = db.query(ModelProvider).order_by(ModelProvider.id.asc()).all()
             models = db.query(ProviderModel).order_by(ProviderModel.id.asc()).all()
     except OperationalError:
+        logger.warning("供应商列表查询失败（数据库暂不可用）", exc_info=True)
         return []
 
     by_prov: dict[int, list] = {}

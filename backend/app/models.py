@@ -121,6 +121,33 @@ class ProviderModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 
+class AgentSpecModel(TimestampMixin, Base):
+    """Agent 团队专家定义（数据库可配置；内置专家由 seed 灌入，is_builtin=True）"""
+
+    __tablename__ = "agent_specs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # 英文标识（路由/存储用），唯一
+    name: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(50))
+    emoji: Mapped[str] = mapped_column(String(8), default="🤖")
+    color: Mapped[str] = mapped_column(String(20), default="#409EFF")
+    description: Mapped[str] = mapped_column(String(200), default="")
+    # 角色系统提示词（COMMON_RULES 由编排器统一拼接）
+    role_prompt: Mapped[str] = mapped_column(Text, default="")
+    # 关键词路由表（命中数最多者胜出）
+    keywords: Mapped[list] = mapped_column(JSON, default=list)
+    # 工具白名单；NULL 表示用默认技能池（查询工具 + 常用写入工具）
+    tools: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 绑定模型（逻辑引用 provider_models.id；NULL = 跟随全局激活模型）
+    model_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 专家级技能白名单；NULL 表示跟随全局技能池配置
+    skills: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class AgentSettings(Base):
     """AI 助手运行时配置（单行，id 恒为 1；界面可改，无需手改 .env）"""
 

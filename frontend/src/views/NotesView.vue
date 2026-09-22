@@ -118,18 +118,23 @@ const saving = ref(false)
 
 const dirty = computed(() => current.value && JSON.stringify(current.value) !== snapshot.value)
 
+// 请求序号：快速翻页/搜索时丢弃过期响应
+let loadSeq = 0
+
 async function load(targetPage) {
   if (targetPage) page.value = targetPage
+  const seq = ++loadSeq
   loading.value = true
   try {
     const params = { page: page.value, page_size: pageSize.value }
     if (filters.q) params.q = filters.q
     if (filters.tag) params.tag = filters.tag
     const { data } = await noteApi.list(params)
+    if (seq !== loadSeq) return  // 已有更新的请求发出，丢弃旧结果
     rows.value = data.items
     total.value = data.total
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -194,7 +199,11 @@ async function togglePin() {
 }
 
 async function remove() {
-  await ElMessageBox.confirm(`确定删除笔记「${current.value.title}」吗？删除后不可恢复。`, '删除确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm(`确定删除笔记「${current.value.title}」吗？删除后不可恢复。`, '删除确认', { type: 'warning' })
+  } catch {
+    return  // 用户取消
+  }
   await noteApi.remove(current.value.id)
   ElMessage.success('已删除')
   current.value = null

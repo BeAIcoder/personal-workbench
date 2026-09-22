@@ -6,6 +6,7 @@
 接口文档： http://127.0.0.1:8000/docs
 """
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from .config import BASE_DIR, settings
 from .database import Base, SessionLocal, engine
 from .routers import assistant, dashboard, notes, schedules, search, tasks
-from .seed import seed_if_empty
+from .seed import seed_agent_specs, seed_if_empty
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -22,6 +25,9 @@ async def lifespan(_: FastAPI):
     # 启动时建表；数据库为空且允许时写入示例数据
     Base.metadata.create_all(bind=engine)
     _ensure_sqlite_columns()
+    # 专家团队定义：仅表为空时灌入一次（属于配置数据，不受 seed_on_startup 控制）
+    with SessionLocal() as db:
+        seed_agent_specs(db)
     if settings.seed_on_startup:
         with SessionLocal() as db:
             seed_if_empty(db)
@@ -55,7 +61,7 @@ def _ensure_sqlite_columns() -> None:
                     if col not in existing:
                         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
     except Exception:
-        pass  # 非 SQLite 或已迁移过则忽略
+        logger.warning("SQLite 轻量迁移跳过（非 SQLite 或已迁移过）", exc_info=True)
 
 
 app = FastAPI(title=settings.app_name, version=settings.version, lifespan=lifespan)

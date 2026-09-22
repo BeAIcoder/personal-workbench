@@ -9,6 +9,7 @@ Agent 实例按 (会话, 专家, 模式) 缓存在进程内；会话消息持久
 - readonly 只读咨询：仅查询工具，不改任何数据
 - deep    深度研究：全部工具 + 更高工具轮次 + 深度分析提示词
 """
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -23,17 +24,21 @@ from . import config_store
 from .llm import build_model, llm_status
 from .team import (
     COMMON_RULES,
-    DEFAULT_AGENT,
     QUERY_TOOLS,
     TEAM,
     AgentSpec,
+    default_agent_name,
     keyword_hit,
+    load_team,
     roster_text,
 )
 from .tools import build_tools, tool_trace
 
+logger = logging.getLogger(__name__)
+
 _model = None
-_agents: dict[tuple[str, str, str], object] = {}
+_models: dict[int, object | None] = {}  # 专家绑定模型缓存：model_id → 模型实例（None 表示不可用）
+_agents: dict[tuple[str, str, str, int], object] = {}
 
 # Agent 工作模式
 WORK_MODES = {
@@ -57,6 +62,7 @@ def invalidate() -> None:
     """配置变更后清空进程内缓存（模型实例与各会话 Agent）。"""
     global _model
     _model = None
+    _models.clear()
     _agents.clear()
 
 
@@ -65,6 +71,19 @@ def _get_model():
     if _model is None:
         _model = build_model()
     return _model
+
+
+def _get_spec_model(spec: AgentSpec):
+    """专家生效模型：绑定 model_id 时按其配置构建（进程内缓存），为空/不可用回退全局激活模型。"""
+    if spec.model_id:
+        if spec.model_id not in _models:
+            cfg = config_store.model_cfg_by_id(spec.model_id)
+            _models[spec.model_id] = build_model(cfg) if cfg else None
+            if _models[spec.model_id] is None:
+                logger.warning("专家 %s 绑定的模型不可用（model_id=%s），回退全局激活模型", spec.name, spec.model_id)
+        if _models[spec.model_id] is not None:
+            return _models[spec.model_id]
+    return _get_model()
 
 
 def _resolve_mode(mode: str | None) -> str:
@@ -85,8 +104,11 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
         tool_names = [t for t in tool_names if t in QUERY_TOOLS]
 
     # 本地技能池（SKILL.md 格式，如 QwenPaw skill_pool）：经 LocalSkillLoader 注入
+    # 专家级 skills 为空列表时显式关闭；None 跟随全局配置
     skills_or_loaders = None
-    if cfg.get("enable_skills") and cfg.get("skills_dir"):
+    if cfg.get("enable_skills") and cfg.get("skills_dir") and spec.skills is not None and not spec.skills:
+        pass  # 专家配置显式关闭技能池
+    elif cfg.get("enable_skills") and cfg.get("skills_dir"):
         skills_dir = Path(cfg["skills_dir"])
         if skills_dir.is_dir():
             try:
@@ -94,6 +116,7 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
 
                 skills_or_loaders = [LocalSkillLoader(directory=str(skills_dir), scan_subdir=True)]
             except Exception:
+                logger.warning("技能池加载失败，本次不注入技能：%s", skills_dir, exc_info=True)
                 skills_or_loaders = None
 
     toolkit = Toolkit(skills_or_loaders=skills_or_loaders)
@@ -109,7 +132,7 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
             cwd = cfg.get("skills_dir") if skills_or_loaders else str(Path(__file__).resolve().parent.parent)
             await toolkit.add_tool(Bash(cwd=cwd))
         except Exception:
-            pass
+            logger.warning("Bash 工具加载失败，本次不启用", exc_info=True)
 
     # QwenPaw 工具型插件（经兼容层加载）；只读模式跳过（插件可能写外部系统）
     if cfg.get("enable_plugins") and cfg.get("plugins_dir") and mode != "readonly":
@@ -132,6 +155,7 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
                             )
                         )
                 except Exception:
+                    logger.warning("插件加载失败，跳过：%s", manifest.parent.name, exc_info=True)
                     continue  # 单个插件失败不影响其余
 
     # 个人助手场景：工具白名单非破坏性，BYPASS 自动放行工具调用
@@ -150,7 +174,7 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
     return Agent(
         name=spec.label,
         system_prompt=system_prompt,
-        model=_get_model(),
+        model=_get_spec_model(spec),
         toolkit=toolkit,
         state=state,
         react_config=ReActConfig(max_iters=max_iters),
@@ -158,9 +182,10 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
 
 
 def _get_agent(session_id: str, spec: AgentSpec, mode: str):
-    if _get_model() is None:
+    if _get_spec_model(spec) is None:
         raise RuntimeError("LLM 未配置")
-    key = (session_id, spec.name, mode)
+    # 缓存 key 含专家绑定模型：模型变更（或绑定变化）时重建 Agent
+    key = (session_id, spec.name, mode, spec.model_id or 0)
     agent = _agents.get(key)
     if agent is None:
         raise KeyError(key)  # 由调用方构建
@@ -175,7 +200,7 @@ async def _ensure_agent(session_id: str, spec: AgentSpec, mode: str):
         history = _load_history_msgs(session_id)
         if history:
             agent.observe(history)
-        _agents[(session_id, spec.name, mode)] = agent
+        _agents[(session_id, spec.name, mode, spec.model_id or 0)] = agent
         return agent
 
 
@@ -206,7 +231,7 @@ def _load_history_msgs(session_id: str, limit: int | None = None) -> list:
     return msgs
 
 
-async def _route_by_llm(question: str) -> str | None:
+async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None:
     """LLM 结构化调度；任何失败都返回 None（回退关键词/默认）。"""
     from agentscope.agent import Agent
     from agentscope.message import Msg, TextBlock
@@ -226,15 +251,15 @@ async def _route_by_llm(question: str) -> str | None:
             Msg(
                 name="用户",
                 role="user",
-                content=[TextBlock(type="text", text=f"团队名册：\n{roster_text()}\n\n用户消息：{question}")],
+                content=[TextBlock(type="text", text=f"团队名册：\n{roster_text(team)}\n\n用户消息：{question}")],
             ),
             structured_schema=RouteDecision,
         )
         decision = reply.structured_output or {}
-        if decision.get("agent") in TEAM:
+        if decision.get("agent") in team:
             return decision["agent"]
     except Exception:
-        pass
+        logger.warning("LLM 结构化调度失败，回退关键词/默认路由", exc_info=True)
     return None
 
 
@@ -265,7 +290,7 @@ def _touch_session(session_id: str, first_message: str | None = None) -> None:
                 row.updated_at = datetime.now()
             db.commit()
     except OperationalError:
-        pass
+        logger.warning("会话落库失败（数据库暂不可用）：session_id=%s", session_id, exc_info=True)
 
 
 _THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -330,14 +355,17 @@ def _thinking_of(msg) -> str:
 
 
 async def _resolve_spec(question: str, agent_name: str | None):
-    """路由：返回 (spec, routed_by)。"""
-    if agent_name in TEAM:
-        return TEAM[agent_name], "指定"
-    hit = keyword_hit(question)
+    """路由：返回 (spec, routed_by)。专家团队读库（启用中），兜底内置定义。"""
+    team = load_team()
+    if agent_name in team:
+        return team[agent_name], "指定"
+    hit = keyword_hit(question, team)
     if hit:
-        return TEAM[hit], "关键词"
-    picked = await _route_by_llm(question)
-    return TEAM[picked or DEFAULT_AGENT], ("AI 调度" if picked else "默认")
+        return team[hit], "关键词"
+    picked = await _route_by_llm(question, team)
+    if picked:
+        return team[picked], "AI 调度"
+    return team[default_agent_name(team)], "默认"
 
 
 async def chat(
@@ -449,7 +477,14 @@ async def chat_stream(
         thinking = "\n".join(x for x in (inline_think, _thinking_of(final_msg) if final_msg is not None else "") if x).strip()
         trace = list(tool_trace.get() or [])
     except Exception as exc:
-        yield {"type": "error", "message": f"Agent 执行失败：{type(exc).__name__}: {exc}"[:300]}
+        # 用户消息已落库，补一条 assistant 侧错误消息，保持历史成对
+        err_text = f"抱歉，本次回复生成失败：{type(exc).__name__}"
+        logger.warning("流式对话执行失败：session_id=%s，%s", session_id, exc, exc_info=True)
+        try:
+            _persist(session_id, "assistant", spec.name, err_text, [])
+        except Exception:
+            logger.warning("错误消息落库失败：session_id=%s", session_id, exc_info=True)
+        yield {"type": "error", "message": err_text}
         return
     finally:
         tool_trace.reset(token)
@@ -480,6 +515,7 @@ def sessions_list(limit: int = 50) -> list[dict]:
             )
             counts = dict(db.query(ChatMessage.session_id, func.count()).group_by(ChatMessage.session_id).all())
     except OperationalError:
+        logger.warning("会话列表查询失败（数据库暂不可用）", exc_info=True)
         return []
     return [
         {
@@ -531,12 +567,18 @@ def history(session_id: str, limit: int = 50) -> list[dict]:
             .limit(max(1, min(limit, 200)))
             .all()
         )
+    team = load_team()
+
+    def _label(agent_name: str) -> str:
+        spec = team.get(agent_name) or TEAM.get(agent_name)
+        return spec.label if spec else agent_name
+
     return [
         {
             "id": r.id,
             "role": r.role,
             "agent_name": r.agent_name,
-            "agent_label": TEAM[r.agent_name].label if r.agent_name in TEAM else r.agent_name,
+            "agent_label": _label(r.agent_name),
             "content": r.content,
             "thinking": r.thinking or "",
             "trace": r.trace or [],
@@ -564,7 +606,14 @@ def team_payload() -> dict:
                 "color": s.color,
                 "description": s.description,
                 "tools": s.tools,
+                # 配置化新增字段（原结构保持不变，前端可按需取用）
+                "id": s.row_id,
+                "model_id": s.model_id,
+                "keywords": s.keywords,
+                "enabled": s.enabled,
+                "sort": s.sort,
+                "is_builtin": s.is_builtin,
             }
-            for s in TEAM.values()
+            for s in load_team(force=True).values()
         ],
     }
