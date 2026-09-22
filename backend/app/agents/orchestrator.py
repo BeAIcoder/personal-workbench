@@ -522,7 +522,7 @@ def sessions_list(limit: int = 50) -> list[dict]:
             "session_id": r.session_id,
             "title": r.title or "新会话",
             "msg_count": counts.get(r.session_id, 0),
-            "updated_at": r.updated_at.strftime("%m-%d %H:%M"),
+            "updated_at": r.updated_at.isoformat(),
         }
         for r in rows
     ]
