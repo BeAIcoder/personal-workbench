@@ -264,6 +264,56 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 #### GET /api/assistant/plugins/discover?dir=...
 扫描 QwenPaw 插件目录：`{ "loadable", "plugins": [ {name, ok, tools / error} ] }`。
 
+## 定时任务 /api/jobs
+
+定时 Agent：到点自动按提示词执行一次助手对话，回复写成笔记（标题以「【定时任务】」开头，标签含「定时任务」）。调度器每 20 秒检查一次到期任务；同一任务串行执行（上次未结束则跳过）；LLM 未配置时本轮标记 `skipped`，不发请求。
+
+任务字段（ScheduledJob）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | int | 主键 |
+| `name` | string | 任务名称（必填，≤100 字） |
+| `prompt` | string | 到点执行的提示词（必填，≤5000 字） |
+| `agent_name` | string\|null | 指定专家标识；`null` = 智能路由 |
+| `mode` | string | 工作模式：`standard` / `readonly` / `deep` |
+| `schedule_type` | string | 调度方式：`interval` / `daily` |
+| `interval_minutes` | int\|null | 间隔分钟（`interval` 必填，5~10080） |
+| `daily_at` | string\|null | 每天执行时间 HH:MM（`daily` 必填） |
+| `enabled` | bool | 是否启用 |
+| `last_run_at` | datetime\|null | 最近一次执行时间 |
+| `last_status` | string | 最近一次状态：`ok` / `error` / `skipped` / 空（未运行） |
+| `last_error` | string | 最近一次错误摘要 |
+| `last_note_id` | int\|null | 最近一次结果笔记 id |
+| `recent_runs` | array | 最近 20 条运行记录，元素 `{at, status, summary}` |
+| `created_at` / `updated_at` | datetime | 创建 / 更新时间 |
+
+### GET /api/jobs
+全部任务列表（按 id 升序）：`[ { ...ScheduledJob } ]`
+
+### POST /api/jobs（返回 201）
+创建任务。`schedule_type=interval` 必须带 `interval_minutes`（5~10080）；`daily` 必须带 `daily_at`（HH:MM）。缺字段或格式错误返回 422。
+```json
+{
+  "name": "每周税务自查", "prompt": "检查未来 7 天到期任务并汇总成清单",
+  "agent_name": null, "mode": "standard",
+  "schedule_type": "interval", "interval_minutes": 10080, "enabled": true
+}
+```
+
+### PUT /api/jobs/{id}
+部分更新：只传需要修改的字段；不存在返回 404；调度参数不一致（interval 未带 interval_minutes / daily 未带 daily_at）返回 422。
+
+### DELETE /api/jobs/{id}（返回 204）
+删除任务，不存在返回 404。
+
+### POST /api/jobs/{id}/run
+立即执行一次（不影响下次到点触发），不存在返回 404。
+```json
+{ "status": "ok", "summary": "……（回复摘要，最长 200 字）", "note_id": 12 }
+```
+- `status`：`ok`（成功，`note_id` 为结果笔记 id）/ `skipped`（模型未配置，或上一次尚未结束）/ `error`（`summary` 为错误摘要，同时记入任务 `last_error`）。
+
 ## 前端接入说明
 
 - axios 实例：`frontend/src/api/index.js`，`baseURL` 取 `VITE_API_BASE`（默认 `/api`）；响应拦截器统一弹出中文错误提示。

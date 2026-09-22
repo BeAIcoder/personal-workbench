@@ -45,6 +45,15 @@ export const scheduleApi = {
   remove: (id) => api.delete(`/schedules/${id}`),
 }
 
+// 定时任务：到点自动执行 Agent 任务，结果写入笔记
+export const jobApi = {
+  list: () => api.get('/jobs'),
+  create: (data) => api.post('/jobs', data),
+  update: (id, data) => api.put(`/jobs/${id}`, data),
+  remove: (id) => api.delete(`/jobs/${id}`),
+  runNow: (id) => api.post(`/jobs/${id}/run`, {}, { timeout: 120000 }),
+}
+
 export const noteApi = {
   list: (params) => api.get('/notes', { params }),
   tags: () => api.get('/notes/tags'),

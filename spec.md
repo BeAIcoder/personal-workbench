@@ -48,6 +48,15 @@
 - **附件**：聊天可上传附件（10MB 上限；xlsx 自动转 CSV），文本类附件注入消息、其余提示 Agent 用 Bash 处理。
 - **扩展能力（默认关闭）**：本地技能池（SKILL.md）、Bash 工具、QwenPaw 插件兼容层，均有独立开关。
 
+### 2.6 定时任务（`routers/jobs.py` + `app/scheduler.py` + `JobsView.vue`）
+
+- **定位**：到点自动把任务提示词交给 Agent 团队执行一次，回复写成笔记（标题「【定时任务】{名称} 时间」，标签含「定时任务」），在笔记页回看全部历史。
+- **数据表** `scheduled_jobs`：`name`、`prompt`、`agent_name`（null=智能路由）、`mode`（standard/readonly/deep）、`schedule_type`（interval/daily）、`interval_minutes`（5~10080）、`daily_at`（HH:MM）、`enabled`、`last_run_at`、`last_status`（ok/error/skipped）、`last_error`、`last_note_id`、`recent_runs`（JSON，最近 20 条 `{at,status,summary}`）。
+- **调度算法** `job_due(job, now)`（纯函数）：interval——距 `last_run_at` 达到间隔即到期，从未运行立即到期；daily——到达当天 `daily_at` 且当天未跑过才到期；首次启动当天已过点的补跑一次。
+- **执行链路**：复用 `orchestrator.chat`——路由（指定专家 > 关键词 > LLM 结构化调度）→ 专用会话 `job-{id}` → 回复写成笔记并回填 `last_status/last_error/recent_runs/last_note_id`；`POST /{id}/run` 立即执行与调度循环共用同一入口。
+- **并发与异常**：同一任务串行执行（上次未结束则本轮跳过）；LLM 未配置标记 skipped 不发请求；单次异常记入 `last_error` 与 recent_runs，调度循环吞掉异常继续下一轮，不影响其他任务。
+- **校验**：`interval` 必须带 `interval_minutes`（5~10080）、`daily` 必须带 `daily_at`（HH:MM），否则 422。
+
 ## 3. 实现方法与算法说明
 
 ### 3.1 关键词路由算法（`agents/team.py`）
@@ -73,7 +82,7 @@
 - **非流式 `/chat`**：成功返回 `{ok: true, reply, thinking, agent, routed_by, mode, trace}`；模型未配置返回 `{ok: false, need_llm_config: true, message}`；**运行时异常返回 502**（日志记录完整堆栈，对外不回传内部细节）。
 - 正文中的 `<think>…</think>` 标签会被剥离到 thinking 字段，思考块独立于正文展示。
 
-### 3.3 数据模型（9 张表，`models.py`）
+### 3.3 数据模型（10 张表，`models.py`）
 
 ```
 tasks            id, title, description, status, priority, due_date?, category, completed_at?, created_at, updated_at
@@ -88,6 +97,10 @@ agent_settings   id=1 单行：max_iters, enable_memory, history_inject, active_
 agent_specs      id, name(唯一, ^[a-z][a-z0-9_]*$), display_name, emoji, color, description, role_prompt,
                  keywords(JSON), tools(JSON 可空), skills(JSON 可空), model_id(可空, 逻辑引用 provider_models.id),
                  enabled, sort(=路由优先级，小者优先), is_builtin, created_at, updated_at
+scheduled_jobs   id, name, prompt, agent_name?(null=智能路由), mode(standard/readonly/deep),
+                 schedule_type(interval/daily), interval_minutes?(5-10080), daily_at?(HH:MM),
+                 enabled, last_run_at?, last_status(ok/error/skipped), last_error, last_note_id?,
+                 recent_runs(JSON，最近20条 {at,status,summary}), created_at, updated_at
 ```
 
 要点：状态/优先级用 Pydantic Literal 校验；时间统一本地 naive datetime；`model_id` 为逻辑引用（无数据库外键），绑定的模型被删除/停用时自动回退全局激活模型。
@@ -134,18 +147,20 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 ```
 前端（Vue 3 + Element Plus + ECharts）
-  五页：概览 / 任务 / 日程 / 笔记 / AI 助手（容器 + 5 个子组件）
+  六页：概览 / 任务 / 日程 / 笔记 / AI 助手（容器 + 5 个子组件）/ 定时任务
         │  HTTP /api/*（SSE 走 fetch 流）
         ▼
 FastAPI（routers/）
   ├─ tasks / schedules / notes / search / dashboard  → SQLAlchemy → SQLite
-  └─ assistant                                        → app/agents/
+  ├─ assistant                                        → app/agents/
         ├─ llm.py           模型工厂（openai/anthropic 协议分流）
         ├─ config_store.py  供应商/模型两级存储 + 预设 + 连通性/工具/多模态测试
         ├─ tools.py         8 个业务工具（显式 schema、contextvar 轨迹）
         ├─ team.py          专家团队：内置定义 + agent_specs 表加载 + 关键词路由（60s 缓存）
         ├─ orchestrator.py  路由 → 专家执行（SSE/非流式）→ 轨迹/会话持久化
         └─ qwenpaw_compat.py QwenPaw 插件兼容层（实验性，默认关闭）
+  └─ jobs                                        → app/scheduler.py 每 20s 检查到期任务，
+                                                   job_due 判定 → 复用 orchestrator → 回复落笔记
 ```
 
 ## 5. 接口设计
@@ -170,11 +185,11 @@ FastAPI（routers/）
 
 ## 7. 测试与验证
 
-- 后端 pytest **92 例**（`backend/tests/`）：业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/连通性测试 + QwenPaw 导入脚本静态校验（4 例）。全部离线，独立临时库，conftest 显式清空 LLM 环境变量。
-- 前端 vitest 11 例（`frontend/tests/` 3 个文件：格式化/日历范围/Agent 相关工具函数）。
-- 手动验收：五页 + 设置抽屉 + 专家团队 tab + SSE 对话流 + 路由测试工具。
+- 后端 pytest **99 例**（`backend/tests/`）：业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/连通性测试 + 定时任务（`test_jobs.py` 7 例：job_due 判定/CRUD/调度参数校验/立即执行落笔记/未配置跳过/404）+ QwenPaw 导入脚本静态校验（4 例）。全部离线，独立临时库，conftest 显式清空 LLM 环境变量。
+- 前端 vitest 20 例（`frontend/tests/` 4 个文件：格式化/日历范围/Agent 相关工具函数/定时任务展示逻辑）。
+- 手动验收：六页 + 设置抽屉 + 专家团队 tab + SSE 对话流 + 路由测试工具。
 
 ## 8. 交付边界与后续方向
 
 - 单用户、监听 127.0.0.1；删除类数据操作不开放给 Agent（仅页面物理删除，任务可由 Agent 标记完成）。
-- 路线图：LLM 路由 few-shot 增强/会话归档 → 长期记忆与笔记 RAG → MCP 工具接入、定时 Agent → 多渠道（团队共享再考虑多租户）。
+- 路线图：LLM 路由 few-shot 增强/会话归档 → 长期记忆与笔记 RAG → MCP 工具接入 → 多渠道（团队共享再考虑多租户）。

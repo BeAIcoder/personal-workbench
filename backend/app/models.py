@@ -182,3 +182,28 @@ class AgentSettings(Base):
     # 思考深度：'' 跟随模型 / off / low / medium / high / max
     reasoning_effort: Mapped[str] = mapped_column(String(12), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class ScheduledJob(TimestampMixin, Base):
+    """定时 Agent 任务：到点自动按提示词执行一次 Agent 对话，结果落笔记。"""
+
+    __tablename__ = "scheduled_jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), index=True)
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    # 指定专家 name；NULL = 智能路由
+    agent_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    mode: Mapped[str] = mapped_column(String(20), default="standard")  # standard / readonly / deep
+    # interval：按 interval_minutes 间隔；daily：每天 daily_at（HH:MM，本机时区）
+    schedule_type: Mapped[str] = mapped_column(String(10), default="interval")
+    interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    daily_at: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # 运行状态
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_status: Mapped[str] = mapped_column(String(10), default="")  # ok / error / skipped
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_note_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 最近运行记录（最多 20 条）：[{at, status, summary}]
+    recent_runs: Mapped[list] = mapped_column(JSON, default=list)

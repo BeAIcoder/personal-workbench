@@ -277,3 +277,55 @@ class SearchResult(BaseModel):
     tasks: List[SearchItem]
     schedules: List[SearchItem]
     notes: List[SearchItem]
+
+
+# ---------- 定时任务（ScheduledJob） ----------
+
+class ScheduledJobBase(BaseModel):
+    name: str = Field(min_length=1, max_length=100, description="任务名称")
+    prompt: str = Field(min_length=1, max_length=5000, description="到点执行的提示词")
+    agent_name: Optional[str] = Field(None, max_length=50, description="指定专家 name；null 智能路由")
+    mode: str = Field("standard", description="工作模式：standard / readonly / deep")
+    schedule_type: str = Field("interval", description="interval / daily")
+    interval_minutes: Optional[int] = Field(None, ge=5, le=10080, description="间隔分钟（interval）")
+    daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="每天执行时间 HH:MM（daily）")
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _check_schedule(self):
+        if self.schedule_type == "daily":
+            if not self.daily_at:
+                raise ValueError("daily 类型必须提供 daily_at（HH:MM）")
+        else:
+            if self.interval_minutes is None:
+                raise ValueError("interval 类型必须提供 interval_minutes（5-10080）")
+            self.daily_at = None
+        return self
+
+
+class ScheduledJobCreate(ScheduledJobBase):
+    pass
+
+
+class ScheduledJobUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    prompt: Optional[str] = Field(None, min_length=1, max_length=5000)
+    agent_name: Optional[str] = Field(None, max_length=50)
+    mode: Optional[str] = None
+    schedule_type: Optional[str] = None
+    interval_minutes: Optional[int] = Field(None, ge=5, le=10080)
+    daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    enabled: Optional[bool] = None
+
+
+class ScheduledJobOut(ScheduledJobBase):
+    id: int
+    last_run_at: Optional[datetime] = None
+    last_status: str = ""
+    last_error: str = ""
+    last_note_id: Optional[int] = None
+    recent_runs: List[dict] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

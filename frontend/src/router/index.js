@@ -31,6 +31,12 @@ const routes = [
     component: () => import('../views/AssistantView.vue'),
     meta: { title: 'AI 助手' },
   },
+  {
+    path: '/jobs',
+    name: 'jobs',
+    component: () => import('../views/JobsView.vue'),
+    meta: { title: '定时任务' },
+  },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
