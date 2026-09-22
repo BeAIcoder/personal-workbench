@@ -15,11 +15,11 @@
 
 ## 📸 界面截图
 
-> 截图待补充，存放于 `docs/screenshots/` 目录：
->
-> - `docs/screenshots/dashboard.png` — 工作台概览
-> - `docs/screenshots/tasks.png` — 任务管理
-> - `docs/screenshots/assistant.png` — AI 助手
+| 工作台概览 | 任务管理 |
+| --- | --- |
+| ![概览](docs/screenshots/dashboard.png) | ![任务](docs/screenshots/tasks.png) |
+
+![AI 助手与 Agent 团队](docs/screenshots/assistant.png)
 
 ## 🚀 快速开始
 

@@ -31,6 +31,13 @@ async def lifespan(_: FastAPI):
     if settings.seed_on_startup:
         with SessionLocal() as db:
             seed_if_empty(db)
+    # 安全提示：本应用面向本机单人使用设计，监听非回环地址会把 API Key 明文接口与
+    # 技能/插件/Bash 执行面暴露给局域网，仅在你明确知晓风险时使用
+    if settings.host not in ("127.0.0.1", "localhost", "::1"):
+        logger.warning(
+            "HOST=%s 为非回环地址：工作台面向本机单人设计，未做鉴权，请勿在不可信网络中开放。",
+            settings.host,
+        )
     yield
 
 

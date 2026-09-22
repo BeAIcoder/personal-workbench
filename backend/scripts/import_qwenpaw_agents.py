@@ -52,9 +52,9 @@ NEW_AGENTS: dict[str, tuple] = {
     "cloud_orchestrator": ("cloud-orchestrator", "CloudPaw 主控编排", "☁️", "#409EFF",
                            ["云编排", "编排", "阿里云", "云资源", "部署编排", "IaC", "Mission"], 8),
     "cloud_executor": ("cloud-executor", "CloudPaw 执行器", "⚙️", "#67C23A",
-                       ["执行", "脚本", "CLI", "部署", "配置", "代码"], 9),
+                       ["执行", "脚本", "CLI", "部署", "配置", "代码"], 10),
     "cloud_verifier": ("cloud-verifier", "CloudPaw 验证器", "✅", "#E6A23C",
-                       ["验证", "验收", "合规", "检查", "审计", "核查"], 10),
+                       ["验证", "验收", "合规", "检查", "审计", "核查"], 9),
     "datapaw": ("datapaw", "DataPaw 数据分析", "📈", "#9C27B0",
                 ["数据分析", "指标", "口径", "取数", "SQL", "图表", "对账"], 11),
 }
@@ -162,6 +162,7 @@ def main() -> int:
                 if not args.dry_run:
                     row.role_prompt = base + ("\n\n" if base else "") + prompt
                     row.keywords = keywords
+                    row.sort = sort
                 continue
             plan.append(f"[新建] {name} {label}（{emoji}，关键词 {len(keywords)} 个，sort={sort}）")
             if not args.dry_run:
