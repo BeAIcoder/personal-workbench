@@ -1,9 +1,18 @@
-"""Agent 团队定义：7 个领域专家 + 关键词路由表。
+"""Agent 团队定义：内置 7 专家（出厂 seed 数据源）+ 数据库可配置加载。
+
+专家团队持久化在 agent_specs 表（见 models.AgentSpecModel），启动时若表为空
+由 seed 灌入内置定义；运行时经 load_team() 读取（60 秒进程内缓存），
+配置变更由路由层调用 invalidate_team_cache() 立即生效。
+表为空或数据库不可用时回退内置 TEAM，保证离线/异常场景可用。
 
 每个 AgentSpec 描述一位专家的角色定位、职责边界与可用工具范围；
 系统提示词共同遵循 COMMON_RULES（中文输出、数据严谨、工具使用规范）。
 """
+import logging
+import time
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 COMMON_RULES = """
 
@@ -28,6 +37,13 @@ class AgentSpec:
     description: str   # 一句话职责（供路由与前端展示）
     system_prompt: str
     tools: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)  # 关键词路由表
+    model_id: int | None = None   # 绑定模型（provider_models.id）；None = 全局激活模型
+    skills: list[str] | None = None  # 技能白名单；None = 跟随全局技能池
+    enabled: bool = True
+    sort: int = 0                 # 排序（兼作关键词同分时的优先级，小者优先）
+    is_builtin: bool = False
+    row_id: int | None = None     # agent_specs 表主键（内置定义为空）
 
 
 QUERY_TOOLS = ["query_tasks", "query_schedules", "search_notes", "workbench_stats"]
@@ -49,6 +65,9 @@ TEAM: dict[str, AgentSpec] = {
             "3. 日程协调与任务安排的总入口：帮用户把口头安排变成工作台里的日程和待办。"
         ),
         tools=QUERY_TOOLS + ["create_task", "complete_task", "create_schedule", "create_note"],
+        keywords=["商业地产", "综合体", "购物中心", "资产管理", "日程", "任务", "待办", "安排", "提醒", "笔记"],
+        sort=6,
+        is_builtin=True,
     ),
     "leasing": AgentSpec(
         name="leasing",
@@ -65,6 +84,9 @@ TEAM: dict[str, AgentSpec] = {
             "约束：涉及法务条款只给一般性建议，并提醒用户咨询法务确认。"
         ),
         tools=QUERY_TOOLS + ["create_task", "create_schedule", "create_note"],
+        keywords=["招商", "租约", "租赁", "租金", "品牌", "签约", "免租", "装补", "递增", "空置", "铺位", "业态", "主力店"],
+        sort=1,
+        is_builtin=True,
     ),
     "operations": AgentSpec(
         name="operations",
@@ -82,6 +104,9 @@ TEAM: dict[str, AgentSpec] = {
             "先查工作台数据（query_tasks / workbench_stats），再结合用户给的数据分析。"
         ),
         tools=QUERY_TOOLS + ["create_task", "complete_task", "create_schedule"],
+        keywords=["运营", "营运", "客流", "销售额", "收缴率", "坪效", "提袋率", "商户经营", "开业"],
+        sort=2,
+        is_builtin=True,
     ),
     "marketing": AgentSpec(
         name="marketing",
@@ -98,6 +123,9 @@ TEAM: dict[str, AgentSpec] = {
             "沉淀下来的方案与复盘用 create_note 记录，便于团队复用。"
         ),
         tools=QUERY_TOOLS + ["create_task", "create_schedule", "create_note"],
+        keywords=["企划", "营销", "活动方案", "推广", "美陈", "会员", "造节", "市集", "展览", "宣传"],
+        sort=3,
+        is_builtin=True,
     ),
     "property": AgentSpec(
         name="property",
@@ -114,6 +142,9 @@ TEAM: dict[str, AgentSpec] = {
             "约束：涉及带电、动火、有限空间等危险作业，只给管理流程建议，必须提醒由持证专业人员现场操作。"
         ),
         tools=QUERY_TOOLS + ["create_task", "create_schedule"],
+        keywords=["工程", "物业", "维保", "维修", "能耗", "巡检", "空调", "电梯", "消防", "保洁", "保安", "给排水"],
+        sort=4,
+        is_builtin=True,
     ),
     "security": AgentSpec(
         name="security",
@@ -130,6 +161,9 @@ TEAM: dict[str, AgentSpec] = {
             "约束：只提供防御与合规建议，不提供任何攻击性技术细节。"
         ),
         tools=QUERY_TOOLS + ["create_task", "create_note"],
+        keywords=["网络安全", "漏洞", "等保", "防火墙", "钓鱼", "病毒", "弱口令", "渗透", "数据安全", "安全整改", "补丁"],
+        sort=0,
+        is_builtin=True,
     ),
     "it_finance": AgentSpec(
         name="it_finance",
@@ -149,45 +183,126 @@ TEAM: dict[str, AgentSpec] = {
             "数据不在工作台时，请用户直接粘贴数据文本再分析。核对结论与重要分析用 create_note 沉淀。"
         ),
         tools=QUERY_TOOLS + ["create_task", "complete_task", "create_schedule", "create_note"],
+        keywords=["财务", "报表", "凭证", "分录", "报销", "预算", "费用", "税", "发票", "对账", "资金", "成本", "收入", "核算", "记账", "结账", "申报", "信息化", "系统选型", "软件"],
+        sort=5,
+        is_builtin=True,
     ),
 }
 
 TEAM_SIZE = len(TEAM)
 
-# 关键词路由表（顺序即优先级，先专后宽）；命中数最多者胜出
+# 关键词路由表（由 TEAM 派生，保留导出以兼容旧引用）；顺序即优先级，先专后宽
 ROUTE_KEYWORDS: list[tuple[str, list[str]]] = [
-    ("security", ["网络安全", "漏洞", "等保", "防火墙", "钓鱼", "病毒", "弱口令", "渗透", "数据安全", "安全整改", "补丁"]),
-    ("leasing", ["招商", "租约", "租赁", "租金", "品牌", "签约", "免租", "装补", "递增", "空置", "铺位", "业态", "主力店"]),
-    ("operations", ["运营", "营运", "客流", "销售额", "收缴率", "坪效", "提袋率", "商户经营", "开业"]),
-    ("marketing", ["企划", "营销", "活动方案", "推广", "美陈", "会员", "造节", "市集", "展览", "宣传"]),
-    ("property", ["工程", "物业", "维保", "维修", "能耗", "巡检", "空调", "电梯", "消防", "保洁", "保安", "给排水"]),
-    ("it_finance", ["财务", "报表", "凭证", "分录", "报销", "预算", "费用", "税", "发票", "对账", "资金", "成本", "收入", "核算", "记账", "结账", "申报", "信息化", "系统选型", "软件"]),
-    ("realestate", ["商业地产", "综合体", "购物中心", "资产管理", "日程", "任务", "待办", "安排", "提醒", "笔记"]),
+    (spec.name, spec.keywords) for spec in sorted(TEAM.values(), key=lambda s: s.sort)
 ]
 
 DEFAULT_AGENT = "realestate"
 
 
-def keyword_hit(question: str) -> str | None:
+# ---------------- 数据库加载（60 秒进程内缓存） ----------------
+
+_CACHE_TTL = 60.0
+_team_cache: tuple[float, dict[str, AgentSpec]] | None = None
+
+
+def _spec_from_row(row) -> AgentSpec:
+    """agent_specs 表行 → AgentSpec。"""
+    return AgentSpec(
+        name=row.name,
+        label=row.display_name,
+        emoji=row.emoji or "🤖",
+        color=row.color or "#409EFF",
+        description=row.description or "",
+        system_prompt=row.role_prompt or "",
+        tools=list(row.tools) if row.tools else list(QUERY_TOOLS),
+        keywords=list(row.keywords or []),
+        model_id=row.model_id,
+        skills=list(row.skills) if row.skills is not None else None,
+        enabled=bool(row.enabled),
+        sort=int(row.sort or 0),
+        is_builtin=bool(row.is_builtin),
+        row_id=row.id,
+    )
+
+
+def _load_team_from_db() -> dict[str, AgentSpec]:
+    """从 agent_specs 读取启用中的专家（按 sort 排序）；异常/空表返回空 dict。"""
+    from sqlalchemy.exc import OperationalError
+
+    from ..database import SessionLocal
+    from ..models import AgentSpecModel
+
+    try:
+        with SessionLocal() as db:
+            rows = (
+                db.query(AgentSpecModel)
+                .filter(AgentSpecModel.enabled == True)  # noqa: E712
+                .order_by(AgentSpecModel.sort.asc(), AgentSpecModel.id.asc())
+                .all()
+            )
+    except OperationalError:
+        logger.warning("专家团队读取失败（数据库暂不可用），回退内置定义", exc_info=True)
+        return {}
+    return {r.name: _spec_from_row(r) for r in rows}
+
+
+def load_team(force: bool = False) -> dict[str, AgentSpec]:
+    """加载启用中的专家团队（60 秒 TTL 缓存）；表为空或库不可用回退内置 TEAM。"""
+    global _team_cache
+    now = time.monotonic()
+    if not force and _team_cache is not None and now - _team_cache[0] < _CACHE_TTL:
+        return _team_cache[1]
+    team = _load_team_from_db() or TEAM
+    _team_cache = (now, team)
+    return team
+
+
+def invalidate_team_cache() -> None:
+    """专家配置变更后调用，下次 load_team 重新查库。"""
+    global _team_cache
+    _team_cache = None
+
+
+def _ordered_specs(team: dict[str, AgentSpec]) -> list[AgentSpec]:
+    return sorted(team.values(), key=lambda s: s.sort)
+
+
+def default_agent_name(team: dict[str, AgentSpec] | None = None) -> str:
+    """默认专家：优先 realestate，被删/停用则取 sort 最小者。"""
+    team = team or load_team()
+    if DEFAULT_AGENT in team:
+        return DEFAULT_AGENT
+    specs = _ordered_specs(team)
+    return specs[0].name if specs else DEFAULT_AGENT
+
+
+def route_scores(question: str, team: dict[str, AgentSpec] | None = None) -> list[dict]:
+    """关键词命中明细（供路由与 route-test 预览）：按命中数降序、同分按 sort 升序。"""
+    team = team or load_team()
+    q = question.lower()
+    matches = []
+    for spec in _ordered_specs(team):
+        hits = [w for w in spec.keywords if w.lower() in q]
+        if hits:
+            matches.append({"name": spec.name, "display_name": spec.label, "hits": hits, "score": len(hits)})
+    matches.sort(key=lambda m: -m["score"])  # 同分保持 sort 升序（稳定排序）
+    return matches
+
+
+def keyword_hit(question: str, team: dict[str, AgentSpec] | None = None) -> str | None:
     """关键词命中时返回专家标识，未命中返回 None。"""
-    scores: dict[str, int] = {}
-    for agent_name, words in ROUTE_KEYWORDS:
-        hit = sum(1 for w in words if w.lower() in question.lower())
-        if hit:
-            scores[agent_name] = scores.get(agent_name, 0) + hit
-    if not scores:
-        return None
-    # 同分时按 ROUTE_KEYWORDS 声明顺序（先专后宽）取前者
-    best = max(scores.items(), key=lambda kv: (kv[1], -list(scores).index(kv[0])))
-    return best[0]
+    matches = route_scores(question, team)
+    return matches[0]["name"] if matches else None
 
 
 def route_by_keyword(question: str) -> str:
     """关键词规则路由（离线可用；LLM 路由失败时的兜底）。"""
-    return keyword_hit(question) or DEFAULT_AGENT
+    team = load_team()
+    return keyword_hit(question, team) or default_agent_name(team)
 
 
-def roster_text() -> str:
+def roster_text(team: dict[str, AgentSpec] | None = None) -> str:
     """团队名册文本（供 LLM 路由提示词使用）。"""
-    lines = [f"- {spec.name}（{spec.label}）：{spec.description}" for spec in TEAM.values()]
+    team = team or load_team()
+    lines = [f"- {spec.name}（{spec.label}）：{spec.description}" for spec in _ordered_specs(team)]
     return "\n".join(lines)

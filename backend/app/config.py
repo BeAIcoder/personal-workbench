@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     """应用配置项，支持通过环境变量或 backend/.env 覆盖。"""
 
     app_name: str = "个人工作台"
-    version: str = "1.0.0"
+    version: str = "1.1.0"
     host: str = "127.0.0.1"
     port: int = 8000
     # 默认使用 SQLite，无需安装任何数据库服务；可用 DATABASE_URL 覆盖

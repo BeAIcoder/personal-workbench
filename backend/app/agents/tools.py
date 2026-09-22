@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session as OrmSession  # noqa: F401  (类型提示用
 
 from ..database import SessionLocal
 from ..models import Note, Schedule, Task
+from ..utils import tag_like_pattern
 
 # 当前一轮的工具执行轨迹（orchestrator 每轮重置）
 tool_trace: ContextVar[list | None] = ContextVar("agent_tool_trace", default=None)
@@ -254,7 +255,7 @@ def search_notes(keyword: str = "", tag: str = "", limit: int = 5) -> list[dict]
             kw = keyword.strip()
             q = q.filter(or_(Note.title.contains(kw, autoescape=True), Note.content.contains(kw, autoescape=True)))
         if tag.strip():
-            q = q.filter(Note.tags.like(f'%"{tag.strip()}"%'))
+            q = q.filter(Note.tags.like(tag_like_pattern(tag.strip()), escape="\\"))
         rows = q.order_by(Note.pinned.desc(), Note.updated_at.desc()).limit(limit).all()
         result = [_note_out(n) for n in rows]
     _record("search_notes", {"keyword": keyword, "tag": tag}, f"返回 {len(result)} 条")

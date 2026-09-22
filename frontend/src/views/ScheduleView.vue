@@ -1,6 +1,6 @@
 <template>
   <div class="schedule-layout">
-    <el-card class="cal-card" shadow="never">
+    <el-card class="cal-card" shadow="never" v-loading="loading">
       <el-calendar v-model="currentDate">
         <template #date-cell="{ data }">
           <div class="cal-cell">
@@ -104,6 +104,7 @@ import { scheduleApi } from '../api'
 import { fmtDT } from '../utils/format'
 import { monthRange } from '../utils/daterange'
 
+const router = useRouter()
 const currentDate = ref(new Date())
 const monthEvents = ref([])
 const loading = ref(false)
@@ -141,14 +142,19 @@ const eventsByDay = computed(() => {
 
 const dayEvents = computed(() => eventsByDay.value[selectedDayKey.value] || [])
 
+// 请求序号：快速切换月份时丢弃过期响应
+let loadSeq = 0
+
 async function loadMonth() {
+  const seq = ++loadSeq
   loading.value = true
   try {
     const range = monthRange(currentDate.value)
     const { data } = await scheduleApi.list({ ...range, page_size: 200 })
+    if (seq !== loadSeq) return  // 已有更新的请求发出，丢弃旧结果
     monthEvents.value = data.items
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -214,7 +220,11 @@ async function save() {
 }
 
 async function remove(ev) {
-  await ElMessageBox.confirm(`确定删除日程「${ev.title}」吗？`, '删除确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm(`确定删除日程「${ev.title}」吗？`, '删除确认', { type: 'warning' })
+  } catch {
+    return  // 用户取消
+  }
   await scheduleApi.remove(ev.id)
   ElMessage.success('已删除')
   loadMonth()
@@ -226,7 +236,7 @@ function aiPrepare(ev) {
     `请为这个日程做会前准备：给出议程建议、需要准备的物料/资料清单，并整理成一条笔记（标签用「会前准备」）。` +
     `日程：「${ev.title}」，时间 ${time}${ev.location ? '，地点 ' + ev.location : ''}。` +
     (ev.description ? `备注：${ev.description}` : '')
-  useRouter().push({ path: '/assistant', query: { auto: prompt } })
+  router.push({ path: '/assistant', query: { auto: prompt } })
 }
 
 function timeOnly(value) {
@@ -234,7 +244,11 @@ function timeOnly(value) {
 }
 
 onMounted(loadMonth)
-watch(currentDate, loadMonth)
+// 只在月份变化时才整月重拉，同月内点选日期不触发请求
+watch(currentDate, (nv, ov) => {
+  if (dayjs(nv).isSame(ov, 'month')) return
+  loadMonth()
+})
 </script>
 
 <style scoped>

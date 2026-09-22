@@ -173,15 +173,20 @@ function cleanFilters() {
   return out
 }
 
+// 请求序号：快速翻页/筛选时丢弃过期响应
+let loadSeq = 0
+
 async function load(targetPage) {
   if (targetPage) page.value = targetPage
+  const seq = ++loadSeq
   loading.value = true
   try {
     const { data } = await taskApi.list({ ...cleanFilters(), page: page.value, page_size: pageSize.value })
+    if (seq !== loadSeq) return  // 已有更新的请求发出，丢弃旧结果
     rows.value = data.items
     total.value = data.total
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -230,7 +235,11 @@ async function complete(row) {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确定删除任务「${row.title}」吗？删除后不可恢复。`, '删除确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm(`确定删除任务「${row.title}」吗？删除后不可恢复。`, '删除确认', { type: 'warning' })
+  } catch {
+    return  // 用户取消
+  }
   await taskApi.remove(row.id)
   ElMessage.success('已删除')
   load()
