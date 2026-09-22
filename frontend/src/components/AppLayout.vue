@@ -30,6 +30,10 @@
           <el-icon><ChatDotRound /></el-icon>
           <span>AI 助手</span>
         </el-menu-item>
+        <el-menu-item index="/jobs">
+          <el-icon><Timer /></el-icon>
+          <span>定时任务</span>
+        </el-menu-item>
       </el-menu>
       <div class="aside-footer">v{{ version }} · 数据本地存储</div>
     </el-aside>

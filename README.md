@@ -11,6 +11,7 @@
 - **笔记管理**：多标签、置顶、标题/内容关键词搜索
 - **全局搜索**：`Ctrl+K` 快捷键，一次检索任务/日程/笔记
 - **AI 助手（Agent 团队）**：基于 AgentScope 的 7 位领域专家协同，支持智能路由、工具调用审计、自然语言操作工作台
+- **定时 Agent**：到点自动执行任务并把结果写入笔记（支持指定专家/智能路由、间隔或每天定时）
 - **QwenPaw Agent 导入**：支持从本机 QwenPaw 一键导入 Agent 团队（角色定义合并/新建，自动脱敏）
 
 ## 📸 界面截图
@@ -87,7 +88,7 @@ LLM_MODEL=           # 如 deepseek-ai/DeepSeek-V3.2
 ```
 personal-workbench/
 ├── backend/            # FastAPI 后端
-│   ├── app/            # 应用代码（routers / agents / models）
+│   ├── app/            # 应用代码（routers / agents / scheduler / models）
 │   ├── data/           # SQLite 数据库与上传附件（gitignore）
 │   ├── tests/          # pytest 测试
 │   └── .env.example    # 环境变量样例
@@ -106,7 +107,7 @@ personal-workbench/
 
 - [ ] 长期记忆 / RAG 知识库
 - [ ] MCP 工具接入
-- [ ] 定时 Agent（计划任务自动执行）
+- [x] 定时 Agent（计划任务自动执行）
 - [ ] 聊天窗口传图与多模态理解
 - [ ] 会话归档与导出
 

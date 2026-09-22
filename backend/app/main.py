@@ -6,6 +6,7 @@
 接口文档： http://127.0.0.1:8000/docs
 """
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 
 from fastapi import FastAPI
@@ -14,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import BASE_DIR, settings
 from .database import Base, SessionLocal, engine
-from .routers import assistant, dashboard, notes, schedules, search, tasks
+from .routers import assistant, dashboard, jobs, notes, schedules, search, tasks
 from .seed import seed_agent_specs, seed_if_empty
+from .scheduler import scheduler_loop
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,10 @@ async def lifespan(_: FastAPI):
             "HOST=%s 为非回环地址：工作台面向本机单人设计，未做鉴权，请勿在不可信网络中开放。",
             settings.host,
         )
+    # 定时 Agent 调度器：每 20s 检查一次到期任务（关停时随 lifespan 取消）
+    scheduler_task = asyncio.create_task(scheduler_loop())
     yield
+    scheduler_task.cancel()
 
 
 def _ensure_sqlite_columns() -> None:
@@ -93,6 +98,7 @@ app.include_router(notes.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")
 
 # 前端已构建（frontend/dist 存在）时由后端直接托管页面，单端口访问
 FRONTEND_DIST = BASE_DIR.parent / "frontend" / "dist"
