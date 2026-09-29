@@ -241,9 +241,13 @@ async def upload_attachment(
     if not _SESSION_ID_RE.fullmatch(session_id):
         raise HTTPException(status_code=400, detail="非法的 session_id")
     safe_name = Path(file.filename or "file.bin").name
+    if safe_name in ("", ".", ".."):
+        safe_name = "file.bin"
     dest_dir = UPLOAD_DIR / session_id
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / safe_name
+    if dest.resolve().parent != dest_dir.resolve():
+        raise HTTPException(status_code=400, detail="非法的文件名")
 
     content = await file.read()
     if len(content) > 10 * 1024 * 1024:
