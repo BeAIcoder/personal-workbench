@@ -24,6 +24,7 @@ from sqlalchemy.exc import OperationalError
 from ..config import settings
 from ..database import SessionLocal
 from ..models import AgentSettings, ModelProvider, ProviderModel
+from .secrets_box import seal, unseal
 
 # 前端回显密钥时使用的掩码哨兵：界面"未改动"传回该值 → 保留现值
 MASK = "********"
@@ -190,7 +191,7 @@ def load() -> dict:
             {
                 "protocol": prov.protocol,
                 "base_url": prov.base_url,
-                "api_key": prov.api_key,
+                "api_key": unseal(prov.api_key),
                 "model": pm.model,
                 "context_size": pm.context_size,
                 "max_tokens": pm.max_tokens,
@@ -231,7 +232,7 @@ def model_cfg_by_id(mid: int) -> dict | None:
                 {
                     "protocol": prov.protocol,
                     "base_url": prov.base_url,
-                    "api_key": prov.api_key,
+                    "api_key": unseal(prov.api_key),
                     "model": pm.model,
                     "context_size": pm.context_size,
                     "max_tokens": pm.max_tokens,
@@ -301,7 +302,7 @@ def provider_test_cfg(pid: int) -> dict:
             try:
                 with SessionLocal() as db:
                     prov = db.get(ModelProvider, pid)
-                    key = prov.api_key if prov else key
+                    key = unseal(prov.api_key) if prov else key
             except OperationalError:
                 logger.warning("读取供应商密钥失败（数据库暂不可用），使用占位 key", exc_info=True)
             m = models[0]
@@ -396,7 +397,7 @@ def save_provider(data: dict) -> dict:
             prov.base_url = str(data["base_url"]).strip().rstrip("/")[:300]
         key_in = str(data.get("api_key") or "").strip()
         if key_in and key_in != MASK:
-            prov.api_key = key_in[:300]
+            prov.api_key = seal(key_in[:300])
         if data.get("enabled") is not None:
             prov.enabled = bool(data["enabled"])
         prov.updated_at = datetime.now()
