@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .agents.secrets_box import ensure_dpapi_available
 from .config import BASE_DIR, settings
 from .database import Base, SessionLocal, engine
 from .routers import assistant, dashboard, jobs, notes, schedules, search, tasks
@@ -24,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # 启动强制校验 DPAPI 可用性（N-1）：缺 pywin32 时拒绝启动，
+    # 绝不允许 API Key 静默降级为明文
+    ensure_dpapi_available()
     # 启动时建表；数据库为空且允许时写入示例数据
     Base.metadata.create_all(bind=engine)
     _ensure_sqlite_columns()
