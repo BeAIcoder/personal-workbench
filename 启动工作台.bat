@@ -73,8 +73,22 @@ echo       前端构建完成。
 
 :start_server
 echo [4/4] 正在启动服务（会弹出一个后端控制台窗口，请勿关闭它）...
-start "个人工作台-后端服务" /D "%~dp0backend" "%~dp0backend\venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-timeout /t 3 /nobreak >nul
+start "个人工作台-后端服务" /D "%~dp0backend" cmd /k ""%~dp0backend\venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+set "backend_up="
+for /l %%i in (1,1,10) do (
+    if not defined backend_up (
+        netstat -ano | findstr /r /c:"127.0.0.1:8000 .*LISTENING" >nul 2>nul
+        if not errorlevel 1 set "backend_up=1"
+        if not defined backend_up ping 127.0.0.1 -n 2 >nul
+    )
+)
+if not defined backend_up (
+    echo.
+    echo 错误：后端服务未能正常启动，请查看"个人工作台-后端服务"窗口中的错误提示。
+    echo       若提示缺少 pywin32，可运行 backend\venv\Scripts\python.exe -m pip install pywin32 后重试。
+    pause
+    exit /b 1
+)
 start http://127.0.0.1:8000
 
 echo.
