@@ -7,3 +7,5 @@ httpx>=0.27.0
 pytest>=8.2.0
 agentscope==2.0.7.post1
 openpyxl>=3.1
+# DPAPI（API Key 静态加密）硬依赖，仅 Windows 平台；缺失时应用拒绝启动（N-1/P0-4）
+pywin32>=306; sys_platform == 'win32'
