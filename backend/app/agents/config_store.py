@@ -24,6 +24,7 @@ from sqlalchemy.exc import OperationalError
 from ..config import settings
 from ..database import SessionLocal
 from ..models import AgentSettings, ModelProvider, ProviderModel
+# seal/unseal 在 DPAPI 不可用时 fail-fast 抛 RuntimeError（配合启动校验，N-1），绝不降级明文
 from .secrets_box import seal, unseal
 
 # 前端回显密钥时使用的掩码哨兵：界面"未改动"传回该值 → 保留现值
