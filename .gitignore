@@ -39,6 +39,7 @@ Thumbs.db
 # 构建
 build/
 *.egg-info/
+*.timestamp-*.mjs
 
 # 所有 .mimosa 目录（包括子目录）
 **/.mimosa/
