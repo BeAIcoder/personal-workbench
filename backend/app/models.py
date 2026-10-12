@@ -211,3 +211,41 @@ class ScheduledJob(TimestampMixin, Base):
     last_note_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 最近运行记录（最多 20 条）：[{at, status, summary}]
     recent_runs: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class McpServer(Base):
+    """MCP 服务器配置（stdio）：命令 + 参数 + 环境变量，工具清单缓存。"""
+
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    command: Mapped[str] = mapped_column(String(500))
+    args: Mapped[list] = mapped_column(JSON, default=list)        # ["--flag", "value"]
+    env: Mapped[dict] = mapped_column(JSON, default=dict)         # 敏感值仅本机库
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # 连接状态：stopped / connected / error
+    status: Mapped[str] = mapped_column(String(20), default="stopped")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    # 最近一次 tools/list 结果缓存
+    tools_json: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class Memory(Base):
+    """长期记忆：跨会话保留的事实/偏好/经验，按关键词+新近度检索注入 Agent 上下文。"""
+
+    __tablename__ = "memories"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # 来源：manual（手动保存）/ auto（对话抽取）/ import
+    source: Mapped[str] = mapped_column(String(20), default="manual")
+    # 来源会话 id（auto 时回溯）
+    session_id: Mapped[str] = mapped_column(String(64), default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    # 使用统计（检索命中）
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)

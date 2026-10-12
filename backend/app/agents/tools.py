@@ -439,3 +439,32 @@ def build_tools(names: list[str]) -> list:
         }
         tools.append(FunctionTool(spec["func"], name=name, description=spec["description"], input_schema=schema))
     return tools
+
+
+# ---------------- 知识库（RAG）与长期记忆工具 ----------------
+# 在 TOOL_SPECS 定义后注册，避免循环 import（rag/memory 只依赖 database/models）
+
+from .memory import recall as _recall_memories  # noqa: E402
+from .rag import search as _search_knowledge  # noqa: E402
+
+TOOL_SPECS["search_knowledge"] = {
+    "func": _search_knowledge,
+    "description": "检索个人知识库（工作台全部笔记，BM25 相关性排序），回答涉及过往笔记/纪要/知识沉淀时先用它",
+    "params": {
+        "query": ("string", "检索问题或关键词", True),
+        "top_k": ("integer", "返回条数，默认5", False),
+    },
+    "required": ["query"],
+    "readonly": True,
+}
+
+TOOL_SPECS["recall_memories"] = {
+    "func": _recall_memories,
+    "description": "检索长期记忆（跨会话保存的事实/偏好/经验），涉及用户习惯、偏好、历史结论时先用它",
+    "params": {
+        "query": ("string", "检索关键词或问题", True),
+        "top_k": ("integer", "返回条数，默认5", False),
+    },
+    "required": ["query"],
+    "readonly": True,
+}

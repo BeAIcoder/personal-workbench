@@ -17,7 +17,7 @@ from .agents.secrets_box import ensure_dpapi_available
 from .config import BASE_DIR, settings
 from .database import Base, SessionLocal, engine
 from .modules import collect_column_patches, load_modules
-from .routers import assistant, dashboard, jobs, notes, schedules, search, tasks
+from .routers import assistant, dashboard, jobs, knowledge, mcp, notes, schedules, search, tasks
 from .seed import seed_agent_specs, seed_if_empty
 from .scheduler import scheduler_loop
 
@@ -47,8 +47,18 @@ async def lifespan(_: FastAPI):
         )
     # 定时 Agent 调度器：每 20s 检查一次到期任务（关停时随 lifespan 取消）
     scheduler_task = asyncio.create_task(scheduler_loop())
+    # MCP 服务器：启动启用的 stdio 服务器并注册其工具（单服务器失败不影响宿主）
+    from .agents import mcp as mcp_manager
+
+    try:
+        mcp_results = mcp_manager.start_all_from_db()
+        for name, status in mcp_results.items():
+            logger.info("MCP 服务器 %s：%s", name, status)
+    except Exception:
+        logger.warning("MCP 服务器批量启动跳过", exc_info=True)
     yield
     scheduler_task.cancel()
+    mcp_manager.stop_all()
 
 
 def _ensure_sqlite_columns() -> None:
@@ -113,6 +123,8 @@ app.include_router(search.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(mcp.router, prefix="/api")
+app.include_router(knowledge.router, prefix="/api")
 
 # 模块注册机制（Module Registry）：在模块级作用域加载——静态 include_router 之后、
 # lifespan 之前。导入各模块 manifest 时连带注册模块表进 Base.metadata，

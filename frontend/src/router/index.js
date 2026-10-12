@@ -38,6 +38,18 @@ const routes = [
     component: () => import('../views/JobsView.vue'),
     meta: { title: '定时任务' },
   },
+  {
+    path: '/knowledge',
+    name: 'knowledge',
+    component: () => import('../views/KnowledgeView.vue'),
+    meta: { title: '知识与记忆' },
+  },
+  {
+    path: '/mcp',
+    name: 'mcp',
+    component: () => import('../views/McpView.vue'),
+    meta: { title: 'MCP 工具' },
+  },
   // 模块路由（/finance/<name>/...，组件懒加载），404 兜底保持在最后
   ...getModuleRoutes(),
   { path: '/:pathMatch(.*)*', redirect: '/' },
