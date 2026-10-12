@@ -106,7 +106,7 @@ class ModelProvider(Base):
 
 
 class ProviderModel(Base):
-    """供应商下的模型（含上下文/输出限制与多模态标记）"""
+    """供应商下的模型（含上下文/输出限制、多模态标记与能力探测结果）"""
 
     __tablename__ = "provider_models"
 
@@ -117,6 +117,22 @@ class ProviderModel(Base):
     max_tokens: Mapped[int] = mapped_column(Integer, default=2048)
     multimodal: Mapped[bool] = mapped_column(Boolean, default=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 采样温度：空 = 跟随系统默认（TEXT 存储，便于留空与手动填写）
+    temperature: Mapped[str] = mapped_column(Text, default="")
+    # 模型备注（界面自填，如「主力模型/仅测试用」）
+    note: Mapped[str] = mapped_column(Text, default="")
+    # 思考能力探测结论：-1 未探测 / 0 不支持 / 1 支持
+    supports_thinking: Mapped[int] = mapped_column(Integer, default=-1)
+    # 探测出的可用思考档位（JSON list，如 ["low","medium","high"]）
+    thinking_levels: Mapped[str] = mapped_column(Text, default="")
+    # 探测出的有效上下文 tokens（0 = 未探测）
+    probed_context: Mapped[int] = mapped_column(Integer, default=0)
+    # 探测出的最大输出 tokens（0 = 未探测）
+    probed_max_output: Mapped[int] = mapped_column(Integer, default=0)
+    # 探测分步详情（JSON：reasoning/context/output 各步的判定与请求记录）
+    probe_result: Mapped[str] = mapped_column(Text, default="")
+    # 最近一次探测时间（ISO 本地时间，如 2026-10-12T20:30:00）
+    probed_at: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 

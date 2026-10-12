@@ -374,3 +374,17 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 - 技能包 store：`backend/data/skills/<name>/SKILL.md`（zcode/WorkBuddy 同款格式），首次启动从 `backend/seed_skills/` 播种；AI 助手设置的技能目录指向该目录即注入 Agent
 - 专家团文件：`backend/data/expert-packs/<name>.md`（frontmatter: name/label/emoji/color/description/keywords/tools/sort + 正文角色提示词），导入为 upsert（工具白名单取并集，导入不缩减），导出把数据库专家写回文件
 - 模块工具预置：模块 manifest 声明 `preset_experts`，加载时把模块工具幂等合并进指定专家白名单（如财税专员自动获得全部财务模块工具）
+
+### 模型能力探测与厂商预设（v1.14.0）
+
+| 端点 | 说明 |
+|------|------|
+| `POST /api/models/{id}/probe/reasoning` | 思考级别探测（none/low/medium/high 各一发，判定 supported/accepted/unsupported） |
+| `POST /api/models/{id}/probe/context` | 上下文长度二分探测（≤6 次小请求，max_tokens=1） |
+| `POST /api/models/{id}/probe/output` | 最大输出长度阶梯探测（1024→131072） |
+| `POST /api/models/{id}/probe/all` | 三连探测，汇总写 probe_result + probed_at |
+| `GET /api/models/{id}/probe` | 当前探测状态（只读） |
+| `GET /api/providers/presets` · `POST /api/providers/presets/reload` | 厂商预设（provider_presets.json，18 家） |
+
+- 探测直连厂商 `/chat/completions`（openai 兼容），失败=200+error（不可达≠不支持，supports_thinking 保持 -1）
+- 模型级自定义配置：temperature（空=跟随）、note、supports_thinking/thinking_levels 手动覆盖；temperature 已接入 build_model 运行时（openai/anthropic 双协议）

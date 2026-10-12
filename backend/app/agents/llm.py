@@ -76,6 +76,8 @@ def build_model(cfg: dict | None = None):
             logger.warning("AnthropicCredential 关键字构造失败，改用 data 构造", exc_info=True)
             credential = AnthropicCredential(data={"api_key": cfg["api_key"], "base_url": base_url})
         param_kwargs = _apply_reasoning(AnthropicChatModel.Parameters, cfg, "anthropic", {"max_tokens": cfg.get("max_tokens") or None})
+        if cfg.get("temperature") is not None:
+            param_kwargs.setdefault("temperature", cfg.get("temperature"))
         try:
             parameters = AnthropicChatModel.Parameters(**param_kwargs)
         except Exception:

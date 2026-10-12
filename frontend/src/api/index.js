@@ -120,4 +120,19 @@ export const assistantApi = {
   },
 }
 
+// 模型能力自动探测：一次探测可能触发十几次小型 API 请求，超时放宽到 3 分钟
+export const modelProbeApi = {
+  probeReasoning: (id) => api.post(`/models/${id}/probe/reasoning`, {}, { timeout: 180000 }),
+  probeContext: (id) => api.post(`/models/${id}/probe/context`, {}, { timeout: 180000 }),
+  probeOutput: (id) => api.post(`/models/${id}/probe/output`, {}, { timeout: 180000 }),
+  probeAll: (id) => api.post(`/models/${id}/probe/all`, {}, { timeout: 180000 }),
+  getProbe: (id) => api.get(`/models/${id}/probe`),
+}
+
+// 供应商预设（后端 presets 配置维护，供新增供应商时快速填充）
+export const providerPresetsApi = {
+  list: () => api.get('/providers/presets'),
+  reload: () => api.post('/providers/presets/reload'),
+}
+
 export default api

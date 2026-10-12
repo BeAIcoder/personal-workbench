@@ -77,13 +77,21 @@ class ModelPayload(BaseModel):
     max_tokens: Optional[int] = Field(None, ge=64, le=500000)
     multimodal: Optional[bool] = None
     enabled: Optional[bool] = None
+    # 采样温度：空串 = 跟随系统默认（TEXT 存储，允许手动填写）
+    temperature: Optional[str | float] = Field(None, description="采样温度；空/缺省 = 跟随系统默认")
+    note: Optional[str] = Field(None, max_length=500, description="模型备注")
+    # 思考能力：-1 未探测 / 0 否 / 1 是（探测接口自动写回，也可手动标记）
+    supports_thinking: Optional[int] = Field(None, ge=-1, le=1, description="思考能力：-1 未探测 / 0 否 / 1 是")
+    thinking_levels: Optional[list[str]] = Field(None, description="思考档位列表，如 ['low','medium','high']")
 
 
 def _config_view() -> dict:
     cfg = config_store.load()
     return {
         "config": config_store.masked(cfg),
-        "presets": config_store.PRESETS,
+        # 旧版配置抽屉只自动填充 OpenAI 兼容预设；anthropic 协议预设（如 Anthropic 官方）
+        # 经 GET /api/providers/presets 或供应商表单的协议下拉使用
+        "presets": [p for p in config_store.PRESETS if p.get("protocol") == "openai"],
         "providers": config_store.list_providers(),
         "models": config_store.models_flat(),
         "llm": llm_status(cfg),

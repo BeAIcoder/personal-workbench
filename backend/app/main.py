@@ -25,6 +25,7 @@ from .routers import (
     jobs,
     knowledge,
     mcp,
+    model_probe,
     notes,
     schedules,
     search,
@@ -113,6 +114,16 @@ def _ensure_sqlite_columns() -> None:
             "cron_expr": "TEXT DEFAULT ''",
             "action": "TEXT DEFAULT ''",
         },
+        "provider_models": {
+            "temperature": "TEXT DEFAULT ''",
+            "note": "TEXT DEFAULT ''",
+            "supports_thinking": "INTEGER DEFAULT -1",
+            "thinking_levels": "TEXT DEFAULT ''",
+            "probed_context": "INTEGER DEFAULT 0",
+            "probed_max_output": "INTEGER DEFAULT 0",
+            "probe_result": "TEXT DEFAULT ''",
+            "probed_at": "TEXT DEFAULT ''",
+        },
     }
     for table, columns in collect_column_patches().items():
         patches.setdefault(table, {}).update(columns)
@@ -156,6 +167,12 @@ app.include_router(mcp.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")
 app.include_router(skills.router, prefix="/api")
 app.include_router(experts.router, prefix="/api")
+# 模型能力探测：/api/models/{id}/probe/*（同步执行，探测失败以 200 + error 返回）
+app.include_router(model_probe.router, prefix="/api")
+# 预设列表按契约挂 /api/providers/presets；同时挂一份 /api/models/providers/presets 别名，
+# 兼容「router prefix=/models」字面解读出的路径，避免前后端联调歧义
+app.include_router(model_probe.presets_router, prefix="/api")
+app.include_router(model_probe.presets_router, prefix="/api/models")
 
 # 模块注册机制（Module Registry）：在模块级作用域加载——静态 include_router 之后、
 # lifespan 之前。导入各模块 manifest 时连带注册模块表进 Base.metadata，
