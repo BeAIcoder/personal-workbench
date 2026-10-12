@@ -283,12 +283,14 @@ class SearchResult(BaseModel):
 
 class ScheduledJobBase(BaseModel):
     name: str = Field(min_length=1, max_length=100, description="任务名称")
-    prompt: str = Field(min_length=1, max_length=5000, description="到点执行的提示词")
+    prompt: str = Field("", max_length=5000, description="到点执行的提示词（模块动作任务可空）")
     agent_name: Optional[str] = Field(None, max_length=50, description="指定专家 name；null 智能路由")
     mode: str = Field("standard", description="工作模式：standard / readonly / deep")
-    schedule_type: str = Field("interval", description="interval / daily")
+    schedule_type: str = Field("interval", description="interval / daily / cron")
     interval_minutes: Optional[int] = Field(None, ge=5, le=10080, description="间隔分钟（interval）")
     daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="每天执行时间 HH:MM（daily）")
+    cron_expr: str = Field("", max_length=60, description="cron 五段表达式（cron）：分 时 日 月 周")
+    action: str = Field("", max_length=100, description="模块动作名（空 = Agent 对话任务），如 finance_board.run")
     enabled: bool = True
 
     @model_validator(mode="after")
@@ -296,10 +298,16 @@ class ScheduledJobBase(BaseModel):
         if self.schedule_type == "daily":
             if not self.daily_at:
                 raise ValueError("daily 类型必须提供 daily_at（HH:MM）")
+        elif self.schedule_type == "cron":
+            parts = (self.cron_expr or "").split()
+            if len(parts) != 5:
+                raise ValueError("cron 类型必须提供五段 cron_expr（分 时 日 月 周）")
         else:
             if self.interval_minutes is None:
                 raise ValueError("interval 类型必须提供 interval_minutes（5-10080）")
             self.daily_at = None
+        if not self.action and not self.prompt.strip():
+            raise ValueError("请提供提示词，或选择模块动作")
         return self
 
 
@@ -309,12 +317,14 @@ class ScheduledJobCreate(ScheduledJobBase):
 
 class ScheduledJobUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    prompt: Optional[str] = Field(None, min_length=1, max_length=5000)
+    prompt: Optional[str] = Field(None, max_length=5000)
     agent_name: Optional[str] = Field(None, max_length=50)
     mode: Optional[str] = None
     schedule_type: Optional[str] = None
     interval_minutes: Optional[int] = Field(None, ge=5, le=10080)
     daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    cron_expr: Optional[str] = Field(None, max_length=60)
+    action: Optional[str] = Field(None, max_length=100)
     enabled: Optional[bool] = None
 
 

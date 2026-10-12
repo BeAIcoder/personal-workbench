@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     """应用配置项，支持通过环境变量或 backend/.env 覆盖。"""
 
     app_name: str = "个人工作台"
-    version: str = "1.10.0"
+    version: str = "1.11.0"
     host: str = "127.0.0.1"
     port: int = 8000
     # 默认使用 SQLite，无需安装任何数据库服务；可用 DATABASE_URL 覆盖
@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     finance_invoice_engine_path: str = ""
     # 微信报表监控管线目录（finance_board 模块）：留空按默认相对路径推导
     finance_board_pipeline_path: str = ""
+    # 现金流 V1 引擎目录（finance_cashflow 模块）：留空按默认相对位置推导
+    finance_cashflow_engine_path: str = ""
+    # POS 台账引擎目录（finance_pos 模块）：留空按默认相对位置推导
+    finance_pos_engine_path: str = ""
 
     model_config = {"env_file": str(BASE_DIR / ".env"), "env_file_encoding": "utf-8"}
 

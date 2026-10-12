@@ -85,10 +85,17 @@
             <el-option label="深度研究" value="deep" />
           </el-select>
         </el-form-item>
+        <el-form-item label="模块动作">
+          <el-select v-model="form.action" placeholder="Agent 对话任务（不使用模块动作）" clearable style="width: 100%" @change="onActionChange">
+            <el-option v-for="a in actions" :key="a" :label="actionLabel(a)" :value="a" />
+          </el-select>
+          <div class="form-hint">选择后到点执行模块动作（不走 Agent）；例如 finance_board.run = 刷新报表看板</div>
+        </el-form-item>
         <el-form-item label="调度类型">
           <el-radio-group v-model="form.schedule_type">
             <el-radio-button label="interval">间隔执行</el-radio-button>
             <el-radio-button label="daily">每天定时</el-radio-button>
+            <el-radio-button label="cron">Cron</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="form.schedule_type === 'interval'" label="执行间隔" prop="interval_minutes">
@@ -103,6 +110,10 @@
             placeholder="选择每天执行的时间"
             style="width: 100%"
           />
+        </el-form-item>
+        <el-form-item v-if="form.schedule_type === 'cron'" label="Cron 表达式" prop="cron_expr">
+          <el-input v-model="form.cron_expr" placeholder="分 时 日 月 周，如 0 9 * * 1（每周一 09:00）" />
+          <div class="form-hint">五段：分(0-59) 时(0-23) 日(1-31) 月(1-12) 周(0-6，0=周日)，支持 * , - /</div>
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
@@ -125,8 +136,17 @@ import { agentLabel, agentOptionLabel, formatSchedule, runStatusLabel, runStatus
 
 const rows = ref([])
 const agents = ref([])
+const actions = ref([])
 const loading = ref(false)
 const runningId = ref(null)
+
+const ACTION_LABELS = { 'finance_board.run': '刷新报表看板' }
+const actionLabel = (a) => ACTION_LABELS[a] || a
+
+function onActionChange(value) {
+  // 选择模块动作后提示词可空（后端校验已放宽），清空避免误导
+  if (value) form.prompt = form.prompt || ''
+}
 
 const formRef = ref(null)
 const dialog = reactive({ visible: false, id: null, saving: false })
@@ -138,6 +158,8 @@ const form = reactive({
   schedule_type: 'interval',
   interval_minutes: 60,
   daily_at: '09:00',
+  cron_expr: '',
+  action: '',
   enabled: true,
 })
 
@@ -151,9 +173,14 @@ function validateDaily(_rule, value, callback) {
   if (!value || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return callback(new Error('请选择执行时间（HH:MM）'))
   callback()
 }
+function validatePrompt(_rule, value, callback) {
+  if (form.action) return callback()  // 模块动作任务提示词可空
+  if (!value || !value.trim()) return callback(new Error('请输入到点执行的提示词'))
+  callback()
+}
 const rules = {
   name: [{ required: true, message: '请输入任务名称', trigger: 'blur' }],
-  prompt: [{ required: true, message: '请输入到点执行的提示词', trigger: 'blur' }],
+  prompt: [{ validator: validatePrompt, trigger: 'blur' }],
   interval_minutes: [{ validator: validateInterval, trigger: 'change' }],
   daily_at: [{ validator: validateDaily, trigger: 'change' }],
 }
@@ -182,6 +209,15 @@ async function loadAgents() {
   }
 }
 
+async function loadActions() {
+  try {
+    const { data } = await jobApi.actions()
+    actions.value = data.actions || []
+  } catch {
+    // 动作列表拉取失败不阻塞页面
+  }
+}
+
 function resetForm() {
   Object.assign(form, {
     name: '',
@@ -191,6 +227,8 @@ function resetForm() {
     schedule_type: 'interval',
     interval_minutes: 60,
     daily_at: '09:00',
+    cron_expr: '',
+    action: '',
     enabled: true,
   })
 }
@@ -211,6 +249,8 @@ function openEdit(row) {
     schedule_type: row.schedule_type,
     interval_minutes: row.interval_minutes ?? 60,
     daily_at: row.daily_at || '09:00',
+    cron_expr: row.cron_expr || '',
+    action: row.action || '',
     enabled: row.enabled,
   })
   dialog.visible = true
@@ -219,6 +259,14 @@ function openEdit(row) {
 async function save() {
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
+  if (form.schedule_type === 'cron' && !/^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s*$/.test(form.cron_expr)) {
+    ElMessage.warning('Cron 表达式需为五段：分 时 日 月 周')
+    return
+  }
+  if (!form.action && !form.prompt.trim()) {
+    ElMessage.warning('请填写提示词，或选择模块动作')
+    return
+  }
   const payload = {
     name: form.name.trim(),
     prompt: form.prompt.trim(),
@@ -227,6 +275,8 @@ async function save() {
     schedule_type: form.schedule_type,
     interval_minutes: form.schedule_type === 'interval' ? form.interval_minutes : null,
     daily_at: form.schedule_type === 'daily' ? form.daily_at : null,
+    cron_expr: form.schedule_type === 'cron' ? form.cron_expr.trim() : '',
+    action: form.action || '',
     enabled: form.enabled,
   }
   dialog.saving = true
@@ -282,6 +332,7 @@ async function remove(row) {
 onMounted(() => {
   load()
   loadAgents()
+  loadActions()
 })
 </script>
 

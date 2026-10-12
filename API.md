@@ -346,6 +346,14 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 | finance_ledger_bip 企业记账 | `/api/finance/ledger/bip` | `POST /imports/preview`、`POST /imports/confirm`、`GET /imports`、`GET /vouchers`、`GET /vouchers/{id}`、`GET /entries`、`GET /balances/summary`、`POST /vouchers/export-to-vault` |
 | finance_tax 企业所得税 | `/api/finance/tax` | `/enterprises`（CRUD）、`/financial-import`（导入+模板下载）、`/policies`（政策库）、`/tax-returns`（申报 CRUD/提交/计算/导出 Excel·PDF）、`/textbook-reference`（教材对照） |
 | finance_board 报表看板 | `/api/finance/board` | `GET /snapshots`、`POST /run`（触发管线）、`GET /latest`、`GET /snapshots/{id}/html`（iframe 嵌入） |
+| finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行）、`POST /runs/{id}/execute`、`GET /runs`、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP） |
+| finance_pos POS 对账 | `/api/finance/pos` | 同上（无 actual_month 参数） |
+
+### 定时任务扩展（v1.11.0）
+
+- `GET /api/jobs/actions`：已注册模块动作列表（如 `finance_board.run`）
+- 定时任务（`POST /api/jobs`）新增字段：`cron_expr`（schedule_type=cron 时必填，五段表达式）、`action`（模块动作名，空 = Agent 对话任务）
+- 调度语义：cron 同自然分钟不重复触发；模块动作任务走线程池执行、不写笔记
 
 > 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级。
 

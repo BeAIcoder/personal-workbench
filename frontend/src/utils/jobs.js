@@ -9,6 +9,7 @@ export const runStatusTag = { ok: 'success', error: 'danger', skipped: 'info', '
 export function formatSchedule(job) {
   if (!job) return '-'
   if (job.schedule_type === 'daily') return job.daily_at ? `每天 ${job.daily_at}` : '-'
+  if (job.schedule_type === 'cron') return job.cron_expr ? `Cron ${job.cron_expr}` : '-'
   const n = job.interval_minutes
   if (!n) return '-'
   if (n >= 60 && n % 60 === 0) return `每 ${n / 60} 小时`

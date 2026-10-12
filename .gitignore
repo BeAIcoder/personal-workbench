@@ -43,3 +43,11 @@ build/
 
 # 所有 .mimosa 目录（包括子目录）
 **/.mimosa/
+
+# finance_cashflow 模块：其引擎「现金流滚动预测 V1」含真实业务数据、仓内声明永不推远端，
+# 凡引用它的模块代码一并保持本地（2026-10-12 阶段四决策）
+backend/app/modules/finance_cashflow/
+# finance_cashflow 的测试与前端同样本地化（后端模块不存在时测试会 collection error）
+backend/tests/test_module_finance_cashflow.py
+frontend/src/modules/finance-cashflow/
+frontend/tests/finance-cashflow.test.js

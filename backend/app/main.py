@@ -70,6 +70,10 @@ def _ensure_sqlite_columns() -> None:
             "plugins_dir": "TEXT DEFAULT ''",
             "reasoning_effort": "TEXT DEFAULT ''",
         },
+        "scheduled_jobs": {
+            "cron_expr": "TEXT DEFAULT ''",
+            "action": "TEXT DEFAULT ''",
+        },
     }
     for table, columns in collect_column_patches().items():
         patches.setdefault(table, {}).update(columns)
