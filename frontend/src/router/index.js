@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { getModuleRoutes } from '../modules'
 
 const routes = [
   {
@@ -37,6 +38,8 @@ const routes = [
     component: () => import('../views/JobsView.vue'),
     meta: { title: '定时任务' },
   },
+  // 模块路由（/finance/<name>/...，组件懒加载），404 兜底保持在最后
+  ...getModuleRoutes(),
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

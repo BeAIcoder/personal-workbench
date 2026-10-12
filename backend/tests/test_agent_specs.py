@@ -1,6 +1,6 @@
 """Agent 团队配置化测试：agent_specs CRUD、路由预览、seed 幂等、关键词路由行为。
 
-测试环境启动时 lifespan 会向空表灌入 7 位内置专家（is_builtin=True）；
+测试环境启动时 lifespan 会向空表灌入 8 位内置专家（is_builtin=True）；
 配置变更端点会调用 invalidate，团队缓存随即失效，无需手动清理。
 """
 from app.agents import team as team_mod
@@ -17,8 +17,8 @@ def _names(body) -> set:
 
 def test_builtin_agents_seeded_on_startup(client):
     body = client.get("/api/assistant/agents").json()
-    assert len(body["agents"]) == 7
-    assert _names(body) == {"realestate", "leasing", "operations", "marketing", "property", "security", "it_finance"}
+    assert len(body["agents"]) == 8
+    assert _names(body) == {"realestate", "leasing", "operations", "marketing", "property", "security", "it_finance", "finance_specialist"}
     for agent in body["agents"]:
         assert agent["is_builtin"] is True
         assert agent["enabled"] is True
@@ -30,7 +30,7 @@ def test_seed_agent_specs_idempotent(client):
     # 表已有数据时再次 seed 不重复灌入、不覆盖用户改动
     with SessionLocal() as db:
         assert seed_agent_specs(db) == 0
-        assert db.query(AgentSpecModel).count() == 7
+        assert db.query(AgentSpecModel).count() == 8
     team_mod.invalidate_team_cache()
 
 
@@ -132,20 +132,20 @@ def test_reset_restores_builtin(client):
     client.put(f"/api/assistant/agents/{leasing['id']}", json={"keywords": ["改动词"], "enabled": False})
     resp = client.post("/api/assistant/agents/reset")
     assert resp.status_code == 200
-    assert set(resp.json()["restored"]) == {"realestate", "leasing", "operations", "marketing", "property", "security", "it_finance"}
+    assert set(resp.json()["restored"]) == {"realestate", "leasing", "operations", "marketing", "property", "security", "it_finance", "finance_specialist"}
     agents = client.get("/api/assistant/agents").json()["agents"]
     leasing = next(a for a in agents if a["name"] == "leasing")
     assert "免租" in leasing["keywords"] and leasing["enabled"] is True
     # reset 幂等：再次执行不新增行
     client.post("/api/assistant/agents/reset")
-    assert len(client.get("/api/assistant/agents").json()["agents"]) == 7
+    assert len(client.get("/api/assistant/agents").json()["agents"]) == 8
 
 
 # ---------- /team 端点兼容 ----------
 
 def test_team_endpoint_reads_db_and_keeps_shape(client):
     body = client.get("/api/assistant/team").json()
-    assert len(body["agents"]) == 7
+    assert len(body["agents"]) == 8
     for agent in body["agents"]:
         # 原有字段保持不变
         assert {"name", "label", "emoji", "color", "description", "tools"} <= set(agent)
@@ -154,5 +154,5 @@ def test_team_endpoint_reads_db_and_keeps_shape(client):
     marketing = next(a for a in agents if a["name"] == "marketing")
     client.put(f"/api/assistant/agents/{marketing['id']}", json={"enabled": False})
     body = client.get("/api/assistant/team").json()
-    assert len(body["agents"]) == 6
+    assert len(body["agents"]) == 7
     assert "marketing" not in _names(body)

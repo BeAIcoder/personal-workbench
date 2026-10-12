@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from .agents.secrets_box import ensure_dpapi_available
 from .config import BASE_DIR, settings
 from .database import Base, SessionLocal, engine
+from .modules import collect_column_patches, load_modules
 from .routers import assistant, dashboard, jobs, notes, schedules, search, tasks
 from .seed import seed_agent_specs, seed_if_empty
 from .scheduler import scheduler_loop
@@ -51,7 +52,10 @@ async def lifespan(_: FastAPI):
 
 
 def _ensure_sqlite_columns() -> None:
-    """轻量迁移：为历史库补齐后加的列（SQLite 的 create_all 不会改已有表）。"""
+    """轻量迁移：为历史库补齐后加的列（SQLite 的 create_all 不会改已有表）。
+
+    补丁来源：宿主内置补丁 + 各模块 manifest.column_patches（Module Registry）。
+    """
     from sqlalchemy import text
 
     patches = {
@@ -67,6 +71,8 @@ def _ensure_sqlite_columns() -> None:
             "reasoning_effort": "TEXT DEFAULT ''",
         },
     }
+    for table, columns in collect_column_patches().items():
+        patches.setdefault(table, {}).update(columns)
     try:
         with engine.begin() as conn:
             for table, columns in patches.items():
@@ -103,6 +109,11 @@ app.include_router(search.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+
+# 模块注册机制（Module Registry）：在模块级作用域加载——静态 include_router 之后、
+# lifespan 之前。导入各模块 manifest 时连带注册模块表进 Base.metadata，
+# lifespan 的 create_all 才能建出模块表；任何模块失败仅记日志跳过，不影响宿主。
+load_modules(app)
 
 # 前端已构建（frontend/dist 存在）时由后端直接托管页面，单端口访问
 FRONTEND_DIST = BASE_DIR.parent / "frontend" / "dist"

@@ -7,6 +7,7 @@
 """
 from contextvars import ContextVar
 from datetime import datetime, time, timedelta
+import logging
 from typing import Any
 
 from sqlalchemy import func, or_
@@ -15,6 +16,8 @@ from sqlalchemy.orm import Session as OrmSession  # noqa: F401  (类型提示用
 from ..database import SessionLocal
 from ..models import Note, Schedule, Task
 from ..utils import tag_like_pattern
+
+logger = logging.getLogger(__name__)
 
 # 当前一轮的工具执行轨迹（orchestrator 每轮重置）
 tool_trace: ContextVar[list | None] = ContextVar("agent_tool_trace", default=None)
@@ -397,13 +400,34 @@ TOOL_SPECS: dict[str, dict] = {
 }
 
 
+def register_module_tools(specs: dict) -> None:
+    """把模块注册的工具并入 TOOL_SPECS（Module Registry 注册器调用）。
+
+    与内置工具重名时不覆盖、记日志跳过；spec 结构与内置 TOOL_SPECS 同构，
+    另带 readonly 标记（True 表示只读工具，供只读模式放行判断）。
+    """
+    for name, spec in (specs or {}).items():
+        if name in TOOL_SPECS:
+            logger.warning("模块工具 %s 与已注册工具重名，跳过注册", name)
+            continue
+        TOOL_SPECS[name] = spec
+        logger.info("模块工具已注册：%s", name)
+
+
 def build_tools(names: list[str]) -> list:
-    """按名称构造 FunctionTool 列表（显式 JSON Schema，含中文参数说明）。"""
+    """按名称构造 FunctionTool 列表（显式 JSON Schema，含中文参数说明）。
+
+    白名单引用了未注册的工具名（如所属模块已禁用）时跳过并记日志，
+    保证其余工具可用、Agent 构建不崩。
+    """
     from agentscope.tool import FunctionTool
 
     tools = []
     for name in names:
-        spec = TOOL_SPECS[name]
+        spec = TOOL_SPECS.get(name)
+        if spec is None:
+            logger.warning("工具 %s 未注册（可能所属模块已禁用），已跳过", name)
+            continue
         properties = {
             pname: {"type": ptype, "description": desc}
             for pname, (ptype, desc, _req) in spec["params"].items()
