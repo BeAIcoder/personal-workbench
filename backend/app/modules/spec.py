@@ -9,6 +9,8 @@
   name / description / readonly，并带 func（可调用）、params、required（与内置 TOOL_SPECS 同构）；
 - column_patches：轻量迁移列补丁 {表名: {列名: DDL}}，由宿主 _ensure_sqlite_columns 合并执行；
 - requires：依赖的其它模块 name 列表，依赖未加载时本模块跳过；
+- preset_experts：工具预置目标专家 name 列表——模块加载时把其 agent_tools 的名字
+  合并进这些专家的白名单（幂等；专家不存在则记录待同步，seed 后自动补齐）；
 - enabled：False 时整个模块不加载（路由/表/工具均不生效）。
 """
 from dataclasses import dataclass, field
@@ -28,6 +30,7 @@ class ModuleManifest:
     agent_tools: list[dict] = field(default_factory=list)  # Agent 工具 spec
     column_patches: dict[str, dict] = field(default_factory=dict)  # 轻量迁移列补丁
     requires: list[str] = field(default_factory=list)      # 依赖的模块 name
+    preset_experts: list[str] = field(default_factory=list)  # 工具预置目标专家 name
     enabled: bool = True
 
     def validate(self) -> list[str]:
@@ -48,4 +51,6 @@ class ModuleManifest:
                     errors.append(f"agent_tools 元素 {tool.get('name', '?')!r} 缺少字段 {key}")
         if not isinstance(self.requires, list):
             errors.append("requires 必须是 list")
+        if not isinstance(self.preset_experts, list):
+            errors.append("preset_experts 必须是 list")
         return errors

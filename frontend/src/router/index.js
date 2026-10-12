@@ -50,6 +50,18 @@ const routes = [
     component: () => import('../views/McpView.vue'),
     meta: { title: 'MCP 工具' },
   },
+  {
+    path: '/skill-packs',
+    name: 'skill-packs',
+    component: () => import('../views/SkillPackView.vue'),
+    meta: { title: '技能包管理' },
+  },
+  {
+    path: '/expert-packs',
+    name: 'expert-packs',
+    component: () => import('../views/ExpertPackView.vue'),
+    meta: { title: '专家团文件' },
+  },
   // 模块路由（/finance/<name>/...，组件懒加载），404 兜底保持在最后
   ...getModuleRoutes(),
   { path: '/:pathMatch(.*)*', redirect: '/' },

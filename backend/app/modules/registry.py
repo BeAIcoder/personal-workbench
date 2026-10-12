@@ -25,6 +25,45 @@ MODULES_DIR = Path(__file__).resolve().parent
 # 本次成功加载的模块清单（load_modules 时填充）
 _loaded: list[ModuleManifest] = []
 
+# 工具预置暂存：{专家名: [工具名, ...]}——目标专家尚未入库（如新库未 seed）时暂存，
+# 待 seed_agent_specs 灌入专家后由 apply_pending_presets 补齐
+_pending_presets: dict[str, list[str]] = {}
+
+
+def apply_pending_presets() -> int:
+    """把暂存的模块工具预置合并进已入库专家白名单（seed 之后调用）。返回合并次数。
+
+    暂存记录不删除：合并是幂等的（缺什么补什么），每次启动都跑一遍可自愈
+    （用户手动移除预置工具后，下次启动会按预设补回——预置语义即「模块声明的最小集」）。
+    """
+    if not _pending_presets:
+        return 0
+    from sqlalchemy.exc import OperationalError
+
+    from ..agents.team import invalidate_team_cache
+    from ..database import SessionLocal
+    from ..models import AgentSpecModel
+
+    applied = 0
+    try:
+        with SessionLocal() as db:
+            for expert_name, tools in _pending_presets.items():
+                row = db.query(AgentSpecModel).filter(AgentSpecModel.name == expert_name).first()
+                if row is None:
+                    continue
+                current = list(row.tools or [])
+                added = [t for t in tools if t not in current]
+                if added:
+                    row.tools = current + added
+                    applied += len(added)
+                    logger.info("专家 %s 预置工具补齐：%s", expert_name, "、".join(added))
+            db.commit()
+    except OperationalError:
+        return 0  # 表未就绪（启动早期），保持暂存待下次
+    if applied:
+        invalidate_team_cache()
+    return applied
+
 
 def discover_module_names() -> list[str]:
     """扫描模块目录名：含 manifest.py 且目录名不以 _ 开头。"""
@@ -89,9 +128,59 @@ def load_modules(app: FastAPI) -> list[ModuleManifest]:
             continue
         if manifest.agent_tools:
             register_module_tools({t["name"]: t for t in manifest.agent_tools})
+        if manifest.preset_experts:
+            _preset_expert_tools(manifest)
         _loaded.append(manifest)
         logger.info("模块已加载：%s v%s（prefix=%s）", manifest.name, manifest.version, manifest.prefix)
     return _loaded
+
+
+def _preset_expert_tools(manifest: ModuleManifest) -> None:
+    """把模块 agent_tools 的名字合并进 preset_experts 指定专家的白名单（幂等）。
+
+    专家已入库：直接合并（缺什么补什么，不覆盖用户手工改动）；
+    专家未入库（新库未 seed）：暂存，待 apply_pending_presets 补齐；
+    表尚不存在（进程启动早期先于 create_all）：同样暂存，不报错。
+    """
+    from sqlalchemy.exc import OperationalError
+
+    from ..database import SessionLocal
+    from ..models import AgentSpecModel
+
+    tool_names = [t["name"] for t in manifest.agent_tools if t.get("name")]
+    if not tool_names:
+        return
+    try:
+        with SessionLocal() as db:
+            for expert_name in manifest.preset_experts:
+                row = db.query(AgentSpecModel).filter(AgentSpecModel.name == expert_name).first()
+                if row is None:
+                    _stash_pending(expert_name, tool_names, manifest.name)
+                    continue
+                current = list(row.tools or [])
+                added = [t for t in tool_names if t not in current]
+                if added:
+                    row.tools = current + added
+                    logger.info("专家 %s 预置模块 %s 工具：%s", expert_name, manifest.name, "、".join(added))
+            db.commit()
+    except OperationalError as exc:
+        # 库表尚未创建（启动早期早于 lifespan 的 create_all）：转暂存，seed 后补齐
+        logger.info("agent_specs 表暂不可用（%s），模块 %s 工具预置转暂存", exc, manifest.name)
+        for expert_name in manifest.preset_experts:
+            _stash_pending(expert_name, tool_names, manifest.name)
+        return
+    from ..agents.team import invalidate_team_cache
+
+    invalidate_team_cache()
+
+
+def _stash_pending(expert_name: str, tool_names: list[str], module_name: str) -> None:
+    pending = _pending_presets.setdefault(expert_name, [])
+    added = [t for t in tool_names if t not in pending]
+    if added:
+        pending.extend(added)
+        logger.info("专家 %s 尚未入库，模块 %s 的工具预置已暂存（seed 后补齐）：%s",
+                    expert_name, module_name, "、".join(added))
 
 
 def get_loaded_modules() -> list[ModuleManifest]:

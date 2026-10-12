@@ -13,11 +13,24 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .agents import expert_packs
 from .agents.secrets_box import ensure_dpapi_available
 from .config import BASE_DIR, settings
 from .database import Base, SessionLocal, engine
 from .modules import collect_column_patches, load_modules
-from .routers import assistant, dashboard, jobs, knowledge, mcp, notes, schedules, search, tasks
+from .routers import (
+    assistant,
+    dashboard,
+    experts,
+    jobs,
+    knowledge,
+    mcp,
+    notes,
+    schedules,
+    search,
+    skills,
+    tasks,
+)
 from .seed import seed_agent_specs, seed_if_empty
 from .scheduler import scheduler_loop
 
@@ -35,6 +48,22 @@ async def lifespan(_: FastAPI):
     # 专家团队定义：仅表为空时灌入一次（属于配置数据，不受 seed_on_startup 控制）
     with SessionLocal() as db:
         seed_agent_specs(db)
+    # 专家团文件化：确保专家包目录存在并完成种子复制（失败仅记日志，不影响启动）
+    try:
+        expert_packs.packs_dir()
+    except Exception:
+        logger.warning("专家包目录初始化跳过（不影响启动）", exc_info=True)
+    # 技能包种子：首次启动把 seed_skills 复制进 data/skills（幂等；失败仅记日志）
+    try:
+        from .agents.skill_store import ensure_seed_packs
+
+        ensure_seed_packs()
+    except Exception:
+        logger.warning("技能包种子初始化跳过", exc_info=True)
+    # 模块工具预置补齐：load_modules 早于本步骤，新库场景下暂存的预置在此生效
+    from .modules import apply_pending_presets
+
+    apply_pending_presets()
     if settings.seed_on_startup:
         with SessionLocal() as db:
             seed_if_empty(db)
@@ -125,6 +154,8 @@ app.include_router(assistant.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(mcp.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")
+app.include_router(skills.router, prefix="/api")
+app.include_router(experts.router, prefix="/api")
 
 # 模块注册机制（Module Registry）：在模块级作用域加载——静态 include_router 之后、
 # lifespan 之前。导入各模块 manifest 时连带注册模块表进 Base.metadata，

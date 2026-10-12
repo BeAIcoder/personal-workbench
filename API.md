@@ -363,3 +363,14 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 - SSE 流式对话走原生 fetch（与 axios 共用同一 baseURL），用 AbortController 中止。
 - 开发模式：Vite 将 `/api` 代理到 `http://127.0.0.1:8000`；生产模式：前端构建产物由后端在 8000 端口直接托管，天然同源、无跨域问题。
 - 所有 SQL 通过 SQLAlchemy 参数绑定执行，外部输入不会拼接进语句。
+
+### 技能包与专家团文件（v1.13.0）
+
+| 模块 | 端点 |
+|------|------|
+| 技能包 | `GET /api/skills/packs`、`POST /api/skills/packs`、`DELETE /api/skills/packs/{name}`、`PUT /api/skills/packs/{name}/enabled`、`GET /api/skills/packs/{name}/files/{filename}`、`POST /api/skills/rescan` |
+| 专家团文件 | `GET /api/experts/packs`、`POST /api/experts/packs/import-all`、`POST /api/experts/packs/import/{name}`、`POST /api/experts/packs/reset`、`POST /api/experts/packs/export/{expert_name}`、`GET /api/experts/packs/{name}/content`、`DELETE /api/experts/packs/{name}` |
+
+- 技能包 store：`backend/data/skills/<name>/SKILL.md`（zcode/WorkBuddy 同款格式），首次启动从 `backend/seed_skills/` 播种；AI 助手设置的技能目录指向该目录即注入 Agent
+- 专家团文件：`backend/data/expert-packs/<name>.md`（frontmatter: name/label/emoji/color/description/keywords/tools/sort + 正文角色提示词），导入为 upsert（工具白名单取并集，导入不缩减），导出把数据库专家写回文件
+- 模块工具预置：模块 manifest 声明 `preset_experts`，加载时把模块工具幂等合并进指定专家白名单（如财税专员自动获得全部财务模块工具）
