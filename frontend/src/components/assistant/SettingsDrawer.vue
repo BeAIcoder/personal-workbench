@@ -16,17 +16,39 @@
             <div class="prov-line">🔗 {{ p.base_url || '（未填）' }}</div>
             <div class="prov-line">🔑 {{ p.api_key_set ? '已配置' : '未配置 Key' }}</div>
             <div class="prov-models">
-              <span
-                v-for="m in p.models"
-                :key="m.id"
-                class="model-pill"
-                :class="{ active: m.active, off: !m.enabled }"
-                :title="`上下文 ${m.context_size} · 输出 ${m.max_tokens}${m.multimodal ? ' · 多模态' : ''}`"
-                @click="activateModel(m)"
-              >
-                {{ m.active ? '✓ ' : '' }}{{ m.model }}
-                <el-icon class="pill-x" @click.stop="removeModel(p, m)"><Close /></el-icon>
-              </span>
+              <div v-for="m in p.models" :key="m.id" class="model-row" :class="{ active: m.active, off: !m.enabled }">
+                <div class="model-row-main">
+                  <span class="model-name" :title="modelTip(m)" @click="activateModel(m)">
+                    {{ m.active ? '✓ ' : '' }}{{ m.model }}
+                  </span>
+                  <el-tag
+                    size="small"
+                    :type="thinkingBadge(m.supports_thinking).type"
+                    :effect="thinkingBadge(m.supports_thinking).effect"
+                    :class="{ 'badge-dashed': thinkingBadge(m.supports_thinking).dashed }"
+                  >{{ thinkingBadge(m.supports_thinking).text }}</el-tag>
+                  <span v-if="m.supports_thinking === 1 && thinkingLevelsOf(m).length" class="badge-levels">
+                    {{ thinkingLevelsOf(m).join(' / ') }}
+                  </span>
+                  <el-tag v-if="formatK(m.probed_context)" size="small" type="info" effect="plain" :title="`上下文窗口 ${m.probed_context} tokens`">
+                    ctx {{ formatK(m.probed_context) }}
+                  </el-tag>
+                  <el-tag v-if="formatK(m.probed_max_output)" size="small" type="info" effect="plain" :title="`最大输出 ${m.probed_max_output} tokens`">
+                    out {{ formatK(m.probed_max_output) }}
+                  </el-tag>
+                  <span v-if="m.probed_at" class="probe-at" :title="`探测时间：${m.probed_at}`">探测于 {{ probeAtShort(m.probed_at) }}</span>
+                  <div class="spacer"></div>
+                  <el-button size="small" link type="primary" @click="openModelForm(p, m)">编辑</el-button>
+                  <el-icon class="pill-x" @click="removeModel(p, m)"><Close /></el-icon>
+                </div>
+                <div class="model-row-ops">
+                  <span class="ops-label">能力探测</span>
+                  <el-button size="small" link :loading="probingId === m.id + ':reasoning'" @click="runProbe(m, 'reasoning')">思考级别</el-button>
+                  <el-button size="small" link :loading="probingId === m.id + ':context'" @click="runProbe(m, 'context')">上下文</el-button>
+                  <el-button size="small" link :loading="probingId === m.id + ':output'" @click="runProbe(m, 'output')">输出</el-button>
+                  <el-button size="small" link :loading="probingId === m.id + ':all'" @click="runProbeAll(m)">全部</el-button>
+                </div>
+              </div>
               <el-button size="small" link type="primary" @click="openModelForm(p)">
                 <el-icon><Plus /></el-icon> 模型
               </el-button>
@@ -130,7 +152,31 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item label="Base URL">
-          <el-input v-model="provDialog.base_url" placeholder="https://…/v1" />
+          <div class="base-url-row">
+            <el-input v-model="provDialog.base_url" placeholder="https://…/v1" />
+            <el-select v-model="provDialog.presetFill" placeholder="从预设填充" clearable style="width: 150px" @change="applyPresetFill">
+              <el-option v-for="p in presetOptions" :key="p.name" :label="p.label" :value="p.name" />
+            </el-select>
+            <el-button size="small" link title="重新读取后端预设文件" @click="reloadPresets">重载</el-button>
+          </div>
+          <div v-if="presetFillInfo" class="cfg-hint">
+            <span v-if="presetFillInfo.note">{{ presetFillInfo.note }} </span>
+            <a v-if="presetFillInfo.docs_url" :href="presetFillInfo.docs_url" target="_blank" rel="noopener noreferrer">查看文档</a>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="presetCandidateModels.length" label="候选模型">
+          <el-select
+            v-model="provDialog.presetModels"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            style="width: 100%"
+            placeholder="保存新供应商后自动添加所选模型（可增删）"
+          >
+            <el-option v-for="m in presetCandidateModels" :key="m" :label="m" :value="m" />
+          </el-select>
+          <div class="cfg-hint">来自预设的候选模型；取消勾选则不添加，也可直接输入新模型名</div>
         </el-form-item>
         <el-form-item label="API Key">
           <el-input v-model="provDialog.api_key" type="password" show-password placeholder="编辑时留空 = 保留现值" autocomplete="off" />
@@ -167,6 +213,34 @@
         <el-form-item label="输出上限">
           <el-input-number v-model="modelDialog.max_tokens" :min="64" :step="64" :max="500000" style="width: 220px" />
         </el-form-item>
+        <el-form-item label="温度">
+          <el-input-number v-model="modelDialog.temperature" :min="0" :max="2" :step="0.1" :value-on-clear="null" style="width: 220px" />
+          <div class="cfg-hint">范围 0-2；留空 = 跟随后端默认</div>
+        </el-form-item>
+        <el-form-item label="思考支持">
+          <el-select v-model="modelDialog.supports_thinking" style="width: 220px">
+            <el-option label="自动（未探测）" :value="-1" />
+            <el-option label="支持" :value="1" />
+            <el-option label="不支持" :value="0" />
+          </el-select>
+          <div class="cfg-hint">通常由「能力探测」自动回填，此处可手动覆盖</div>
+        </el-form-item>
+        <el-form-item label="思考级别">
+          <el-select
+            v-model="modelDialog.thinking_levels"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            style="width: 100%"
+            placeholder="手动覆盖思考支持后可多选"
+            :disabled="modelDialog.supports_thinking === -1"
+          >
+            <el-option v-for="lv in THINKING_LEVEL_OPTIONS" :key="lv" :label="lv" :value="lv" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="modelDialog.note" maxlength="200" placeholder="模型用途、计费方式等备注" />
+        </el-form-item>
         <el-form-item label="多模态">
           <el-switch v-model="modelDialog.multimodal" />
           <div class="cfg-hint">模型支持图片输入时打开（标记用途，聊天传图功能后续开放）</div>
@@ -183,11 +257,106 @@
   </el-drawer>
 </template>
 
+<script>
+// 模型能力探测的纯逻辑：徽章计算 / k 格式化 / 级别解析 / 结论文案
+// 放在普通 <script> 块中导出，便于 vitest 直接单测（当前测试环境为 node，无法渲染组件）
+export const THINKING_LEVEL_OPTIONS = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+
+export function thinkingBadge(supports) {
+  if (supports === 1) return { text: '思考✓', type: 'success', effect: 'plain', dashed: false }
+  if (supports === 0) return { text: '思考✗', type: 'info', effect: 'plain', dashed: false }
+  return { text: '未探测', type: 'info', effect: 'plain', dashed: true }
+}
+
+export function formatK(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v <= 0) return ''
+  const k = Math.round(v / 1024)
+  if (k < 1024) return `${k}k`
+  return `${Math.round((v / 1048576) * 10) / 10}m`
+}
+
+export function parseLevels(v) {
+  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' && x.trim())
+  if (typeof v !== 'string' || !v.trim()) return []
+  try {
+    const parsed = JSON.parse(v)
+    if (Array.isArray(parsed)) return parsed.filter((x) => typeof x === 'string' && x.trim())
+    return []
+  } catch {
+    if (!v.includes(',')) return []
+    return v.split(',').map((s) => s.trim()).filter(Boolean)
+  }
+}
+
+export function probeAtShort(v) {
+  if (!v) return ''
+  const m = String(v).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/)
+  return m ? `${m[1]} ${m[2]}` : String(v)
+}
+
+// 探测响应解包：后端实际返回 {model_id, result, probe}（result=分步详情，probe=权威状态）；
+// 同时兼容契约定平的字段形态（字段直接在响应顶层）
+export function probeResultOf(data) {
+  if (!data || typeof data !== 'object') return {}
+  return data.result && typeof data.result === 'object' ? data.result : data
+}
+
+export function probeStateOf(data) {
+  if (!data || typeof data !== 'object') return {}
+  return data.probe && typeof data.probe === 'object' ? data.probe : data
+}
+
+// 结论文案：{ level: 'success' | 'warning' | 'error', text }
+export function reasoningResultMessage(data) {
+  const r = probeResultOf(data)
+  const s = probeStateOf(data)
+  if (r.skipped) return { level: 'warning', text: String(r.skipped) }
+  const err = r.error || data?.error
+  if (err) return { level: 'error', text: String(err) }
+  if (s.supports_thinking === 1) {
+    const levels = r.thinking_levels || s.thinking_levels || []
+    return { level: 'success', text: `支持思考：${levels.join('/') || '未给出级别'}` }
+  }
+  if (s.supports_thinking === 0) return { level: 'success', text: '模型不支持思考' }
+  return { level: 'warning', text: '未获得探测结论' }
+}
+
+export function contextResultMessage(data) {
+  const r = probeResultOf(data)
+  const s = probeStateOf(data)
+  if (r.skipped) return { level: 'warning', text: String(r.skipped) }
+  const err = r.error || data?.error
+  if (err) return { level: 'error', text: String(err) }
+  return { level: 'success', text: `上下文有效 ${r.effective_context ?? s.probed_context ?? 0}` }
+}
+
+export function outputResultMessage(data) {
+  const r = probeResultOf(data)
+  const s = probeStateOf(data)
+  if (r.skipped) return { level: 'warning', text: String(r.skipped) }
+  const err = r.error || data?.error
+  if (err) return { level: 'error', text: String(err) }
+  return { level: 'success', text: `最大输出 ${r.effective_max_output ?? s.probed_max_output ?? 0}` }
+}
+
+export function probeAllSummary(data) {
+  const s = probeStateOf(data)
+  const think =
+    s.supports_thinking === 1
+      ? `思考 ${(s.thinking_levels || []).join('/') || '支持'}`
+      : s.supports_thinking === 0
+        ? '思考 不支持'
+        : '思考 未探测'
+  return `${think} · ctx ${s.probed_context || '-'} · out ${s.probed_max_output || '-'}`
+}
+</script>
+
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Close, Plus } from '@element-plus/icons-vue'
-import { assistantApi } from '../../api'
+import { assistantApi, modelProbeApi, providerPresetsApi } from '../../api'
 import AgentTeamPanel from './AgentTeamPanel.vue'
 
 const props = defineProps({
@@ -220,6 +389,7 @@ watch(
     })
     skillsFound.value = null
     pluginsFound.value = null
+    if (!presetsLoaded.value) loadPresets()
   },
 )
 
@@ -287,9 +457,108 @@ async function saveGlobals() {
 const testingProvId = ref(null)
 const provTestResult = ref({})
 
+// ---------------- 供应商预设（providerPresetsApi） ----------------
+const presetOptions = ref([])
+const presetsLoaded = ref(false)
+const presetCandidateModels = ref([])
+const presetFillInfo = ref(null)
+
+async function loadPresets() {
+  try {
+    const { data } = await providerPresetsApi.list()
+    presetOptions.value = data.presets || data.items || []
+    presetsLoaded.value = true
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+async function reloadPresets() {
+  try {
+    const { data } = await providerPresetsApi.reload()
+    await loadPresets()
+    ElMessage.success(`预设已重载（${data.count ?? presetOptions.value.length} 条）`)
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+// ---------------- 模型能力探测 ----------------
+const probingId = ref(null)
+
+const PROBE_FN = {
+  reasoning: modelProbeApi.probeReasoning,
+  context: modelProbeApi.probeContext,
+  output: modelProbeApi.probeOutput,
+}
+
+function thinkingLevelsOf(m) {
+  return parseLevels(m.thinking_levels)
+}
+
+function modelTip(m) {
+  return `上下文 ${m.context_size} · 输出 ${m.max_tokens}${m.multimodal ? ' · 多模态' : ''}${m.note ? ' · 备注：' + m.note : ''}`
+}
+
+function applyProbeData(m, data) {
+  const s = probeStateOf(data)
+  if (s.supports_thinking !== undefined) m.supports_thinking = s.supports_thinking
+  if (s.thinking_levels !== undefined) m.thinking_levels = s.thinking_levels
+  if (s.probed_context !== undefined) m.probed_context = s.probed_context
+  if (s.probed_max_output !== undefined) m.probed_max_output = s.probed_max_output
+  if (s.probed_at !== undefined) m.probed_at = s.probed_at
+}
+
+function showProbeMessage(msg) {
+  if (msg.level === 'error') ElMessage.error(msg.text)
+  else if (msg.level === 'warning') ElMessage.warning(msg.text)
+  else ElMessage.success(msg.text)
+}
+
+async function runProbe(m, kind) {
+  probingId.value = m.id + ':' + kind
+  try {
+    const { data } = await PROBE_FN[kind](m.id)
+    applyProbeData(m, data)
+    emit('refresh')
+    if (kind === 'reasoning') showProbeMessage(reasoningResultMessage(data))
+    else if (kind === 'context') showProbeMessage(contextResultMessage(data))
+    else showProbeMessage(outputResultMessage(data))
+  } catch {
+    /* 拦截器已提示后端 detail */
+  } finally {
+    probingId.value = null
+  }
+}
+
+async function runProbeAll(m) {
+  try {
+    await ElMessageBox.confirm(
+      '将发起约 15 次小型 API 请求（每次 max_tokens≤64 或上下文探测），消耗少量 token，约 1-2 分钟。确定开始？',
+      '全量能力探测',
+      { type: 'warning', confirmButtonText: '开始探测', cancelButtonText: '取消' },
+    )
+  } catch {
+    return  // 用户取消
+  }
+  probingId.value = m.id + ':all'
+  try {
+    const { data } = await modelProbeApi.probeAll(m.id)
+    applyProbeData(m, data)
+    emit('refresh')
+    ElMessage.success(`探测完成：${probeAllSummary(data)}`)
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    probingId.value = null
+  }
+}
+
 const presetModels = computed(() => {
-  const p = props.presets.find((x) => x.name === provDialog.preset)
-  return p ? p.models : []
+  const name = provDialog.presetFill || provDialog.preset
+  if (!name) return []
+  const p = props.presets.find((x) => x.name === name) || presetOptions.value.find((x) => x.name === name)
+  return p ? p.models || [] : []
 })
 
 const presetNote = computed(() => {
@@ -302,6 +571,8 @@ const provDialog = reactive({
   visible: false,
   id: null,
   preset: null,
+  presetFill: null,
+  presetModels: [],
   name: '',
   protocol: 'openai',
   base_url: '',
@@ -311,7 +582,9 @@ const provDialog = reactive({
 })
 
 function openProviderForm() {
-  Object.assign(provDialog, { visible: true, id: null, preset: null, name: '', protocol: 'openai', base_url: '', api_key: '', enabled: true, saving: false })
+  Object.assign(provDialog, { visible: true, id: null, preset: null, presetFill: null, presetModels: [], name: '', protocol: 'openai', base_url: '', api_key: '', enabled: true, saving: false })
+  presetCandidateModels.value = []
+  presetFillInfo.value = null
 }
 
 function editProvider(p) {
@@ -319,6 +592,8 @@ function editProvider(p) {
     visible: true,
     id: p.id,
     preset: null,
+    presetFill: null,
+    presetModels: [],
     name: p.name,
     protocol: p.protocol,
     base_url: p.base_url,
@@ -326,6 +601,8 @@ function editProvider(p) {
     enabled: p.enabled,
     saving: false,
   })
+  presetCandidateModels.value = []
+  presetFillInfo.value = null
 }
 
 function applyPreset(name) {
@@ -336,6 +613,23 @@ function applyPreset(name) {
   if (!provDialog.name) provDialog.name = p.label
 }
 
+// 「从预设填充」：填 base_url/协议，并带出候选模型多选
+function applyPresetFill(name) {
+  const p = presetOptions.value.find((x) => x.name === name)
+  if (!p) {
+    presetCandidateModels.value = []
+    presetFillInfo.value = null
+    provDialog.presetModels = []
+    return
+  }
+  if (p.base_url) provDialog.base_url = p.base_url
+  provDialog.protocol = p.protocol || 'openai'
+  if (!provDialog.name) provDialog.name = p.label
+  presetCandidateModels.value = p.models || []
+  provDialog.presetModels = [...(p.models || [])]
+  presetFillInfo.value = { note: p.note || '', docs_url: p.docs_url || '' }
+}
+
 async function saveProvider() {
   if (!provDialog.name.trim()) {
     ElMessage.warning('请填写供应商名称')
@@ -343,7 +637,7 @@ async function saveProvider() {
   }
   provDialog.saving = true
   try {
-    await assistantApi.providers.save({
+    const { data } = await assistantApi.providers.save({
       provider_id: provDialog.id || undefined,
       name: provDialog.name.trim(),
       protocol: provDialog.protocol,
@@ -351,6 +645,20 @@ async function saveProvider() {
       api_key: provDialog.api_key || undefined,
       enabled: provDialog.enabled,
     })
+    // 新供应商：把预设里勾选的候选模型一并添加（单个失败不阻塞其余）
+    if (!provDialog.id) {
+      const models = provDialog.presetModels.map((x) => String(x).trim()).filter(Boolean)
+      const providerId = data?.provider?.id ?? data?.id
+      if (models.length && providerId) {
+        for (const name of models) {
+          try {
+            await assistantApi.providers.saveModel(providerId, { model: name, context_size: 128000, max_tokens: 2048 })
+          } catch {
+            /* 拦截器已提示 */
+          }
+        }
+      }
+    }
     emit('refresh')
     provDialog.visible = false
     ElMessage.success('供应商已保存')
@@ -395,19 +703,27 @@ const modelDialog = reactive({
   max_tokens: 2048,
   multimodal: false,
   enabled: true,
+  temperature: null,
+  note: '',
+  supports_thinking: -1,
+  thinking_levels: [],
   saving: false,
 })
 
-function openModelForm(p) {
+function openModelForm(p, m) {
   Object.assign(modelDialog, {
     visible: true,
-    id: null,
+    id: m ? m.id : null,
     providerId: p.id,
-    model: '',
-    context_size: 128000,
-    max_tokens: 2048,
-    multimodal: false,
-    enabled: true,
+    model: m ? m.model : '',
+    context_size: m ? m.context_size : 128000,
+    max_tokens: m ? m.max_tokens : 2048,
+    multimodal: m ? !!m.multimodal : false,
+    enabled: m ? m.enabled !== false : true,
+    temperature: m ? (m.temperature === '' || m.temperature == null ? null : Number(m.temperature)) : null,
+    note: m ? m.note || '' : '',
+    supports_thinking: m ? m.supports_thinking ?? -1 : -1,
+    thinking_levels: m ? parseLevels(m.thinking_levels) : [],
     saving: false,
   })
 }
@@ -426,6 +742,12 @@ async function saveModel() {
       max_tokens: modelDialog.max_tokens,
       multimodal: modelDialog.multimodal,
       enabled: modelDialog.enabled,
+      // 温度留空传空串 = 跟随系统默认（后端约定）
+      temperature: modelDialog.temperature ?? '',
+      note: modelDialog.note.trim(),
+      supports_thinking: modelDialog.supports_thinking,
+      // 思考级别仅在手动标记「支持」时有意义，其余情况传空数组
+      thinking_levels: modelDialog.supports_thinking === 1 ? modelDialog.thinking_levels : [],
     })
     emit('refresh')
     modelDialog.visible = false
@@ -510,30 +832,70 @@ async function testProvider(p, kind) {
   align-items: center;
 }
 
-.model-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
+.model-row {
+  width: 100%;
   border: 1px solid #dcdfe6;
   border-radius: 10px;
-  padding: 2px 10px;
-  cursor: pointer;
+  padding: 6px 10px;
+  margin-bottom: 6px;
   background: #fff;
 }
 
-.model-pill.active {
+.model-row.active {
   border-color: #67c23a;
-  color: #529b2e;
   background: #f0f9eb;
 }
 
-.model-pill.off {
-  opacity: 0.5;
+.model-row.off {
+  opacity: 0.55;
 }
 
-.model-pill:hover {
-  border-color: #409eff;
+.model-row-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.model-row-main .spacer {
+  flex: 1;
+}
+
+.model-name {
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.model-name:hover {
+  color: #409eff;
+}
+
+.badge-levels {
+  font-size: 11px;
+  color: #529b2e;
+}
+
+.probe-at {
+  font-size: 11px;
+  color: #909399;
+}
+
+.badge-dashed {
+  border-style: dashed;
+}
+
+.model-row-ops {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.ops-label {
+  font-size: 11px;
+  color: #909399;
+  margin-right: 4px;
 }
 
 .pill-x {
@@ -575,5 +937,20 @@ async function testProvider(p, kind) {
 
 .cfg-hint.ok {
   color: #529b2e;
+}
+
+.cfg-hint a {
+  margin-left: 6px;
+}
+
+.base-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.base-url-row .el-input {
+  flex: 1;
 }
 </style>

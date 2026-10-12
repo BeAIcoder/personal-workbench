@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "note": "LLM 厂商预设（个人工作台）：界面选择后自动填充 base_url 与候选模型。协议仅 openai / anthropic 两种。",
+  "presets": [
+    {
+      "name": "modelscope",
+      "label": "ModelScope 推理",
+      "protocol": "openai",
+      "base_url": "https://api-inference.modelscope.cn/v1",
+      "models": ["Qwen/Qwen3.5-122B-A10B", "Qwen/Qwen3-235B-A22B", "deepseek-ai/DeepSeek-V4-Flash-0731"],
+      "note": "国内直连，含 DeepSeek/Qwen 全系",
+      "docs_url": "https://www.modelscope.cn/docs/model-service/API-Inference",
+      "reasoning_models": ["Qwen/Qwen3-235B-A22B", "deepseek-ai/DeepSeek-R1"]
+    },
+    {
+      "name": "siliconflow",
+      "label": "硅基流动 SiliconFlow",
+      "protocol": "openai",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "models": ["deepseek-ai/DeepSeek-V3.2", "Qwen/Qwen3.5-122B-A10B", "zai-org/GLM-5.3"],
+      "note": "国内直连，DeepSeek 性价比高",
+      "docs_url": "https://docs.siliconflow.cn/",
+      "reasoning_models": ["deepseek-ai/DeepSeek-V3.2", "zai-org/GLM-5.3"]
+    },
+    {
+      "name": "deepseek",
+      "label": "DeepSeek 官方",
+      "protocol": "openai",
+      "base_url": "https://api.deepseek.com/v1",
+      "models": ["deepseek-chat", "deepseek-reasoner"],
+      "note": "官方直连",
+      "docs_url": "https://platform.deepseek.com/api-docs/",
+      "reasoning_models": ["deepseek-reasoner"]
+    },
+    {
+      "name": "volcengine",
+      "label": "火山方舟 Volcengine",
+      "protocol": "openai",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "models": ["doubao-seed-2-0", "doubao-1-5-pro-32k"],
+      "note": "需在火山控制台开通模型并创建推理接入点",
+      "docs_url": "https://www.volcengine.com/docs/82379",
+      "reasoning_models": ["doubao-seed-2-0"]
+    },
+    {
+      "name": "dashscope",
+      "label": "阿里 DashScope 兼容",
+      "protocol": "openai",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "models": ["qwen-plus", "qwen-max", "qwen-vl-plus"],
+      "note": "通义千问官方（vl 系列支持图片）",
+      "docs_url": "https://help.aliyun.com/zh/model-studio/",
+      "reasoning_models": ["qwen-plus", "qwen-max"]
+    },
+    {
+      "name": "zhipu",
+      "label": "智谱 GLM 官方",
+      "protocol": "openai",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "models": ["glm-5.3", "glm-4.6", "glm-4.5-air", "glm-z1-air"],
+      "note": "智谱官方开放平台；GLM-4.5 起为混合思考模型",
+      "docs_url": "https://docs.bigmodel.cn/",
+      "reasoning_models": ["glm-5.3", "glm-4.6", "glm-z1-air"]
+    },
+    {
+      "name": "moonshot",
+      "label": "月之暗面 Kimi",
+      "protocol": "openai",
+      "base_url": "https://api.moonshot.cn/v1",
+      "models": ["kimi-k2-0905-preview", "kimi-k2-thinking", "kimi-latest", "moonshot-v1-128k"],
+      "note": "月之暗面官方；Kimi K2 系列",
+      "docs_url": "https://platform.moonshot.cn/docs/",
+      "reasoning_models": ["kimi-k2-thinking"]
+    },
+    {
+      "name": "minimax",
+      "label": "MiniMax",
+      "protocol": "openai",
+      "base_url": "https://api.minimax.chat/v1",
+      "models": ["MiniMax-M2", "MiniMax-Text-01"],
+      "note": "MiniMax 官方开放平台",
+      "docs_url": "https://platform.minimaxi.com/document/",
+      "reasoning_models": ["MiniMax-M2"]
+    },
+    {
+      "name": "hunyuan",
+      "label": "腾讯混元",
+      "protocol": "openai",
+      "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+      "models": ["hunyuan-turbos-latest", "hunyuan-t1-latest", "hunyuan-a13b"],
+      "note": "腾讯混元官方；需在腾讯云开通混元大模型",
+      "docs_url": "https://cloud.tencent.com/document/product/1729",
+      "reasoning_models": ["hunyuan-t1-latest"]
+    },
+    {
+      "name": "spark",
+      "label": "讯飞星火",
+      "protocol": "openai",
+      "base_url": "https://spark-api-open.xf-yun.com/v1",
+      "models": ["lite", "generalv3.5", "pro-128k", "4.0Ultra"],
+      "note": "讯飞星火官方；x1 为推理（思考）模型",
+      "docs_url": "https://www.xfyun.cn/doc/spark/Web.html",
+      "reasoning_models": ["x1"]
+    },
+    {
+      "name": "openai",
+      "label": "OpenAI",
+      "protocol": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "models": ["gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano"],
+      "note": "OpenAI 官方；GPT-5 系列为推理模型（国内需代理）",
+      "docs_url": "https://platform.openai.com/docs/",
+      "reasoning_models": ["gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano"]
+    },
+    {
+      "name": "anthropic",
+      "label": "Anthropic Claude",
+      "protocol": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "models": ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+      "note": "Anthropic 官方；Claude 4.x 为混合思考模型，协议选 anthropic",
+      "docs_url": "https://docs.anthropic.com/",
+      "reasoning_models": ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"]
+    },
+    {
+      "name": "openrouter",
+      "label": "OpenRouter",
+      "protocol": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "models": ["anthropic/claude-sonnet-4.5", "openai/gpt-5", "deepseek/deepseek-r1", "qwen/qwen3-235b-a22b"],
+      "note": "模型聚合网关；一个 Key 调用多家模型（海外服务）",
+      "docs_url": "https://openrouter.ai/docs/",
+      "reasoning_models": ["deepseek/deepseek-r1", "openai/gpt-5", "anthropic/claude-sonnet-4.5"]
+    },
+    {
+      "name": "groq",
+      "label": "Groq",
+      "protocol": "openai",
+      "base_url": "https://api.groq.com/openai/v1",
+      "models": ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b", "qwen/qwen3-32b"],
+      "note": "Groq 高速推理（海外服务）",
+      "docs_url": "https://console.groq.com/docs/",
+      "reasoning_models": ["deepseek-r1-distill-llama-70b", "qwen/qwen3-32b"]
+    },
+    {
+      "name": "together",
+      "label": "Together AI",
+      "protocol": "openai",
+      "base_url": "https://api.together.xyz/v1",
+      "models": ["Qwen/Qwen3-235B-A22B", "deepseek-ai/DeepSeek-R1"],
+      "note": "Together AI（海外服务）",
+      "docs_url": "https://docs.together.ai/",
+      "reasoning_models": ["deepseek-ai/DeepSeek-R1"]
+    },
+    {
+      "name": "ollama",
+      "label": "本地 Ollama",
+      "protocol": "openai",
+      "base_url": "http://localhost:11434/v1",
+      "models": ["qwen2.5:7b", "llama3.1:8b"],
+      "note": "完全本地、免费；需先安装 Ollama 并拉取模型",
+      "docs_url": "https://ollama.com/",
+      "reasoning_models": []
+    },
+    {
+      "name": "lmstudio",
+      "label": "本地 LM Studio",
+      "protocol": "openai",
+      "base_url": "http://localhost:1234/v1",
+      "models": ["qwen2.5-7b-instruct", "llama-3.1-8b"],
+      "note": "LM Studio 本地服务器；可用模型随本机加载变化",
+      "docs_url": "https://lmstudio.ai/docs",
+      "reasoning_models": []
+    },
+    {
+      "name": "custom",
+      "label": "自定义",
+      "protocol": "openai",
+      "base_url": "",
+      "models": [],
+      "note": "任意 OpenAI 兼容服务；anthropic 协议请用协议下拉选择",
+      "docs_url": "",
+      "reasoning_models": []
+    }
+  ]
+}

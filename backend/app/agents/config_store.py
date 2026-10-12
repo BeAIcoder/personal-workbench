@@ -1,8 +1,10 @@
 """Agent 团队运行时可配置存储：模型供应商 → 模型 两级管理（参考 ZCode 配置方式）。
 
 - `model_providers`：一家供应商一张卡片（名称/协议/base_url/api_key/启停）；
-- `provider_models`：供应商下挂多个模型（上下文/输出上限/多模态标记/启停）；
+- `provider_models`：供应商下挂多个模型（上下文/输出上限/多模态标记/能力探测结果/启停）；
 - `agent_settings.active_model_id`：当前激活的模型，跨供应商选择；
+- `provider_presets.json`：供应商预设（界面选择后自动填充 base_url 与候选模型），
+  由 `load_presets()` 加载，缺失/损坏时回退内置默认集；
 - `.env` 的 LLM_* 仅在没有任何激活模型时兜底。
 
 连通性/多模态测试与协议无关（经 build_model 分流）。
@@ -18,6 +20,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy.exc import OperationalError
 
@@ -49,25 +52,13 @@ def _safe_gateway_url(base_url: str, path: str) -> str:
         raise ValueError("网关地址不允许内嵌用户名/密码")
     return url
 
-# 供应商预设（界面选择后自动填充 base_url 与候选模型；均为 OpenAI 兼容。
-# anthropic 协议供应商经 scripts/sync_zcode_models.py 从 ZCode 同步）
-PRESETS: list[dict] = [
-    {
-        "name": "modelscope",
-        "label": "ModelScope 推理",
-        "protocol": "openai",
-        "base_url": "https://api-inference.modelscope.cn/v1",
-        "models": ["Qwen/Qwen3.5-122B-A10B", "Qwen/Qwen3-235B-A22B", "deepseek-ai/DeepSeek-V4-Flash-0731"],
-        "note": "国内直连，含 DeepSeek/Qwen 全系",
-    },
-    {
-        "name": "siliconflow",
-        "label": "硅基流动 SiliconFlow",
-        "protocol": "openai",
-        "base_url": "https://api.siliconflow.cn/v1",
-        "models": ["deepseek-ai/DeepSeek-V3.2", "Qwen/Qwen3.5-122B-A10B", "zai-org/GLM-5.3"],
-        "note": "国内直连，DeepSeek 性价比高",
-    },
+# 供应商预设：数据文件 provider_presets.json（界面选择后自动填充 base_url 与候选模型）。
+# 协议仅 openai / anthropic 两种；anthropic 协议经 agentscope 模型层分流。
+# 文件缺失/解析失败时回退内置最小默认集（_FALLBACK_PRESETS），保证应用始终可用。
+PRESETS_PATH = Path(__file__).resolve().parent / "provider_presets.json"
+
+# JSON 缺失/损坏时的内置最小默认集（仅保留最常用的几家，避免界面无预设可选）
+_FALLBACK_PRESETS: list[dict] = [
     {
         "name": "deepseek",
         "label": "DeepSeek 官方",
@@ -75,30 +66,18 @@ PRESETS: list[dict] = [
         "base_url": "https://api.deepseek.com/v1",
         "models": ["deepseek-chat", "deepseek-reasoner"],
         "note": "官方直连",
-    },
-    {
-        "name": "volcengine",
-        "label": "火山方舟 Volcengine",
-        "protocol": "openai",
-        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-        "models": ["doubao-seed-2-0", "doubao-1-5-pro-32k"],
-        "note": "需在火山控制台开通模型并创建推理接入点",
-    },
-    {
-        "name": "dashscope",
-        "label": "阿里 DashScope 兼容",
-        "protocol": "openai",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "models": ["qwen-plus", "qwen-max", "qwen-vl-plus"],
-        "note": "通义千问官方（vl 系列支持图片）",
+        "docs_url": "https://platform.deepseek.com/api-docs/",
+        "reasoning_models": ["deepseek-reasoner"],
     },
     {
         "name": "ollama",
         "label": "本地 Ollama",
         "protocol": "openai",
-        "base_url": "http://127.0.0.1:11434/v1",
+        "base_url": "http://localhost:11434/v1",
         "models": ["qwen2.5:7b", "llama3.1:8b"],
         "note": "完全本地、免费；需先安装 Ollama 并拉取模型",
+        "docs_url": "https://ollama.com/",
+        "reasoning_models": [],
     },
     {
         "name": "custom",
@@ -107,8 +86,78 @@ PRESETS: list[dict] = [
         "base_url": "",
         "models": [],
         "note": "任意 OpenAI 兼容服务；anthropic 协议请用协议下拉选择",
+        "docs_url": "",
+        "reasoning_models": [],
     },
 ]
+
+
+def _normalize_preset(item) -> dict | None:
+    """校验并归一化单条预设；结构不合法（缺 name/label、协议不在白名单）返回 None。"""
+    if not isinstance(item, dict):
+        return None
+    name = str(item.get("name") or "").strip()[:50]
+    label = str(item.get("label") or "").strip()[:100]
+    protocol = str(item.get("protocol") or "openai").strip().lower()
+    if not name or not label or protocol not in ("openai", "anthropic"):
+        return None
+    models = item.get("models") if isinstance(item.get("models"), list) else []
+    reasoning = item.get("reasoning_models") if isinstance(item.get("reasoning_models"), list) else []
+    return {
+        "name": name,
+        "label": label,
+        "protocol": protocol,
+        "base_url": str(item.get("base_url") or "").strip().rstrip("/")[:300],
+        "models": [str(m).strip()[:120] for m in models if str(m).strip()][:30],
+        "note": str(item.get("note") or "").strip()[:200],
+        "docs_url": str(item.get("docs_url") or "").strip()[:300],
+        "reasoning_models": [str(m).strip()[:120] for m in reasoning if str(m).strip()][:30],
+    }
+
+
+def load_presets() -> list[dict]:
+    """从 provider_presets.json 加载供应商预设。
+
+    文件缺失或解析失败 → 回退内置最小默认集并记警告日志；
+    顶层可以是 list，也可以是 {"presets": [...]}；按 name 去重，跳过非法条目；
+    全部条目非法时同样回退默认集。
+    """
+    try:
+        raw = json.loads(PRESETS_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.warning("供应商预设文件缺失：%s，使用内置默认集", PRESETS_PATH)
+        return [dict(p) for p in _FALLBACK_PRESETS]
+    except Exception:
+        logger.warning("供应商预设文件解析失败：%s，使用内置默认集", PRESETS_PATH, exc_info=True)
+        return [dict(p) for p in _FALLBACK_PRESETS]
+
+    items = raw.get("presets") if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        logger.warning("供应商预设文件结构非法（应为 list 或含 presets 键的对象），使用内置默认集")
+        return [dict(p) for p in _FALLBACK_PRESETS]
+
+    presets: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        norm = _normalize_preset(item)
+        if norm is None or norm["name"] in seen:
+            continue
+        seen.add(norm["name"])
+        presets.append(norm)
+    if not presets:
+        logger.warning("供应商预设文件无有效条目，使用内置默认集")
+        return [dict(p) for p in _FALLBACK_PRESETS]
+    return presets
+
+
+def reload_presets() -> list[dict]:
+    """重新加载预设 JSON 并刷新模块级 PRESETS（预设管理界面「重载」用）。"""
+    global PRESETS
+    PRESETS = load_presets()
+    return PRESETS
+
+
+PRESETS: list[dict] = load_presets()
 
 DEFAULTS: dict = {
     "protocol": "openai",
@@ -157,6 +206,17 @@ def _active_model():
         return None
 
 
+def _parse_temperature(raw) -> float | None:
+    """模型级温度解析：空/非法 → None（不设置）；合法 → float（0-2 夹取）。"""
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        t = float(str(raw).strip())
+    except ValueError:
+        return None
+    return t if 0.0 <= t <= 2.0 else None
+
+
 def load() -> dict:
     """读取当前生效配置。
 
@@ -198,6 +258,8 @@ def load() -> dict:
                 "max_tokens": pm.max_tokens,
                 "multimodal": pm.multimodal,
                 "provider_name": prov.name,
+                # 模型级采样温度（空 = 不设置，跟随厂商默认）；非法值忽略
+                "temperature": _parse_temperature(pm.temperature),
             }
         )
         return cfg
@@ -239,6 +301,7 @@ def model_cfg_by_id(mid: int) -> dict | None:
                     "max_tokens": pm.max_tokens,
                     "multimodal": pm.multimodal,
                     "provider_name": prov.name,
+                    "temperature": _parse_temperature(pm.temperature),
                 }
             )
             return cfg
@@ -320,6 +383,15 @@ def provider_test_cfg(pid: int) -> dict:
 
 # ---------------- 供应商 / 模型 CRUD（ZCode 式） ----------------
 
+def _json_list(raw: str) -> list:
+    """解析存为 JSON 文本的列表字段（如 thinking_levels）；失败返回空列表。"""
+    try:
+        val = json.loads(raw or "[]")
+    except Exception:
+        return []
+    return val if isinstance(val, list) else []
+
+
 def list_providers() -> list[dict]:
     try:
         row = _row()
@@ -352,6 +424,16 @@ def list_providers() -> list[dict]:
                     "multimodal": m.multimodal,
                     "enabled": m.enabled,
                     "active": m.id == active_model_id,
+                    # 采样温度（空 = 跟随系统默认）与备注
+                    "temperature": m.temperature,
+                    "note": m.note,
+                    # 思考能力探测：-1 未探测 / 0 否 / 1 是 + 可用档位
+                    "supports_thinking": m.supports_thinking,
+                    "thinking_levels": _json_list(m.thinking_levels),
+                    # 探测出的有效上下文 / 最大输出（0 = 未探测）与探测时间
+                    "probed_context": m.probed_context,
+                    "probed_max_output": m.probed_max_output,
+                    "probed_at": m.probed_at,
                 }
                 for m in by_prov.get(p.id, [])
             ],
@@ -443,6 +525,18 @@ def save_provider_model(data: dict) -> dict:
             pm.multimodal = bool(data["multimodal"])
         if data.get("enabled") is not None:
             pm.enabled = bool(data["enabled"])
+        # 采样温度：空串 = 跟随系统默认（TEXT 存储，兼容手动填写）
+        if data.get("temperature") is not None:
+            t = data["temperature"]
+            pm.temperature = str(t).strip()[:16] if t != "" else ""
+        if data.get("note") is not None:
+            pm.note = str(data.get("note") or "")[:500]
+        # 思考能力：探测接口会自动写回，此处也允许手动标记（-1/0/1）
+        if data.get("supports_thinking") is not None:
+            pm.supports_thinking = max(-1, min(1, int(data["supports_thinking"])))
+        if data.get("thinking_levels") is not None:
+            levels = [str(x)[:20] for x in (data["thinking_levels"] or [])][:12]
+            pm.thinking_levels = json.dumps(levels, ensure_ascii=False)
         pm.updated_at = datetime.now()
         db.commit()
         return {"id": pm.id, "model": pm.model}
