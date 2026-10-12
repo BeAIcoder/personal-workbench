@@ -319,7 +319,7 @@ describe('探测交互（组件 setup 级）', () => {
 })
 
 describe('模型表单与预设填充（组件 setup 级）', () => {
-  it('编辑模型回填：temperature / 备注 / 思考字段', () => {
+  it('编辑模型回填：temperature / 备注 / 思考字段 / 视觉开关', () => {
     const { ctx } = mountDrawer()
     ctx.openModelForm(
       { id: 3 },
@@ -328,7 +328,7 @@ describe('模型表单与预设填充（组件 setup 级）', () => {
         model: 'deepseek-reasoner',
         context_size: 64000,
         max_tokens: 4096,
-        multimodal: true,
+        supports_vision: true,
         enabled: true,
         temperature: 0.7,
         note: '推理用',
@@ -344,13 +344,24 @@ describe('模型表单与预设填充（组件 setup 级）', () => {
       note: '推理用',
       supports_thinking: 1,
       thinking_levels: ['low', 'high'],
+      supports_vision: true,
     })
   })
 
-  it('新增模型默认：temperature 空、思考自动、级别空', () => {
+  it('视觉开关回填：supports_vision 缺省时回退旧的 multimodal 字段', () => {
+    const { ctx } = mountDrawer()
+    ctx.openModelForm({ id: 3 }, { id: 8, model: 'm', multimodal: true })
+    expect(ctx.modelDialog.supports_vision).toBe(true)
+    ctx.openModelForm({ id: 3 }, { id: 9, model: 'm', multimodal: true, supports_vision: false })
+    expect(ctx.modelDialog.supports_vision).toBe(false)
+    ctx.openModelForm({ id: 3 }, { id: 10, model: 'm' })
+    expect(ctx.modelDialog.supports_vision).toBe(false)
+  })
+
+  it('新增模型默认：temperature 空、思考自动、级别空、视觉关', () => {
     const { ctx } = mountDrawer()
     ctx.openModelForm({ id: 3 })
-    expect(ctx.modelDialog).toMatchObject({ id: null, temperature: null, note: '', supports_thinking: -1, thinking_levels: [] })
+    expect(ctx.modelDialog).toMatchObject({ id: null, temperature: null, note: '', supports_thinking: -1, thinking_levels: [], supports_vision: false })
   })
 
   it('保存模型透传新字段（temperature 留空传空串 = 跟随）', async () => {
@@ -369,6 +380,7 @@ describe('模型表单与预设填充（组件 setup 级）', () => {
         note: '备注',
         supports_thinking: 1,
         thinking_levels: ['low', 'high'],
+        supports_vision: false,
       }),
     )
     expect(emit).toHaveBeenCalledWith('refresh')
@@ -381,6 +393,24 @@ describe('模型表单与预设填充（组件 setup 级）', () => {
     ctx.modelDialog.supports_thinking = -1
     await ctx.saveModel()
     expect(assistantApi.providers.saveModel).toHaveBeenLastCalledWith(3, expect.objectContaining({ supports_thinking: -1, thinking_levels: [] }))
+  })
+
+  it('保存模型透传视觉开关 supports_vision（旧 multimodal 字段同步保持一致）', async () => {
+    const { ctx } = mountDrawer()
+    ctx.openModelForm({ id: 3 }, { id: 7, model: 'm', supports_vision: false })
+    ctx.modelDialog.supports_vision = true
+    await ctx.saveModel()
+    expect(assistantApi.providers.saveModel).toHaveBeenLastCalledWith(
+      3,
+      expect.objectContaining({ supports_vision: true, multimodal: true }),
+    )
+
+    ctx.modelDialog.supports_vision = false
+    await ctx.saveModel()
+    expect(assistantApi.providers.saveModel).toHaveBeenLastCalledWith(
+      3,
+      expect.objectContaining({ supports_vision: false, multimodal: false }),
+    )
   })
 
   it('从预设填充：base_url + 候选模型，保存后自动添加', async () => {

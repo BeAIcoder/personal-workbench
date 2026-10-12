@@ -78,9 +78,11 @@ export const assistantApi = {
   history: (sessionId) => api.get(`/assistant/history/${sessionId}`),
 
   sessions: {
-    list: () => api.get('/assistant/sessions'),
+    list: (params) => api.get('/assistant/sessions', { params }),
     create: (data) => api.post('/assistant/sessions', data),
     rename: (sessionId, title) => api.put(`/assistant/sessions/${sessionId}`, { session_id: sessionId, title }),
+    archive: (sessionId) => api.post(`/assistant/sessions/${sessionId}/archive`),
+    unarchive: (sessionId) => api.post(`/assistant/sessions/${sessionId}/unarchive`),
     remove: (sessionId) => api.delete(`/assistant/sessions/${sessionId}`),
   },
 

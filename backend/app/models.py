@@ -85,6 +85,8 @@ class AgentSession(Base):
 
     session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     title: Mapped[str] = mapped_column(String(100), default="")
+    # 归档：归档后不出现在默认会话列表（archived=true 过滤可见）
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -129,6 +131,8 @@ class ProviderModel(Base):
     probed_context: Mapped[int] = mapped_column(Integer, default=0)
     # 探测出的最大输出 tokens（0 = 未探测）
     probed_max_output: Mapped[int] = mapped_column(Integer, default=0)
+    # 视觉（图片理解）能力开关：聊天传图前由编排层校验，false 时带图请求直接 400
+    supports_vision: Mapped[bool] = mapped_column(Boolean, default=False)
     # 探测分步详情（JSON：reasoning/context/output 各步的判定与请求记录）
     probe_result: Mapped[str] = mapped_column(Text, default="")
     # 最近一次探测时间（ISO 本地时间，如 2026-10-12T20:30:00）

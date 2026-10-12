@@ -159,6 +159,7 @@ GET /api/schedules?start=2026-09-01&end=2026-09-30
 }
 ```
 - 模型未配置：200 返回 `{ "ok": false, "need_llm_config": true, "message": "模型未配置：…" }`
+- 带图附件而当前模型未开启视觉能力：返回 `400` `{ "detail": "当前模型不支持图片理解，请在设置中为该模型开启视觉能力或切换视觉模型" }`
 - **运行时异常（模型网络/鉴权等）：返回 `502` `{ "detail": "助手服务暂时不可用，请稍后重试" }`**（服务端日志记录完整堆栈，不回传内部细节）
 
 #### POST /api/assistant/chat/stream（SSE 流式）
@@ -181,10 +182,13 @@ GET /api/schedules?start=2026-09-01&end=2026-09-30
 #### 会话管理
 | 接口 | 说明 |
 | --- | --- |
-| `GET /api/assistant/sessions?limit=50` | 会话列表（按更新时间倒序，含 msg_count） |
+| `GET /api/assistant/sessions?limit=50&archived=` | 会话列表（按更新时间倒序，含 msg_count / archived）；`archived` 传 `true`/`false` 按归档状态过滤，不传返回全部 |
 | `POST /api/assistant/sessions` | 新建会话 `{session_id, title?}` |
 | `PUT /api/assistant/sessions/{id}` | 重命名 `{session_id, title}` |
 | `DELETE /api/assistant/sessions/{id}` | 删除会话（含全部消息） |
+| `POST /api/assistant/sessions/{id}/archive` | 归档会话 → `{"ok": true}`；不存在返回 404 |
+| `POST /api/assistant/sessions/{id}/unarchive` | 恢复会话 → `{"ok": true}`；不存在返回 404 |
+| `GET /api/assistant/sessions/{id}/export` | 导出 Markdown 附件（`text/markdown; charset=utf-8`，`Content-Disposition: attachment; filename="session-{id}.md"`）；不存在返回 404 |
 
 ### 专家团队配置
 
@@ -218,7 +222,7 @@ route-test 入参与返回：
 {
   "llm": { "configured": true, "protocol": "openai", "provider": "…", "base_url": "…", "model": "…" },
   "config": { /* api_key 已脱敏为 ••••••xxxx，附 api_key_set */ },
-  "presets": [ /* 7 个供应商预设 */ ],
+  "presets": [ /* 18 家供应商预设 */ ],
   "providers": [ /* 供应商及其模型 */ ],
   "models": [ /* 启用中模型扁平列表（快速切换用） */ ],
   "work_modes": { "standard": {...}, "readonly": {...}, "deep": {...} },
@@ -245,10 +249,10 @@ route-test 入参与返回：
 #### 供应商 / 模型（两级管理）
 | 接口 | 说明 |
 | --- | --- |
-| `GET /api/assistant/providers` | `{ providers（api_key 不回传，含 api_key_set）, presets }` |
+| `GET /api/assistant/providers` | `{ providers（api_key 不回传，含 api_key_set）, presets }`；presets 每项含 `vision_models`（已知视觉模型清单，供界面预勾选模型的 supports_vision） |
 | `POST /api/assistant/providers` | 新增/更新：`{provider_id?, name, protocol?, base_url?, api_key?, enabled?}`；api_key 空或 `********` 保留现值 |
 | `DELETE /api/assistant/providers/{id}` | 删除供应商（含其模型；若为激活模型则取消激活） |
-| `POST /api/assistant/providers/{id}/models` | 新增/更新模型：`{model_id?, model, context_size?(4096~2000000), max_tokens?(64~500000), multimodal?, enabled?}` |
+| `POST /api/assistant/providers/{id}/models` | 新增/更新模型：`{model_id?, model, context_size?(4096~2000000), max_tokens?(64~500000), multimodal?, supports_vision?, enabled?}`；`supports_vision` 为视觉（图片理解）能力，聊天传图需开启 |
 | `DELETE /api/assistant/providers/{id}/models/{mid}` | 删除模型 |
 | `POST /api/assistant/models/{id}/activate` | 激活模型（跨供应商，立即生效）；不存在/未启用返回 404 |
 | `GET /api/assistant/models` | 启用中模型扁平列表 |
@@ -256,7 +260,7 @@ route-test 入参与返回：
 ### 附件与扩展
 
 #### POST /api/assistant/upload
-multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超限 400）；`.xlsx/.xls` 自动把第一张工作表转 CSV。返回 `{ "name", "path", "kind"("file"/"csv_converted"), "size", "note" }`。
+multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超限 400）。扩展名白名单：文本/数据类 `.txt .md .csv .json .log .py .html .xml .yaml .yml .sql`、Excel `.xlsx/.xls`（自动把第一张工作表转 CSV）、图片 `.png .jpg .jpeg .webp .gif`；白名单外返回 400。返回 `{ "name", "path", "kind"("file"/"csv_converted"/"image"), "size", "note" }`。
 
 #### GET /api/assistant/skills/discover?dir=...
 扫描技能池目录（SKILL.md 格式）：`{ "count", "names" }`；目录不存在返回 `error`。

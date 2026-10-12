@@ -11,7 +11,10 @@
       </div>
 
       <div v-for="(m, i) in messages" :key="i" class="msg-row" :class="m.role">
-        <div v-if="m.role === 'user'" class="bubble user-bubble">{{ m.content }}</div>
+        <div v-if="m.role === 'user'" class="bubble user-bubble">
+          <img v-for="(src, j) in m.images || []" :key="j" class="msg-img" :src="src" alt="聊天图片" />
+          {{ m.content }}
+        </div>
         <div v-else class="bubble ai-bubble" :class="{ 'error-bubble': m.error }">
           <div class="ai-meta">
             <span class="agent-chip" :style="{ background: m.color || '#909399' }">{{ m.agentLabel }}</span>
@@ -84,25 +87,30 @@
         </el-dropdown>
       </div>
       <div v-if="attachments.length" class="attach-row">
-        <el-tag
-          v-for="(a, i) in attachments"
-          :key="i"
-          closable
-          size="small"
-          :type="a.kind === 'csv_converted' ? 'success' : 'info'"
-          @close="attachments.splice(i, 1)"
-        >
-          📄 {{ a.name }}{{ a.note ? '（' + a.note + '）' : '' }}
-        </el-tag>
+        <template v-for="(a, i) in attachments" :key="i">
+          <div v-if="isImageAttachment(a)" class="attach-img-wrap" :title="a.name">
+            <img class="attach-img" :src="attachmentImageSrc(a, API_BASE)" :alt="a.name" />
+            <el-icon class="attach-img-x" title="移除" @click="removeAttachment(i)"><Close /></el-icon>
+          </div>
+          <el-tag
+            v-else
+            closable
+            size="small"
+            :type="a.kind === 'csv_converted' ? 'success' : 'info'"
+            @close="removeAttachment(i)"
+          >
+            📄 {{ a.name }}{{ a.note ? '（' + a.note + '）' : '' }}
+          </el-tag>
+        </template>
       </div>
       <div class="input-row">
         <el-upload
           :show-file-list="false"
           :auto-upload="false"
           :on-change="onFilePicked"
-          accept=".txt,.md,.csv,.json,.log,.py,.html,.xml,.yaml,.yml,.sql,.xlsx,.xls"
+          :accept="ASSISTANT_ACCEPT"
         >
-          <el-button circle :loading="uploading" title="添加文件分析（≤10MB）">
+          <el-button circle :loading="uploading" title="添加文件或图片分析（≤10MB）">
             <el-icon><Paperclip /></el-icon>
           </el-button>
         </el-upload>
@@ -110,7 +118,7 @@
           v-model="draft"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 4 }"
-          placeholder="输入问题，Enter 发送，Shift+Enter 换行；可点 📎 附加文件"
+          placeholder="输入问题，Enter 发送，Shift+Enter 换行；可点 📎 附加文件或图片"
           @keydown.enter.exact.prevent="send()"
         />
         <el-button type="primary" :loading="loading" @click="send()">发送</el-button>
@@ -123,8 +131,9 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
-import { ArrowDown, Paperclip } from '@element-plus/icons-vue'
+import { ArrowDown, Close, Paperclip } from '@element-plus/icons-vue'
 import { assistantApi, API_BASE } from '../../api'
+import { ASSISTANT_ACCEPT, attachmentImageSrc, isImageAttachment, isImageFile } from '../../utils/assistant'
 
 const props = defineProps({
   sessionId: { type: String, default: '' },
@@ -190,7 +199,30 @@ function abortStream() {
   }
 }
 
-onBeforeUnmount(abortStream)
+// 图片缩略图用的 objectURL：移除附件或组件卸载时统一 revoke，避免内存泄漏
+const objectUrls = new Set()
+
+function createPreviewUrl(file) {
+  const url = URL.createObjectURL(file)
+  objectUrls.add(url)
+  return url
+}
+
+function revokePreviewUrl(url) {
+  if (!url || !objectUrls.has(url)) return
+  URL.revokeObjectURL(url)
+  objectUrls.delete(url)
+}
+
+function releaseAllPreviewUrls() {
+  for (const url of objectUrls) URL.revokeObjectURL(url)
+  objectUrls.clear()
+}
+
+onBeforeUnmount(() => {
+  abortStream()
+  releaseAllPreviewUrls()
+})
 
 const suggestions = [
   '帮我看看工作台现在有多少逾期任务',
@@ -263,9 +295,17 @@ async function send(text) {
   messages.value.push({ role: 'user', content, time: nowTime() })
 
   const atts = attachments.value.splice(0)  // 发送后清空附件
-  if (atts.length) {
-    messages.value[messages.value.length - 1].content +=
-      '\n（附件：' + atts.map((a) => a.name).join('、') + '）'
+  const userMsg = messages.value[messages.value.length - 1]
+  // 图片附件：气泡里显示缩略图（优先上传响应 url，其次本地 objectURL），不再拼文件名文本
+  const images = atts
+    .filter((a) => isImageAttachment(a))
+    .map((a) => attachmentImageSrc(a, API_BASE))
+    .filter(Boolean)
+  if (images.length) userMsg.images = images
+  // 非图片附件：保持原有「（附件：…）」文本行为
+  const files = atts.filter((a) => !isImageAttachment(a))
+  if (files.length) {
+    userMsg.content += '\n（附件：' + files.map((a) => a.name).join('、') + '）'
   }
 
   const aiMsg = reactive({
@@ -409,6 +449,12 @@ async function saveReasoning() {
 }
 
 // ---------------- 附件上传 ----------------
+function removeAttachment(i) {
+  const a = attachments.value[i]
+  revokePreviewUrl(a?.previewUrl)  // 本地预览地址随移除一起回收
+  attachments.value.splice(i, 1)
+}
+
 async function onFilePicked(uploadFile) {
   const raw = uploadFile.raw
   if (!raw) return
@@ -420,7 +466,10 @@ async function onFilePicked(uploadFile) {
   const sid = ensureSession()
   try {
     const { data } = await assistantApi.config.upload(sid, raw)
-    attachments.value.push({ name: data.name, path: data.path, kind: data.kind, note: data.note })
+    const att = { name: data.name, path: data.path, kind: data.kind, note: data.note }
+    // 图片：本地 objectURL 供缩略图预览（后端若返回可访问 url 则优先用它）
+    if (isImageFile(raw) || isImageAttachment(att)) att.previewUrl = createPreviewUrl(raw)
+    attachments.value.push(att)
     if (data.note) ElMessage.success(data.note)
   } finally {
     uploading.value = false
@@ -697,6 +746,47 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
+}
+
+.attach-img-wrap {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #ebeef5;
+  background: #fff;
+}
+
+.attach-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.attach-img-x {
+  position: absolute;
+  top: 0;
+  right: 0;
+  cursor: pointer;
+  padding: 2px;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 0 0 0 6px;
+}
+
+.attach-img-x:hover {
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.msg-img {
+  display: block;
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 6px;
+  margin-bottom: 6px;
 }
 
 .mode-select {

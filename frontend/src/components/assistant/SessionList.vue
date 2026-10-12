@@ -3,6 +3,10 @@
     <template #header>
       <div class="card-head">
         <span>会话</span>
+        <el-radio-group v-model="tab" size="small">
+          <el-radio-button :value="false">进行中</el-radio-button>
+          <el-radio-button :value="true">已归档</el-radio-button>
+        </el-radio-group>
         <el-button size="small" type="primary" plain @click="emit('create')">
           <el-icon><Plus /></el-icon>&nbsp;新建
         </el-button>
@@ -22,25 +26,43 @@
           <span class="session-time">{{ fmtDT(s.updated_at) }}</span>
         </div>
         <div class="session-actions" @click.stop>
-          <el-icon @click="emit('rename', s)"><Edit /></el-icon>
-          <el-icon class="danger" @click="emit('delete', s)"><Delete /></el-icon>
+          <el-icon v-if="!s.archived" title="归档" @click="emit('archive', s)"><FolderChecked /></el-icon>
+          <el-icon v-else title="恢复" @click="emit('restore', s)"><FolderOpened /></el-icon>
+          <el-icon title="导出 Markdown" @click="exportSession(s)"><Download /></el-icon>
+          <el-icon title="重命名" @click="emit('rename', s)"><Edit /></el-icon>
+          <el-icon class="danger" title="删除" @click="emit('delete', s)"><Delete /></el-icon>
         </div>
       </div>
-      <el-empty v-if="!sessions.length" description="暂无会话" :image-size="50" />
+      <el-empty v-if="!sessions.length" :description="archived ? '暂无已归档会话' : '暂无会话'" :image-size="50" />
     </div>
   </el-card>
 </template>
 
 <script setup>
-import { Delete, Edit, Plus } from '@element-plus/icons-vue'
+import { computed } from 'vue'
+import { Delete, Download, Edit, FolderChecked, FolderOpened, Plus } from '@element-plus/icons-vue'
+import { API_BASE } from '../../api'
 import { fmtDT } from '../../utils/format'
+import { sessionExportUrl } from '../../utils/assistant'
 
-defineProps({
+const props = defineProps({
   sessions: { type: Array, default: () => [] },
   currentSessionId: { type: String, default: '' },
+  archived: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['create', 'select', 'rename', 'delete'])
+const emit = defineEmits(['create', 'select', 'rename', 'delete', 'archive', 'restore', 'update:archived'])
+
+// 页签与父组件的 archived 状态双向绑定；父组件按 archived 参数重新拉取列表
+const tab = computed({
+  get: () => props.archived,
+  set: (v) => emit('update:archived', v),
+})
+
+// 导出 Markdown 附件：直接 window.open 触发浏览器下载
+function exportSession(s) {
+  window.open(sessionExportUrl(s.session_id, API_BASE), '_blank')
+}
 </script>
 
 <style scoped>
@@ -61,6 +83,7 @@ const emit = defineEmits(['create', 'select', 'rename', 'delete'])
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .session-item {
@@ -85,7 +108,7 @@ const emit = defineEmits(['create', 'select', 'rename', 'delete'])
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-right: 40px;
+  padding-right: 104px;
 }
 
 .session-meta {

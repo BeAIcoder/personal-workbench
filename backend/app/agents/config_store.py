@@ -3,7 +3,7 @@
 - `model_providers`：一家供应商一张卡片（名称/协议/base_url/api_key/启停）；
 - `provider_models`：供应商下挂多个模型（上下文/输出上限/多模态标记/能力探测结果/启停）；
 - `agent_settings.active_model_id`：当前激活的模型，跨供应商选择；
-- `provider_presets.json`：供应商预设（界面选择后自动填充 base_url 与候选模型），
+- `provider_presets.json`：供应商预设（界面选择后自动填充 base_url、候选模型与视觉模型清单），
   由 `load_presets()` 加载，缺失/损坏时回退内置默认集；
 - `.env` 的 LLM_* 仅在没有任何激活模型时兜底。
 
@@ -68,6 +68,7 @@ _FALLBACK_PRESETS: list[dict] = [
         "note": "官方直连",
         "docs_url": "https://platform.deepseek.com/api-docs/",
         "reasoning_models": ["deepseek-reasoner"],
+        "vision_models": [],
     },
     {
         "name": "ollama",
@@ -78,6 +79,7 @@ _FALLBACK_PRESETS: list[dict] = [
         "note": "完全本地、免费；需先安装 Ollama 并拉取模型",
         "docs_url": "https://ollama.com/",
         "reasoning_models": [],
+        "vision_models": [],
     },
     {
         "name": "custom",
@@ -88,6 +90,7 @@ _FALLBACK_PRESETS: list[dict] = [
         "note": "任意 OpenAI 兼容服务；anthropic 协议请用协议下拉选择",
         "docs_url": "",
         "reasoning_models": [],
+        "vision_models": [],
     },
 ]
 
@@ -103,6 +106,7 @@ def _normalize_preset(item) -> dict | None:
         return None
     models = item.get("models") if isinstance(item.get("models"), list) else []
     reasoning = item.get("reasoning_models") if isinstance(item.get("reasoning_models"), list) else []
+    vision = item.get("vision_models") if isinstance(item.get("vision_models"), list) else []
     return {
         "name": name,
         "label": label,
@@ -112,6 +116,8 @@ def _normalize_preset(item) -> dict | None:
         "note": str(item.get("note") or "").strip()[:200],
         "docs_url": str(item.get("docs_url") or "").strip()[:300],
         "reasoning_models": [str(m).strip()[:120] for m in reasoning if str(m).strip()][:30],
+        # 已知支持图片理解的视觉模型（界面据此预勾选模型的 supports_vision）
+        "vision_models": [str(m).strip()[:120] for m in vision if str(m).strip()][:30],
     }
 
 
@@ -167,6 +173,7 @@ DEFAULTS: dict = {
     "context_size": 128000,
     "max_tokens": 2048,
     "multimodal": False,
+    "supports_vision": False,
     "max_iters": 5,
     "enable_memory": True,
     "history_inject": 12,
@@ -257,6 +264,7 @@ def load() -> dict:
                 "context_size": pm.context_size,
                 "max_tokens": pm.max_tokens,
                 "multimodal": pm.multimodal,
+                "supports_vision": bool(pm.supports_vision),
                 "provider_name": prov.name,
                 # 模型级采样温度（空 = 不设置，跟随厂商默认）；非法值忽略
                 "temperature": _parse_temperature(pm.temperature),
@@ -300,6 +308,7 @@ def model_cfg_by_id(mid: int) -> dict | None:
                     "context_size": pm.context_size,
                     "max_tokens": pm.max_tokens,
                     "multimodal": pm.multimodal,
+                    "supports_vision": bool(pm.supports_vision),
                     "provider_name": prov.name,
                     "temperature": _parse_temperature(pm.temperature),
                 }
@@ -422,6 +431,8 @@ def list_providers() -> list[dict]:
                     "context_size": m.context_size,
                     "max_tokens": m.max_tokens,
                     "multimodal": m.multimodal,
+                    # 视觉（图片理解）能力：聊天传图需开启
+                    "supports_vision": bool(m.supports_vision),
                     "enabled": m.enabled,
                     "active": m.id == active_model_id,
                     # 采样温度（空 = 跟随系统默认）与备注
@@ -457,6 +468,7 @@ def models_flat() -> list[dict]:
                         "provider": p["name"],
                         "model": m["model"],
                         "multimodal": m["multimodal"],
+                        "supports_vision": m["supports_vision"],
                         "active": m["active"],
                     }
                 )
@@ -523,6 +535,8 @@ def save_provider_model(data: dict) -> dict:
         pm.max_tokens = max(64, int(data.get("max_tokens") or pm.max_tokens or 2048))
         if data.get("multimodal") is not None:
             pm.multimodal = bool(data["multimodal"])
+        if data.get("supports_vision") is not None:
+            pm.supports_vision = bool(data["supports_vision"])
         if data.get("enabled") is not None:
             pm.enabled = bool(data["enabled"])
         # 采样温度：空串 = 跟随系统默认（TEXT 存储，兼容手动填写）
