@@ -48,6 +48,8 @@ export const STATIC_MENUS = [
   { path: '/schedules', title: '日程管理', icon: 'Calendar' },
   { path: '/notes', title: '笔记管理', icon: 'Notebook' },
   { path: '/assistant', title: 'AI 助手', icon: 'ChatDotRound' },
+  { path: '/knowledge', title: '知识与记忆', icon: 'Reading' },
+  { path: '/mcp', title: 'MCP 工具', icon: 'Connection' },
   { path: '/jobs', title: '定时任务', icon: 'Timer' },
 ]
 </script>

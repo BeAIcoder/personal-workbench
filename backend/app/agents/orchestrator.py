@@ -389,6 +389,23 @@ async def _resolve_spec(question: str, agent_name: str | None):
     return team[default_agent_name(team)], "默认"
 
 
+def _with_memory_context(message: str) -> str:
+    """把检索到的相关长期记忆作为上下文前缀注入用户消息（失败静默，不影响对话）。"""
+    try:
+        from .memory import recall_for_context
+
+        hits = recall_for_context(message, top_k=3)
+        if not hits:
+            return message
+        lines = ["[长期记忆参考]"]
+        lines += [f"- {h['content']}" for h in hits]
+        lines.append("[对话开始]")
+        return "\n".join(lines) + "\n" + message
+    except Exception:
+        logger.warning("长期记忆注入失败（已忽略）", exc_info=True)
+        return message
+
+
 async def chat(
     session_id: str,
     message: str,
@@ -408,7 +425,7 @@ async def chat(
     spec, routed_by = await _resolve_spec(message, agent_name)
     agent = await _ensure_agent(session_id, spec, mode)
 
-    full_message = message + ("\n\n" + _attachments_block(attachments) if attachments else "")
+    full_message = _with_memory_context(message) + ("\n\n" + _attachments_block(attachments) if attachments else "")
 
     from agentscope.message import Msg, TextBlock
 
@@ -462,7 +479,7 @@ async def chat_stream(
 
     agent = await _ensure_agent(session_id, spec, mode)
 
-    full_message = message + ("\n\n" + _attachments_block(attachments) if attachments else "")
+    full_message = _with_memory_context(message) + ("\n\n" + _attachments_block(attachments) if attachments else "")
 
     from agentscope.event import (
         ThinkingBlockDeltaEvent,
