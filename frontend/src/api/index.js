@@ -52,6 +52,7 @@ export const jobApi = {
   update: (id, data) => api.put(`/jobs/${id}`, data),
   remove: (id) => api.delete(`/jobs/${id}`),
   runNow: (id) => api.post(`/jobs/${id}/run`, {}, { timeout: 120000 }),
+  actions: () => api.get('/jobs/actions'),
 }
 
 export const noteApi = {

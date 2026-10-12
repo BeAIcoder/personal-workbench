@@ -63,3 +63,8 @@ async def run_job_now(job_id: int, db: Session = Depends(get_db)):
     _get_or_404(db, job_id)
     result = await scheduler.run_job(job_id)
     return result
+
+
+@router.get("/actions", summary="已注册的模块动作（供定时任务选择，如 finance_board.run）")
+def list_job_actions():
+    return {"actions": scheduler.list_actions()}

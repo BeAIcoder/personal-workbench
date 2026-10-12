@@ -195,10 +195,14 @@ class ScheduledJob(TimestampMixin, Base):
     # 指定专家 name；NULL = 智能路由
     agent_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
     mode: Mapped[str] = mapped_column(String(20), default="standard")  # standard / readonly / deep
-    # interval：按 interval_minutes 间隔；daily：每天 daily_at（HH:MM，本机时区）
+    # interval：按 interval_minutes 间隔；daily：每天 daily_at（HH:MM，本机时区）；
+    # cron：cron_expr 五段表达式（分 时 日 月 周，本机时区）
     schedule_type: Mapped[str] = mapped_column(String(10), default="interval")
     interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     daily_at: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    cron_expr: Mapped[str] = mapped_column(String(60), default="")
+    # 模块动作（空 = Agent 对话任务）：到点执行注册的模块动作而非 LLM 对话，如 finance_board.run
+    action: Mapped[str] = mapped_column(String(100), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     # 运行状态
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
