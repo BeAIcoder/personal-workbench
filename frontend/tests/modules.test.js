@@ -21,12 +21,12 @@ describe('前端模块注册', () => {
     expect(hello.order).toBe(99)
   })
 
-  it('静态菜单 8 项不丢失（文案/图标/顺序不变）', () => {
+  it('静态菜单 10 项不丢失（文案/图标/顺序不变）', () => {
     expect(STATIC_MENUS.map((m) => m.title)).toEqual([
-      '工作台概览', '任务管理', '日程管理', '笔记管理', 'AI 助手', '知识与记忆', 'MCP 工具', '定时任务',
+      '工作台概览', '任务管理', '日程管理', '笔记管理', 'AI 助手', '知识与记忆', 'MCP 工具', '技能包', '专家团文件', '定时任务',
     ])
     expect(STATIC_MENUS.map((m) => m.path)).toEqual([
-      '/', '/tasks', '/schedules', '/notes', '/assistant', '/knowledge', '/mcp', '/jobs',
+      '/', '/tasks', '/schedules', '/notes', '/assistant', '/knowledge', '/mcp', '/skill-packs', '/expert-packs', '/jobs',
     ])
     expect(STATIC_MENUS[0].icon).toBe('Odometer')
   })

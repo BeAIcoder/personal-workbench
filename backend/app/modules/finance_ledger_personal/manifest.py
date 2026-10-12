@@ -51,5 +51,6 @@ manifest = ModuleManifest(
     ],
     column_patches={},
     requires=[],
+    preset_experts=["finance_specialist"],  # 工具自动预置进财税专员白名单
     enabled=True,
 )

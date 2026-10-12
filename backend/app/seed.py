@@ -8,12 +8,18 @@ logger = logging.getLogger(__name__)
 
 
 def seed_agent_specs(db) -> int:
-    """agent_specs 为空时灌入内置专家团队（仅在表为空时执行一次，不覆盖用户改动）。返回写入数量。"""
-    if db.query(AgentSpecModel).count():
-        return 0
+    """灌入缺失的内置专家（增量 upsert：只新增 name 不存在的行，绝不覆盖用户改动）。
+
+    表为空时全量灌入；升级后新增的内置专家（如财税专员）在下次启动自动补齐，
+    老专家的修改/删除不被覆盖——与 zcode/WorkBuddy 插件「安装即添加 agent」一致。
+    """
     from .agents.team import TEAM
 
+    existing = {row.name for row in db.query(AgentSpecModel.name).all()}
+    inserted = 0
     for spec in sorted(TEAM.values(), key=lambda s: s.sort):
+        if spec.name in existing:
+            continue
         db.add(
             AgentSpecModel(
                 name=spec.name,
@@ -31,9 +37,11 @@ def seed_agent_specs(db) -> int:
                 is_builtin=True,
             )
         )
-    db.commit()
-    logger.info("已灌入内置专家团队定义：%d 位专家", len(TEAM))
-    return len(TEAM)
+        inserted += 1
+    if inserted:
+        db.commit()
+        logger.info("已灌入缺失的内置专家：%d 位（现有 %d 位）", inserted, len(TEAM))
+    return inserted
 
 
 def seed_if_empty(db) -> dict | None:

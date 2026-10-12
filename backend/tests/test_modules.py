@@ -146,14 +146,43 @@ def test_finance_specialist_seeded_on_fresh_db(client):
     assert "hello_ping" in spec["tools"]
 
 
-def test_seed_agent_specs_only_fills_empty_table(client):
-    """seed_agent_specs 只灌空表：已有数据的库（如 v1.7 老库）不受新内置专家影响。"""
+def test_seed_agent_specs_backfills_missing_builtins(client):
+    """seed_agent_specs 增量 upsert：老库缺内置专家时补齐，自定义专家不被覆盖/删除。
+
+    （v1.13 起语义从「只灌空表」改为「缺谁补谁」——升级后新增的内置专家自动出现，
+    与 zcode/WorkBuddy 插件「安装即添加 agent」一致。）
+    """
     with SessionLocal() as db:
         # 模拟老库：清掉内置专家，只留一个自定义专家（表非空）
         db.query(AgentSpecModel).delete()
         db.add(AgentSpecModel(name="my_custom", display_name="自定义专家", sort=0))
         db.commit()
-        assert seed_agent_specs(db) == 0
+        assert seed_agent_specs(db) == 8  # 8 位内置专家全部补齐
         names = {r.name for r in db.query(AgentSpecModel).all()}
-        assert names == {"my_custom"}  # finance_specialist 未被灌入
+        assert "my_custom" in names and "finance_specialist" in names
+        # 幂等：再次 seed 不重复
+        assert seed_agent_specs(db) == 0
     team_mod.invalidate_team_cache()
+
+
+def test_module_tools_preset_into_finance_specialist(client):
+    """模块工具预置：启动后财税专员白名单包含各财务模块的 agent_tools（幂等合并）。"""
+    from app.agents import team as team_mod
+    from app.agents.module_tool_preset import FINANCE_TOOL_NAMES
+
+    team = team_mod.load_team(force=True)
+    fs = team["finance_specialist"]
+    missing = [t for t in FINANCE_TOOL_NAMES if t not in fs.tools]
+    assert not missing, f"财税专员缺少预置工具：{missing}"
+
+    # 手工移除一个预置工具后，重新应用预置应补回（预置=模块声明的最小集）
+    with SessionLocal() as db:
+        row = db.query(AgentSpecModel).filter(AgentSpecModel.name == "finance_specialist").one()
+        row.tools = [t for t in (row.tools or []) if t != "vault_query"]
+        db.commit()
+    team_mod.invalidate_team_cache()
+    from app.modules import apply_pending_presets
+
+    assert apply_pending_presets() >= 1
+    team = team_mod.load_team(force=True)
+    assert "vault_query" in team["finance_specialist"].tools

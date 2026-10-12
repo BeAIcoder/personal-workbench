@@ -27,9 +27,22 @@ def test_builtin_agents_seeded_on_startup(client):
 
 
 def test_seed_agent_specs_idempotent(client):
-    # 表已有数据时再次 seed 不重复灌入、不覆盖用户改动
+    # 表已有数据时再次 seed 不重复灌入、不覆盖用户改动（增量 upsert：缺谁补谁）
     with SessionLocal() as db:
         assert seed_agent_specs(db) == 0
+        assert db.query(AgentSpecModel).count() == 8
+    team_mod.invalidate_team_cache()
+
+
+def test_seed_agent_specs_backfills_missing_builtin(client):
+    """升级场景：删掉一位内置专家后重启 seed 自动补齐（用户新建的非内置专家不受影响）。"""
+    from app.seed import seed_agent_specs
+
+    with SessionLocal() as db:
+        victim = db.query(AgentSpecModel).filter(AgentSpecModel.name == "finance_specialist").one()
+        db.delete(victim)
+        db.commit()
+        assert seed_agent_specs(db) == 1  # 只补齐缺失的 1 位
         assert db.query(AgentSpecModel).count() == 8
     team_mod.invalidate_team_cache()
 

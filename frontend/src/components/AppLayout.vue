@@ -50,6 +50,8 @@ export const STATIC_MENUS = [
   { path: '/assistant', title: 'AI 助手', icon: 'ChatDotRound' },
   { path: '/knowledge', title: '知识与记忆', icon: 'Reading' },
   { path: '/mcp', title: 'MCP 工具', icon: 'Connection' },
+  { path: '/skill-packs', title: '技能包', icon: 'Collection' },
+  { path: '/expert-packs', title: '专家团文件', icon: 'UserFilled' },
   { path: '/jobs', title: '定时任务', icon: 'Timer' },
 ]
 </script>
