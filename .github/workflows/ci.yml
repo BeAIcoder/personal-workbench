@@ -5,6 +5,7 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -12,11 +13,12 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "24" }
       - name: 后端测试
+        timeout-minutes: 45
         run: |
           cd backend
           python -m venv venv
           venv/Scripts/python.exe -m pip install -r requirements.txt
-          venv/Scripts/python.exe -m pytest tests -q
+          venv/Scripts/python.exe -m pytest tests -q --durations=15
       - name: 前端测试与构建
         run: |
           cd frontend
