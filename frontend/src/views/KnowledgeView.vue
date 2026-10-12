@@ -21,7 +21,7 @@
 
         <el-tab-pane label="长期记忆" name="memory">
           <div class="mem-bar">
-            <el-input v-model="memKeyword" placeholder="关键词过滤" style="width: 220px" clearable @input="loadMemories" />
+            <el-input v-model="memKeyword" placeholder="关键词过滤" style="width: 220px" clearable @input="debouncedLoadMemories" />
             <el-button type="primary" @click="memDialog.visible = true">新建记忆</el-button>
           </div>
           <el-table :data="memories" size="small" empty-text="暂无记忆">
@@ -58,7 +58,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 
@@ -119,6 +119,15 @@ async function loadMemories() {
   }
 }
 
+// 关键词过滤防抖：避免逐键发请求
+let memTimer = null
+function debouncedLoadMemories() {
+  clearTimeout(memTimer)
+  memTimer = setTimeout(loadMemories, 300)
+}
+
+onBeforeUnmount(() => clearTimeout(memTimer))
+
 function openEditMem(row) {
   memDialog.id = row.id
   memForm.content = row.content
@@ -158,7 +167,11 @@ async function togglePin(row) {
 }
 
 async function removeMem(row) {
-  await ElMessageBox.confirm('删除该记忆？', '删除确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm('删除该记忆？', '删除确认', { type: 'warning' })
+  } catch {
+    return  // 用户取消
+  }
   await api.delete(`/knowledge/memories/${row.id}`)
   await loadMemories()
 }

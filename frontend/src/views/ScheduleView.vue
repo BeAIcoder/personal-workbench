@@ -19,6 +19,7 @@
           </div>
         </template>
       </el-calendar>
+      <div v-if="monthLimitHit" class="month-limit-hint">本月日程已达单次加载上限 200 条，可能未完整显示</div>
     </el-card>
 
     <el-card class="day-card" shadow="never">
@@ -141,6 +142,9 @@ const eventsByDay = computed(() => {
 })
 
 const dayEvents = computed(() => eventsByDay.value[selectedDayKey.value] || [])
+
+// 单次拉取上限 200 条：达到上限说明本月日程可能未完整加载
+const monthLimitHit = computed(() => monthEvents.value.length >= 200)
 
 // 请求序号：快速切换月份时丢弃过期响应
 let loadSeq = 0
@@ -274,6 +278,13 @@ watch(currentDate, (nv, ov) => {
   flex-direction: column;
   align-items: center;
   padding-top: 2px;
+}
+
+.month-limit-hint {
+  margin-top: 8px;
+  color: #e6a23c;
+  font-size: 12px;
+  text-align: center;
 }
 
 .cal-day {

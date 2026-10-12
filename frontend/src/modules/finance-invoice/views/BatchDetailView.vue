@@ -34,7 +34,7 @@
           <el-input v-model="keyword" placeholder="发票号 / 销方 / 购方 过滤" size="small" style="width: 240px" clearable />
         </div>
       </template>
-      <el-table :data="filteredItems" size="small" border>
+      <el-table :data="filteredItems" size="small" border max-height="600">
         <el-table-column prop="invoice_number" label="发票号" min-width="140" />
         <el-table-column label="类型" width="90">
           <template #default="{ row }">

@@ -1,8 +1,8 @@
 # 个人工作台 · 需求与设计规格（spec）
 
-> **版本 v1.15.0（2026-10-12）**
+> **版本 v1.15.1（2026-10-13）**
 >
-> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → **v1.15.0 会话归档与导出 + 聊天传图多模态理解**。
+> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → v1.15.0 会话归档与导出 + 聊天传图多模态理解 → **v1.15.1 复核加固轮（三路并行审计驱动：zip-slip 同前缀绕过 / 解压总量上限 / 事件循环阻塞 / MCP 超时失效等中危全修，前端 sandbox 与 SSE 防御等 23 项修复）**。
 >
 > 权威 as-built 快照：`20261012New/REVERSE_02-SPEC重构.md`；接口细节：`API.md`；架构决策：`20261012New/adr/ADR-001~005`。
 
@@ -305,7 +305,7 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 - **模型级自定义**：`temperature`（空 = 跟随系统默认，已接入 `build_model` 运行时、openai/anthropic 双协议注入）、
   `note`、`supports_thinking` / `thinking_levels` 手动覆盖、`supports_vision`。
 - API Key 存 `model_providers.api_key`，**DPAPI 静态加密**（`dpapi:` 前缀）；回传前端脱敏为 `••••••xxxx`，
-  掩码哨兵 `********`（8 个星号）传回表示保留现值。
+  掩码哨兵 `********`（8 个星号）或脱敏值原样回传均表示保留现值（v1.15.1 起双形态均拒绝覆盖真实密钥）。
 
 ## 7. SSE 流式对话协议
 
@@ -424,7 +424,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 ### 9.3 附件安全（`routers/assistant.py` 的 `/upload` 与编排器 `_attachments_block`）
 
-- **上传**：`session_id` 白名单正则校验（防路径穿越）；文件名取 `Path(name).name` 去目录并做包含校验；
+- **上传**：`session_id` 白名单正则校验（防路径穿越；v1.15.1 起 rename/delete/archive/unarchive/export/history 等路径参数端点同口径校验）；文件名取 `Path(name).name` 去目录并做包含校验；
   扩展名白名单外返回 400（中文提示列出支持类型）；10MB 上限（超限 400）；
   落盘到 `data/uploads/{session_id}/`；xlsx/xls 用 openpyxl 读第一张工作表转 CSV（`utf-8-sig`）。
 - **注入**：对话时对每个附件路径做 `resolve() + relative_to(UPLOAD_DIR)` 校验，越界路径直接忽略；
@@ -479,10 +479,10 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 | 面 | 措施 |
 | --- | --- |
-| API Key 静态加密 | DPAPI（`dpapi:<base64>`，绑定本机 + 当前用户）；缺 pywin32 **拒绝启动，绝不降级明文**；回传前端脱敏 `••••••xxxx`，掩码哨兵 `********` 表示保留现值 |
+| API Key 静态加密 | DPAPI（`dpapi:<base64>`，绑定本机 + 当前用户）；缺 pywin32 **拒绝启动，绝不降级明文**；回传前端脱敏 `••••••xxxx`，掩码哨兵 `********` 或脱敏值原样回传均表示保留现值 |
 | SSRF 防护 | 网关/供应商地址协议白名单 http/https，禁内嵌凭据 |
 | 上传安全 | 扩展名白名单 + 大小限制（10MB）+ 文件名包含校验 + `session_id` 白名单正则（防路径穿越） |
-| ZIP 安全 | zip-slip 防护：拒绝越界与绝对路径条目（finance_cashflow） |
+| ZIP 安全 | zip-slip 防护：`is_relative_to` 判定拒绝越界与绝对路径条目 + 解压后总量上限 200MB（finance_cashflow / finance_pos / finance_invoice） |
 | 数据仓 SQL | SELECT-only + 表名白名单 + 强制 LIMIT + 独立线程 `interrupt()` 超时；去注释后执行 |
 | 执行面 | Bash 工具默认关闭且自带危险文件/目录黑名单；QwenPaw 插件默认关闭且只读模式跳过 |
 | 监听面 | 仅 127.0.0.1；非回环 HOST 启动时告警（未做鉴权，勿在不可信网络开放） |
@@ -517,11 +517,13 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 ## 13. 测试与验证
 
-- **后端 pytest**：`backend/tests/` 共 **315 例全绿**（2026-10-12 实测，约 3 分钟）。conftest 临时库隔离、
+- **后端 pytest**：`backend/tests/` 共 **335 例全绿**（2026-10-13 实测，约 3 分钟）。conftest 临时库隔离、
   引擎对拍、monkeypatch 探测/LLM，全部离线可重复。
   覆盖业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/
   连通性测试 + 定时任务 + QwenPaw 导入静态校验 + RAG/记忆/MCP/技能包/专家团文件 +
-  模型能力探测 + 各财务模块 + 会话归档导出（`test_session_archive.py`）+ 聊天传图（`test_chat_image.py`）。
+  模型能力探测 + 各财务模块 + 会话归档导出（`test_session_archive.py`）+ 聊天传图（`test_chat_image.py`）
+  + v1.15.1 复核加固回归（zip-slip 同前缀绕过/解压炸弹/running 兜底/掩码双形态/session_id 校验/
+  LIKE 转义/registry 异常隔离/manifest 校验/MCP 挂起超时）。
 - **前端 vitest**：`frontend/tests/` 共 **98 例全绿**（16 个文件）：注册断言 + 纯逻辑 + setup 级组件测试
   （格式化/日历范围/Agent 工具函数/定时任务展示/模型探测交互/各财务模块）。
 - **冒烟**：uvicorn 真实端点 + 冒烟数据清理。

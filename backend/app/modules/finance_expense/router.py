@@ -1,4 +1,6 @@
 """finance_expense 模块接口：/api/finance/expense（前缀由注册器按 manifest.prefix 挂载）。"""
+import asyncio
+import gc
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,6 +13,23 @@ from . import service
 from .schemas import ExpenseRunOut, RunDetailOut, RulesReloadOut, RulesSummaryOut, RunListOut
 
 router = APIRouter(tags=["财务模块·费用分类"])
+
+
+def _discard_stored(path: Path) -> None:
+    """分类失败时清理已落盘的上传文件（失败即删，避免 inbox 堆积孤儿文件）。
+
+    引擎失败路径的异常回溯环会暂时持有 Excel 文件句柄（Windows 下句柄被占即禁删），
+    故 PermissionError 时先 gc.collect() 释放回溯环再重试一次；仍失败则放弃清理，
+    保证原始错误响应不受影响。
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError:
+        gc.collect()
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @router.post(
@@ -41,10 +60,13 @@ async def classify(file: UploadFile = File(...), db: Session = Depends(get_db)):
     stored = service.module_subdir("inbox") / f"{uuid4().hex}{suffix}"
     stored.write_bytes(content)
     try:
-        run = service.classify_file(db, original, stored)
+        # pandas 全流程为重活：丢线程池执行，避免阻塞事件循环
+        run = await asyncio.to_thread(service.classify_file, db, original, stored)
     except service.EngineUnavailableError as exc:
+        _discard_stored(stored)
         raise HTTPException(status_code=503, detail=str(exc))
     except ValueError as exc:
+        _discard_stored(stored)
         raise HTTPException(status_code=400, detail=str(exc))
     return service.run_to_dict(run)
 

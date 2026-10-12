@@ -186,3 +186,69 @@ def test_module_tools_preset_into_finance_specialist(client):
     assert apply_pending_presets() >= 1
     team = team_mod.load_team(force=True)
     assert "vault_query" in team["finance_specialist"].tools
+
+
+# ---------- agent_tools 结构校验 ----------
+
+def test_manifest_validate_agent_tools_structure():
+    """agent_tools 条目须为 dict 且含 name/description/func/params/required/readonly，
+    func 可调用、params 为 dict、required 为 list——残缺 spec 在加载期即被检出。"""
+    base = dict(name="finance_x", prefix="/api/finance/x", tables=["mod_x_entry"], menu={})
+    ok_tool = {"name": "t", "description": "d", "readonly": True,
+               "func": lambda: None, "params": {}, "required": []}
+    assert ModuleManifest(**base, agent_tools=[ok_tool]).validate() == []
+
+    broken = [
+        {"name": "t", "description": "d", "readonly": True},      # 缺 func/params/required
+        {**ok_tool, "func": "not-callable"},                      # func 不可调用
+        {**ok_tool, "params": "not-a-dict"},                      # params 类型错误
+        {**ok_tool, "required": "not-a-list"},                    # required 类型错误
+        "not-a-dict",                                             # 条目本身不是 dict
+    ]
+    for tool in broken:
+        errors = ModuleManifest(**base, agent_tools=[tool]).validate()
+        assert errors, f"残缺 agent_tools 未被检出：{tool!r}"
+
+
+# ---------- 工具注册/预置阶段异常隔离 ----------
+
+def test_module_tool_stage_failure_does_not_crash_host(monkeypatch, caplog):
+    """register_module_tools / _preset_expert_tools 抛异常：仅记日志跳过对应动作，
+    模块本体（路由）仍正常挂载，宿主不崩。"""
+    import logging
+
+    from fastapi.testclient import TestClient
+
+    fake = ModuleManifest(
+        name="finance_hello",
+        prefix="/api/finance/hello",
+        tables=["mod_hello_entry"],
+        agent_tools=[{"name": "hello_ping_probe", "description": "d", "readonly": True,
+                      "func": lambda: {"ok": True}, "params": {}, "required": []}],
+        preset_experts=["finance_specialist"],
+    )
+    monkeypatch.setattr(registry_mod, "discover_module_names", lambda: ["finance_hello"])
+    monkeypatch.setattr(registry_mod, "_load_manifest", lambda name: fake)
+
+    def _boom_register(specs):
+        raise RuntimeError("模拟注册表损坏")
+
+    def _boom_preset(manifest):
+        raise RuntimeError("模拟预置写库异常")
+
+    monkeypatch.setattr(registry_mod, "register_module_tools", _boom_register)
+    monkeypatch.setattr(registry_mod, "_preset_expert_tools", _boom_preset)
+
+    app = FastAPI()
+    with caplog.at_level(logging.ERROR):
+        loaded = registry_mod.load_modules(app)
+    # 工具注册/预置失败不拖垮模块：路由仍挂载、模块仍计入已加载
+    assert [m.name for m in loaded] == ["finance_hello"]
+    assert TestClient(app).get("/api/finance/hello/ping").status_code == 200
+    assert any("工具注册失败" in r.message for r in caplog.records)
+    assert any("工具预置失败" in r.message for r in caplog.records)
+
+    # 恢复后重新加载，真实模块清单不受影响
+    monkeypatch.undo()
+    loaded = registry_mod.load_modules(FastAPI())
+    assert "finance_hello" in {m.name for m in loaded}

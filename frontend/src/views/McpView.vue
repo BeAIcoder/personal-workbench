@@ -209,7 +209,11 @@ async function toggleEnabled(row) {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`删除服务器「${row.name}」及其工具注册？`, '删除确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm(`删除服务器「${row.name}」及其工具注册？`, '删除确认', { type: 'warning' })
+  } catch {
+    return  // 用户取消
+  }
   await api.delete(`/mcp/servers/${row.id}`)
   ElMessage.success('已删除')
   await load()

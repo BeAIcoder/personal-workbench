@@ -96,7 +96,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { noteApi } from '../api'
@@ -216,6 +216,8 @@ function debouncedLoad() {
   clearTimeout(timer)
   timer = setTimeout(() => load(1), 300)
 }
+
+onBeforeUnmount(() => clearTimeout(timer))
 
 function applyRoute() {
   if (route.path !== '/notes') return

@@ -9,6 +9,7 @@
 - PATCH 人工修正、导出清单 xlsx + ZIP、下载与未导出 409；
 - invoice_batch_stats 只读 Agent 工具。
 """
+import asyncio
 import io
 import sys
 import zipfile
@@ -21,6 +22,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import engine
 from app.modules.finance_invoice import engine as engine_mod
+from app.modules.finance_invoice import router as invoice_router
 from app.modules.finance_invoice import service
 from app.modules.finance_invoice.models import InvoiceBatch, InvoiceItem
 
@@ -101,6 +103,11 @@ def test_engine_status_endpoint_shape(client):
     assert body["module"] == "finance_invoice"
     assert isinstance(body["available"], bool)
     assert isinstance(body["root"], str) and body["root"]
+
+
+def test_create_batch_handler_remains_coroutine():
+    """create_batch 保持协程（逐文件 await f.read 语义不变），PDF 解析重活经 asyncio.to_thread 进线程池。"""
+    assert asyncio.iscoroutinefunction(invoice_router.create_batch)
 
 
 # ---------------- 文本解析（真实引擎，缺失则 skip） ----------------

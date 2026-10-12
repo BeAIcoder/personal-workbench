@@ -3,7 +3,7 @@
 - Base URL：`http://127.0.0.1:8000/api`
 - 数据格式：JSON（UTF-8）；时间一律 ISO 8601（如 `2026-09-08T09:30:00`，也接受 `2026-09-08` 日期形式）
 - 在线调试：启动后访问 <http://127.0.0.1:8000/docs>（Swagger UI）
-- 错误约定：参数校验失败返回 `422`（body 含 `detail`；**日期查询参数格式错误也返回 422**，不穿透成 500）；资源不存在返回 `404`（`{"detail": "..."}`）；删除成功返回 `204` 无内容
+- 错误约定：参数校验失败返回 `422`（body 含 `detail`；**日期查询参数格式错误也返回 422**，不穿透成 500）；资源不存在返回 `404`（`{"detail": "..."}`）；删除成功返回 `204` 无内容（例外：AI 助手的 sessions/agents、知识与记忆的 memories、MCP 的 servers 删除返回 200 + JSON，如 `{"ok": true}`）
 - 分页约定：列表接口统一返回 `{"items": [...], "total": 总数, "page": 页码, "page_size": 每页条数}`
 
 ## 系统
@@ -11,7 +11,7 @@
 ### GET /api/health
 健康检查。
 ```json
-{ "status": "ok", "app": "个人工作台", "version": "1.0.0" }
+{ "status": "ok", "app": "个人工作台", "version": "1.15.1" }
 ```
 
 ## 任务管理 /api/tasks
@@ -281,7 +281,7 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 | `prompt` | string | 到点执行的提示词（必填，≤5000 字） |
 | `agent_name` | string\|null | 指定专家标识；`null` = 智能路由 |
 | `mode` | string | 工作模式：`standard` / `readonly` / `deep` |
-| `schedule_type` | string | 调度方式：`interval` / `daily` |
+| `schedule_type` | string | 调度方式：`interval` / `daily` / `cron` |
 | `interval_minutes` | int\|null | 间隔分钟（`interval` 必填，5~10080） |
 | `daily_at` | string\|null | 每天执行时间 HH:MM（`daily` 必填） |
 | `enabled` | bool | 是否启用 |
@@ -318,6 +318,98 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 ```
 - `status`：`ok`（成功，`note_id` 为结果笔记 id）/ `skipped`（模型未配置，或上一次尚未结束）/ `error`（`summary` 为错误摘要，同时记入任务 `last_error`）。
 
+## 知识与记忆 /api/knowledge
+
+RAG 笔记检索（BM25 + 中文 bigram 分词，零外部依赖离线可用；索引常驻内存，按笔记更新时间失效自动重建）与长期记忆（跨会话事实/偏好存取；每轮对话前自动召回 Top-3 相关记忆注入上下文）。
+
+### RAG 知识库
+
+#### GET /api/knowledge/rag/stats
+索引状态（笔记数 / 块数 / 词表大小）：
+```json
+{ "notes_indexed": 5, "chunks": 12, "vocabulary": 486 }
+```
+
+#### POST /api/knowledge/rag/rebuild
+手动重建索引（通常无需——索引随笔记变更自动失效重建），返回结构同 stats。
+
+#### POST /api/knowledge/rag/search
+```json
+{ "query": "增值税申报", "top_k": 5 }
+```
+`top_k` 默认 5（1~20）。返回 `{ "items": [ { "note_id": 3, "title": "申报注意事项", "snippet": "…", "score": 2.317 } ] }`；同一笔记只保留最高分块，`snippet` 截断至 220 字。
+
+### 长期记忆
+
+记忆字段：`content` 内容（必填，≤2000 字）、`source` 来源（`manual` 手动 / `auto` 对话抽取）、`tags` 标签数组、`pinned` 是否置顶、`hit_count` 命中次数（召回命中自动累计）、`created_at`。与既有记忆近重复（前 80 字互相包含）时拒存，返回 400。
+
+#### GET /api/knowledge/memories?keyword=
+记忆列表（置顶在前、id 倒序，最多 100 条；`keyword` 按内容过滤）：`{ "items": [ { "id", "content", "source", "session_id", "tags", "pinned", "hit_count", "created_at" } ] }`
+
+#### POST /api/knowledge/memories（返回 201）
+```json
+{ "content": "企业所得税汇算清缴截止 5 月 31 日", "tags": ["税务"], "pinned": false }
+```
+
+#### PUT /api/knowledge/memories/{id}
+部分更新 `content` / `tags` / `pinned`；不存在返回 404，内容为空返回 400。
+
+#### DELETE /api/knowledge/memories/{id}
+返回 `{"ok": true}`；不存在返回 404。
+
+#### POST /api/knowledge/memories/recall
+记忆检索（与 Agent 工具 `recall_memories` 同一实现：bigram 重叠打分 + 置顶/命中数加权）：
+```json
+{ "query": "申报截止", "top_k": 5 }
+```
+`top_k` 默认 5（1~10）。返回 `{ "items": [ /* 同记忆字段 */ ] }`。
+
+#### POST /api/knowledge/memories/extract
+从对话文本一次性抽取记忆（走 LLM，近重复去重后入库）：
+```json
+{ "conversation": "……（对话全文或最近若干轮，至少 20 字）" }
+```
+返回 `{ "extracted": 3, "saved": 2 }`；模型未配置或对话太短时返回 `{ "extracted": 0, "saved": 0, "error": "…" }`。
+
+## MCP 工具 /api/mcp
+
+MCP（Model Context Protocol）服务器管理：仅支持 **stdio** 传输（本地命令起的 MCP Server；HTTP/SSE 预留）。连接成功后服务器工具自动注册为 `mcp_<服务器名>__<工具名>` 进入 Agent 工具白名单（是否只读按工具名启发式推断）；服务启动时自动拉起全部启用中的服务器，单服务器失败不影响宿主。
+
+服务器字段：`name` 服务器名（必填唯一，≤50 字，即工具前缀）、`command` 启动命令（如 `npx` / `python` / `uv`）、`args` 命令参数数组、`env` 环境变量（敏感值只存本机库，**回显一律脱敏为 `***`**）、`enabled`、`status`（`stopped` / `connected` / `error`）、`last_error`、`tools`（已发现的工具清单）。
+
+### GET /api/mcp/servers
+服务器列表（按 id 倒序，含工具清单，env 脱敏）：
+```json
+{ "items": [ { "id": 1, "name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/docs"],
+  "env": { "API_KEY": "***" }, "enabled": true, "status": "connected", "last_error": "",
+  "tools": [ { "name": "read_file", "description": "…" } ], "created_at": "2026-10-12 10:00:00" } ] }
+```
+
+### POST /api/mcp/servers（返回 201）
+```json
+{ "name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/docs"], "env": {}, "enabled": true }
+```
+name 重复或必填缺失返回 400。
+
+### PUT /api/mcp/servers/{id}
+部分更新 `command` / `args` / `env` / `enabled`（保存后 status 重置为 `stopped`，需重新连接）；不存在返回 404。
+
+### DELETE /api/mcp/servers/{id}
+删除并断开连接，返回 `{"ok": true}`；不存在返回 404。
+
+### POST /api/mcp/servers/{id}/connect
+连接（或重连）服务器并注册其工具，返回服务器详情（`status` 变为 `connected`，含工具清单）；命令不存在或握手失败返回 503 中文提示（`status` 记为 `error`）。
+
+### POST /api/mcp/servers/{id}/disconnect
+断开连接（`status` 变为 `stopped`），返回服务器详情；不存在返回 404。
+
+### POST /api/mcp/servers/{id}/test-call
+对已连接的服务器发一次 `tools/call` 测试调用：
+```json
+{ "tool": "read_file", "arguments": { "path": "D:/docs/a.txt" } }
+```
+返回 `{ "text": "…（拼接的文本块，≤8000 字）", "is_error": false, "raw": { /* 原始 JSON-RPC result */ } }`；服务器未连接或调用失败返回 503。
+
 ## 模块机制（Module Registry）/api/finance/*
 
 工作台支持按目录加载业务模块（当前用于财务域）。模块机制约定：
@@ -350,8 +442,8 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 | finance_ledger_bip 企业记账 | `/api/finance/ledger/bip` | `POST /imports/preview`、`POST /imports/confirm`、`GET /imports`、`GET /vouchers`、`GET /vouchers/{id}`、`GET /entries`、`GET /balances/summary`、`POST /vouchers/export-to-vault` |
 | finance_tax 企业所得税 | `/api/finance/tax` | `/enterprises`（CRUD）、`/financial-import`（导入+模板下载）、`/policies`（政策库）、`/tax-returns`（申报 CRUD/提交/计算/导出 Excel·PDF）、`/textbook-reference`（教材对照） |
 | finance_board 报表看板 | `/api/finance/board` | `GET /snapshots`、`POST /run`（触发管线）、`GET /latest`、`GET /snapshots/{id}/html`（iframe 嵌入） |
-| finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行）、`POST /runs/{id}/execute`、`GET /runs`、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP） |
-| finance_pos POS 对账 | `/api/finance/pos` | 同上（无 actual_month 参数） |
+| finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行）、`POST /runs/{id}/execute`、`GET /runs`、`GET /runs/{id}`（运行详情）、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP） |
+| finance_pos POS 对账 | `/api/finance/pos` | 同上（无 actual_month 参数），含 `GET /runs/{id}` 运行详情 |
 
 ### 定时任务扩展（v1.11.0）
 

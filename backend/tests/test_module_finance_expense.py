@@ -5,8 +5,10 @@
 - 模块数据目录（inbox/outbox/tmp）经 monkeypatch 指向 tmp_path，测试不写 tmp_path 之外的位置；
 - 引擎目录缺失的环境中，引擎相关用例整体 skip（503 降级用例不受影响，照常运行）。
 """
+import asyncio
 import importlib
 import sys
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +16,7 @@ import pytest
 
 from app.config import settings
 from app.modules import get_loaded_modules
+from app.modules.finance_expense import router as expense_router
 from app.modules.finance_expense import service
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -235,6 +238,10 @@ def test_bad_content_xlsx_marks_run_failed(expense_env, tmp_path):
     assert runs["items"][0]["status"] == "failed"
     assert runs["items"][0]["total_rows"] == 0
 
+    # 失败的上传文件已清理：inbox 不留孤儿文件（真实引擎失败路径，覆盖文件句柄占用场景）
+    inbox = tmp_path / "finance" / "finance_expense" / "inbox"
+    assert not inbox.exists() or not any(inbox.iterdir())
+
 
 # ---------- 上传约束（扩展名白名单 / 大小限制 / 防路径穿越） ----------
 
@@ -305,3 +312,74 @@ def test_engine_unavailable_degrades_503(client, tmp_path, monkeypatch):
         assert client.get("/api/finance/hello/ping").status_code == 200
     finally:
         service._reset_engine_state()
+
+
+# ---------- 缺陷修复回归：处理器协程形态 / 引擎加载串行化 / 失败清理 inbox ----------
+
+
+def test_classify_handler_remains_coroutine():
+    """classify 处理器保持协程（await file.read 语义不变），pandas 重活经 asyncio.to_thread 进线程池。"""
+    assert asyncio.iscoroutinefunction(expense_router.classify)
+
+
+@requires_engine
+def test_ensure_engine_idempotent_under_lock(expense_env, monkeypatch):
+    """引擎懒加载在模块级锁保护下幂等：重复/并发调用只 import 一次，返回同一缓存。"""
+    assert isinstance(service._ENGINE_LOCK, type(threading.Lock()))
+    service._reset_engine_state()
+    counts = {"expense_classification": 0, "rules_loader": 0}
+    real_import = importlib.import_module
+
+    def counting_import(name, package=None):
+        if name in counts:
+            counts[name] += 1
+        return real_import(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", counting_import)
+    first = service._ensure_engine()
+    assert counts == {"expense_classification": 1, "rules_loader": 1}
+
+    results = [service._ensure_engine() for _ in range(3)]
+    threads = [
+        threading.Thread(target=lambda: results.append(service._ensure_engine()))
+        for _ in range(5)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert counts == {"expense_classification": 1, "rules_loader": 1}  # 缓存命中，未重复 import
+    assert all(r is first for r in results)
+
+
+def test_classify_failure_cleans_inbox_upload(expense_env, monkeypatch, tmp_path):
+    """分类执行失败（400）：inbox 里已落盘的上传文件被清理，不留孤儿文件。"""
+    monkeypatch.setattr(service, "ensure_engine_ready", lambda: None)
+
+    def boom(db, original, stored):
+        raise ValueError("合成：分类执行失败")
+
+    monkeypatch.setattr(service, "classify_file", boom)
+    xlsx = tmp_path / "合成银行明细账.xlsx"
+    _make_bank_xlsx(xlsx)
+    resp = _post_classify(expense_env, xlsx)
+    assert resp.status_code == 400
+    assert "分类执行失败" in resp.json()["detail"]
+    inbox = tmp_path / "finance" / "finance_expense" / "inbox"
+    assert not inbox.exists() or not any(inbox.iterdir())
+
+
+def test_classify_engine_lost_cleans_inbox_upload(expense_env, monkeypatch, tmp_path):
+    """分类途中引擎不可用（503）：inbox 上传文件同样被清理。"""
+    monkeypatch.setattr(service, "ensure_engine_ready", lambda: None)
+
+    def boom(db, original, stored):
+        raise service.EngineUnavailableError("合成：引擎加载失败")
+
+    monkeypatch.setattr(service, "classify_file", boom)
+    xlsx = tmp_path / "合成银行明细账.xlsx"
+    _make_bank_xlsx(xlsx)
+    resp = _post_classify(expense_env, xlsx)
+    assert resp.status_code == 503
+    inbox = tmp_path / "finance" / "finance_expense" / "inbox"
+    assert not inbox.exists() or not any(inbox.iterdir())

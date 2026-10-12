@@ -32,6 +32,9 @@ from .secrets_box import seal, unseal
 
 # 前端回显密钥时使用的掩码哨兵：界面"未改动"传回该值 → 保留现值
 MASK = "********"
+# GET 回显的掩码形态：MASK_PREFIX + 原密钥后四位（见 masked()）；
+# 保存侧对该形态同样视为「未修改保留原值」，防止回显掩码被当成新密钥覆盖真实密钥
+MASK_PREFIX = "••••••"
 
 logger = logging.getLogger(__name__)
 
@@ -323,7 +326,7 @@ def masked(cfg: dict) -> dict:
     """回传给前端的配置：api_key 脱敏。"""
     out = {**cfg}
     key = (cfg.get("api_key") or "").strip()
-    out["api_key"] = ("••••••" + key[-4:]) if key else ""
+    out["api_key"] = (MASK_PREFIX + key[-4:]) if key else ""
     out["api_key_set"] = bool(key)
     return out
 
@@ -476,7 +479,7 @@ def models_flat() -> list[dict]:
 
 
 def save_provider(data: dict) -> dict:
-    """新增/更新供应商；api_key 传空或掩码保留现值。"""
+    """新增/更新供应商；api_key 传空或掩码（MASK 哨兵 / MASK_PREFIX 回显形态）保留现值。"""
     pid = data.get("provider_id")
     name = str(data.get("name") or "").strip()[:50] or "未命名供应商"
     with SessionLocal() as db:
@@ -491,7 +494,8 @@ def save_provider(data: dict) -> dict:
         if data.get("base_url") is not None:
             prov.base_url = str(data["base_url"]).strip().rstrip("/")[:300]
         key_in = str(data.get("api_key") or "").strip()
-        if key_in and key_in != MASK:
+        # 两种掩码形态均视为「未修改保留原值」：哨兵 ******** 与 GET 回显的 ••••••+后四位
+        if key_in and key_in != MASK and not key_in.startswith(MASK_PREFIX):
             prov.api_key = seal(key_in[:300])
         if data.get("enabled") is not None:
             prov.enabled = bool(data["enabled"])

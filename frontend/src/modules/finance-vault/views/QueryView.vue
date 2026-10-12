@@ -76,9 +76,17 @@ function exportCsv() {
   URL.revokeObjectURL(a.href)
 }
 
+// URL 参数拼接 SQL 前的表名白名单校验：只允许安全的标识符
+const TABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 onMounted(() => {
   const table = route.query.table
-  sql.value = table ? `SELECT * FROM ${table} LIMIT 100` : 'SELECT * FROM '
+  if (typeof table === 'string' && TABLE_NAME_RE.test(table)) {
+    sql.value = `SELECT * FROM ${table} LIMIT 100`
+    return
+  }
+  sql.value = 'SELECT * FROM '
+  if (table) ElMessage.warning(`表名「${table}」不合法，已填入默认模板`)
 })
 </script>
 

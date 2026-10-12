@@ -170,7 +170,8 @@ function renderMd(text) {
   try {
     return md.render(text || '')
   } catch {
-    return text
+    // 渲染失败时转义后再进 v-html，避免把未转义原文当 HTML 注入
+    return md.utils.escapeHtml(text || '')
   }
 }
 
@@ -264,6 +265,7 @@ function ensureSession() {
 
 // 父组件切换会话时调用：拉历史并渲染
 async function loadHistory(sid) {
+  releaseAllPreviewUrls()  // 旧会话气泡里的本地缩略图 objectURL 一并回收
   messages.value = []
   try {
     const { data } = await assistantApi.history(sid)
@@ -284,6 +286,7 @@ async function loadHistory(sid) {
 }
 
 function clearMessages() {
+  releaseAllPreviewUrls()
   messages.value = []
 }
 
@@ -377,7 +380,12 @@ async function send(text) {
           } catch {
             continue
           }
-          handleEvent(aiMsg, ev)
+          try {
+            handleEvent(aiMsg, ev)
+          } catch (e) {
+            // 单个畸形事件只跳过，不中断整条流
+            console.warn('[assistant] 跳过畸形 SSE 事件：', e, ev)
+          }
           scrollBottom()
         }
       }
@@ -401,23 +409,24 @@ async function send(text) {
 }
 
 function handleEvent(m, ev) {
+  if (!ev || typeof ev !== 'object') return
   if (ev.type === 'meta') {
-    m.agentLabel = ev.agent.label
-    m.color = ev.agent.color
-    m.routedBy = ev.routed_by === '指定' ? selectedAgentLabel.value : ev.routed_by
-    m.mode = ev.mode
+    m.agentLabel = ev.agent?.label ?? '助手'
+    m.color = ev.agent?.color ?? '#909399'
+    m.routedBy = ev.routed_by === '指定' ? selectedAgentLabel.value : (ev.routed_by || '')
+    if (ev.mode) m.mode = ev.mode
   } else if (ev.type === 'delta') {
-    m.content += ev.text
+    m.content += ev.text ?? ''
   } else if (ev.type === 'thinking_delta') {
-    m.thinking += ev.text
+    m.thinking += ev.text ?? ''
   } else if (ev.type === 'tool_start') {
-    m.toolFlow.push(ev.name)
+    m.toolFlow.push(ev.name ?? '工具')
   } else if (ev.type === 'error') {
     m.error = true
     m.agentLabel = m.agentLabel === '…' ? '系统提示' : m.agentLabel
     if (ev.need_llm_config) {
       m.color = '#E6A23C'
-      m.content = ev.message
+      m.content = ev.message || '请先在设置中配置模型'
     } else {
       m.content = ev.message || '执行失败，请重试'
     }
@@ -425,8 +434,8 @@ function handleEvent(m, ev) {
     // done.reply 是后端剥离 <think> 后的正文，以它为准
     m.content = ev.reply || m.content
     m.thinking = ev.thinking || m.thinking
-    m.trace = ev.trace || []
-    m.routedBy = m.routedBy || ev.routed_by
+    m.trace = Array.isArray(ev.trace) ? ev.trace : []
+    m.routedBy = m.routedBy || ev.routed_by || ''
   }
 }
 

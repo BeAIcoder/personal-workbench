@@ -169,7 +169,11 @@ async function loadFileContent() {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`删除技能包「${row.name}」？目录内所有文件将一并删除。`, '删除确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm(`删除技能包「${row.name}」？目录内所有文件将一并删除。`, '删除确认', { type: 'warning' })
+  } catch {
+    return  // 用户取消
+  }
   try {
     await api.delete(`/skills/packs/${row.dir}`)
     ElMessage.success('已删除')

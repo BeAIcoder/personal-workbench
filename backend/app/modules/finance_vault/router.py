@@ -1,4 +1,6 @@
 """finance_vault 模块接口：/api/finance/vault（前缀由注册器按 manifest.prefix 挂载）。"""
+import asyncio
+
 import duckdb
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -32,8 +34,14 @@ async def ingest_file(
 ):
     content = await file.read()
     try:
-        return service.ingest_uploaded_file(
-            table, file.filename or "upload", content, mode=mode, sheet=sheet
+        # 解析入仓为重活：丢线程池执行，避免阻塞事件循环
+        return await asyncio.to_thread(
+            service.ingest_uploaded_file,
+            table,
+            file.filename or "upload",
+            content,
+            mode=mode,
+            sheet=sheet,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{6,64}")
 
 
+def _check_session_id(session_id: str) -> None:
+    """session_id 字符集校验：不匹配返回 400（上传/导出/会话管理等同口径）。"""
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=400, detail="非法的 session_id")
+
+
 class AttachmentItem(BaseModel):
     name: str = Field(max_length=200)
     path: str = Field(max_length=500)
@@ -65,7 +71,7 @@ class ProviderPayload(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     protocol: Optional[str] = Field(None, description="openai / anthropic")
     base_url: Optional[str] = None
-    api_key: Optional[str] = Field(None, description="空或 ****** 表示保留现值")
+    api_key: Optional[str] = Field(None, description="空 / ******** / •••••• 开头的回显掩码 均表示保留现值")
     enabled: Optional[bool] = None
 
 
@@ -258,8 +264,7 @@ async def upload_attachment(
     session_id: str = Form(...),
     file: UploadFile = File(...),
 ):
-    if not _SESSION_ID_RE.fullmatch(session_id):
-        raise HTTPException(status_code=400, detail="非法的 session_id")
+    _check_session_id(session_id)
     safe_name = Path(file.filename or "file.bin").name
     if safe_name in ("", ".", ".."):
         safe_name = "file.bin"
@@ -445,17 +450,20 @@ def create_session(payload: SessionRequest):
 
 @router.put("/sessions/{session_id}", summary="会话重命名")
 def rename_session(session_id: str, payload: SessionRequest):
+    _check_session_id(session_id)
     return orchestrator.session_rename(session_id, payload.title or "")
 
 
 @router.delete("/sessions/{session_id}", summary="删除会话（含全部消息）")
 def delete_session(session_id: str):
+    _check_session_id(session_id)
     orchestrator.session_delete(session_id)
     return {"ok": True}
 
 
 @router.post("/sessions/{session_id}/archive", summary="归档会话（不存在返回 404）")
 def archive_session(session_id: str):
+    _check_session_id(session_id)
     try:
         orchestrator.session_set_archived(session_id, True)
     except ValueError as exc:
@@ -465,6 +473,7 @@ def archive_session(session_id: str):
 
 @router.post("/sessions/{session_id}/unarchive", summary="恢复会话（不存在返回 404）")
 def unarchive_session(session_id: str):
+    _check_session_id(session_id)
     try:
         orchestrator.session_set_archived(session_id, False)
     except ValueError as exc:
@@ -474,6 +483,7 @@ def unarchive_session(session_id: str):
 
 @router.get("/sessions/{session_id}/export", summary="导出会话为 Markdown 附件（不存在返回 404）")
 def export_session(session_id: str):
+    _check_session_id(session_id)
     try:
         data = orchestrator.session_export(session_id)
     except ValueError as exc:
@@ -537,4 +547,5 @@ async def chat_stream(payload: ChatRequest):
 
 @router.get("/history/{session_id}", summary="会话历史（时间正序）")
 def history(session_id: str, limit: int = Query(50, ge=1, le=200)):
+    _check_session_id(session_id)
     return {"session_id": session_id, "messages": orchestrator.history(session_id, limit)}

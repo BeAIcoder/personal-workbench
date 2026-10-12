@@ -432,3 +432,39 @@ def test_agent_tools_query_real_data(client, bip_dir, tmp_path):
     assert TOOL_SPECS["bip_balance_query"]["func"]()["period"] == "2026-09"
     errored = TOOL_SPECS["bip_balance_query"]["func"](period="bad")
     assert "error" in errored and errored["items"] == []
+
+
+# ---------------- 摘要关键词 LIKE 通配符转义 ----------------
+
+def test_keyword_filter_escapes_like_wildcards(client, bip_dir, tmp_path):
+    """关键词中的 % / _ 按字面匹配，不得作为 LIKE 通配符放大结果集。"""
+    rows = [
+        {"日期": "2026-09-05", "核算账簿": "测试账簿甲", "凭证号": "记-1001", "摘要": "支付办公用品",
+         "借方金额": 100.0, "贷方金额": 0.0},
+        {"日期": "2026-09-05", "核算账簿": "测试账簿甲", "凭证号": "记-1001", "摘要": "支付办公用品",
+         "借方金额": 0.0, "贷方金额": 100.0},
+        {"日期": "2026-09-06", "核算账簿": "测试账簿甲", "凭证号": "记-1002", "摘要": "按5%计提利息",
+         "借方金额": 50.0, "贷方金额": 0.0},
+        {"日期": "2026-09-06", "核算账簿": "测试账簿甲", "凭证号": "记-1002", "摘要": "按5%计提利息",
+         "借方金额": 0.0, "贷方金额": 50.0},
+    ]
+    path = _write_xlsx(tmp_path / "kw.xlsx", rows)
+    token = _preview(client, path).json()["token"]
+    assert _confirm(client, token).status_code == 200
+
+    vouchers = "/api/finance/ledger/bip/vouchers"
+    entries = "/api/finance/ledger/bip/entries"
+
+    # "%" 按字面匹配：只命中摘要真实含 % 的凭证/分录（修复前会匹配全部）
+    v = client.get(vouchers, params={"keyword": "%"}).json()
+    assert v["total"] == 1 and v["items"][0]["voucher_no"] == "记-1002"
+    e = client.get(entries, params={"keyword": "%"}).json()
+    assert e["total"] == 2 and all("%" in i["summary"] for i in e["items"])
+
+    # "_" 同样按字面匹配：数据中无下划线 → 0 条
+    assert client.get(vouchers, params={"keyword": "_"}).json()["total"] == 0
+    assert client.get(entries, params={"keyword": "_"}).json()["total"] == 0
+
+    # 普通关键词语义不变
+    assert client.get(vouchers, params={"keyword": "办公用品"}).json()["total"] == 1
+    assert client.get(entries, params={"keyword": "计提"}).json()["total"] == 2
