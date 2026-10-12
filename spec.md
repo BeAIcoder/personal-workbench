@@ -1,177 +1,504 @@
 # 个人工作台 · 需求与设计规格（spec）
 
-> 本文档描述系统当前（v1.3.0）的需求与设计。历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.1.1 真实模型接入 → v1.2.0 供应商/模型两级管理 → **v1.3.0 Agent 团队配置化 + SSE 流式对话**。
+> **版本 v1.15.0（2026-10-12）**
+>
+> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → **v1.15.0 会话归档与导出 + 聊天传图多模态理解**。
+>
+> 权威 as-built 快照：`20261012New/REVERSE_02-SPEC重构.md`；接口细节：`API.md`；架构决策：`20261012New/adr/ADR-001~005`。
 
-## 1. 背景与目标
+## 1. 定位与硬约束（不可违反）
 
-面向个人日常办公的本地 Web 工作台：任务、日程、笔记三大事项载体 + 概览与全局搜索；
-外加一个**可配置的 AI 助手 Agent 团队**（内置商业地产领域 7 位专家，可在界面上增删改、改关键词、独立绑定模型），
-让自然语言可以直接操作工作台数据。
+面向个人日常办公的**本机单人 Web 工作台**：任务、日程、笔记三大事项载体 + 概览与全局搜索；
+外加一个**表驱动可配的 AI 助手 Agent 团队**（13 位专家）与一整套**财务业务模块群**，
+让自然语言可以直接操作工作台与财务数据。
 
-定位与硬约束：
+| 约束 | 内容 |
+| --- | --- |
+| 部署形态 | 仅监听 `127.0.0.1`、无登录鉴权、数据不出本机；启动时对非回环 HOST 打印醒目告警 |
+| 存储 | SQLite 单文件 `backend/data/workbench.db`，零外部数据库依赖；不允许 Docker 与外部独立数据库 |
+| 运行环境 | Windows 11 · Python 3.12+ · Node 18+ |
+| 依赖红线 | 仅 MIT / Apache-2.0 / BSD；新增依赖需锁版本（`requirements-lock.txt`） |
+| 业务值外置 | 真实业务数据放各引擎 `local_business.json` / `config.local.yaml`；**现金流 V1 数据永不推远端** |
+| Agent 权限边界 | 删除类操作不开放给 Agent（仅页面物理删除；任务可由 Agent 标记完成） |
+| 交付标准 | 测试、文档、双击 bat 启动三件套齐全 |
 
-- **本机单人使用**：服务仅监听 `127.0.0.1`，无登录鉴权；数据不出本机。
-- **SQLite 单文件**：`backend/data/workbench.db`，零外部数据库依赖；重启不丢数据。
-- Windows 11 · Python 3.12+ · Node 18+；不允许 Docker 与外部独立数据库。
-- 交付达到可继续开发的软件工程标准（测试、文档、双击 bat 启动）。
+## 2. 架构总览
 
-## 2. 功能规格
+```
+浏览器（Vue 3.4 纯 JS + Element Plus + ECharts + AG Grid，hash 路由）
+   │ /api（axios；SSE 走原生 fetch）
+FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 专家 seed
+         → 专家团/技能包种子 → 模块工具预置补齐 → 调度器 → MCP 启停）
+   ├── 静态路由 ×12：tasks / schedules / notes / search / dashboard / assistant
+   │                  / jobs / knowledge / mcp / skills / experts / model_probe（探测 + 厂商预设别名）
+   ├── Module Registry（app/modules/）：目录扫描 manifest → 挂载路由/表/工具/预置
+   ├── Agent 团队（agents/）：team 表驱动 + orchestrator 四级路由 + tools 白名单
+   ├── 知识与记忆（rag BM25 / memory 召回注入 / mcp stdio 客户端）
+   └── SQLite（35 张表：宿主 12 + 模块 22 + v1.2.0 遗留 1）
+```
 
-### 2.1 任务管理（`routers/tasks.py` + `TasksView.vue`）
+前端 10 个静态页（概览 / 任务 / 日程 / 笔记 / AI 助手 / 定时任务 / 知识与记忆 / MCP 工具 /
+技能包管理 / 专家团文件）+ 财务分组菜单（由前端模块 manifest 自动生成，路由 `/finance/<name>/...` 懒加载）。
 
-- 字段：标题（必填）、描述、状态（todo/in_progress/done）、优先级（low/medium/high/urgent）、截止时间（可空）、分类、完成时间。
-- 行为规则：`completed_at` 由后端维护——状态改为 `done` 时写入、改回时清空，供 7 天趋势统计使用；删除有前端二次确认。
-- 列表支持状态/优先级/分类/逾期过滤、标题与描述关键词搜索、截止时间区间（含边界）、五种排序、分页。
+## 3. 模块机制（Module Registry）
 
-### 2.2 日程管理（`routers/schedules.py` + `ScheduleView.vue`）
+### 3.1 目录与 manifest 契约
 
-- 月历视图 + 按天列表；有日程的日期显示彩色圆点（最多 3 个，多出显示 +N）。
-- 校验规则：结束时间必须晚于开始时间（违反返回 422）；全天日程落库为 00:00:00–23:59:59。
-- 范围查询按「日程与区间有交集」匹配，适合整月拉取。
+- 模块 = `backend/app/modules/<name>/`（`manifest.py` 五件套）+ `frontend/src/modules/<name>/`（`manifest.js`）。
+- `manifest.py` 必须定义 `manifest = ModuleManifest(...)`，字段：
 
-### 2.3 笔记管理（`routers/notes.py` + `NotesView.vue`）
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 目录名（唯一），财务域模块统一 `finance_` 前缀 |
+| `title` / `version` | 显示名与版本 |
+| `prefix` | HTTP 路由前缀，**必须以 `/api/finance/` 开头**，挂载时 `include_router(router, prefix=prefix)` |
+| `tables` | 本模块创建的表名清单，**统一 `mod_` 前缀**（与宿主表隔离，便于盘点） |
+| `menu` | 前端菜单元数据 `{group, icon, order}` |
+| `agent_tools` | 模块贡献给 Agent 团队的工具 spec（`name`/`description`/`readonly` + `func`/`params`/`required`，与宿主 `TOOL_SPECS` 同构） |
+| `column_patches` | 轻量迁移列补丁 `{表名: {列名: DDL}}`，宿主启动时合并执行 |
+| `requires` | 依赖的其它模块 name；依赖未加载时本模块跳过 |
+| `preset_experts` | 工具预置目标专家 name 列表 |
+| `enabled` | `False` 时整个模块不加载（路由/表/工具均不生效） |
 
-- 字段：标题、正文、标签数组（自动去空格去重，最多 10 个、单个最长 20 字）、置顶。
-- 标签以 JSON 存储且 `ensure_ascii=False`（中文原文），用 LIKE 过滤；列表置顶在前、更新时间倒序。
+`manifest.validate()` 校验 name 非空、prefix 前缀、`mod_` 表前缀、menu 为 dict、工具字段齐全；
+目录名与 `manifest.name` 不一致同样判失败。
 
-### 2.4 概览与全局搜索
+### 3.2 加载语义与故障域隔离
 
-- `/api/dashboard/summary` 一次取全：统计卡片（待办/进行中/逾期/今日日程）、任务状态饼图、近 7 天完成趋势、即将到期任务/今日日程/最近笔记三栏。
-- `/api/search?q=` 一次检索任务/日程/笔记三类，各取前 5 条并返回关键词上下文片段；前端 `Ctrl+K` 唤起，点击结果跳转并带入筛选。
+- `discover_module_names()` 扫描含 `manifest.py` 且不以 `_` 开头的目录（`_template` 模板跳过）。
+- **单模块失败仅记日志跳过**（导入失败 / 校验失败 / 挂载异常），绝不抛异常拖垮宿主与其它模块。
+- `load_modules(app)` 必须在 `main.py` 模块级作用域调用（静态 `include_router` 之后、lifespan 之前）：
+  导入 manifest 时连带导入模块 models，把模块表注册进 `Base.metadata`，lifespan 里的 `create_all` 才能建出模块表。
+- `collect_column_patches()` 汇总各模块列补丁，供 `_ensure_sqlite_columns()` 合并执行。
+- **工具预置**：`preset_experts` 把模块工具**幂等合并**进专家白名单。目标专家尚未入库（新库未 seed）时
+  先暂存，`apply_pending_presets()` 在 seed 之后补齐；暂存记录不删除，每次启动重跑可自愈。
+- 专家白名单引用已禁用模块的工具时自动跳过，不崩。
+- 后端 `register_module_tools()` 与内置工具**重名不覆盖**。
 
-### 2.5 AI 助手（`routers/assistant.py` + `app/agents/`）
+### 3.3 四级接入策略
 
-- **专家团队配置化**：专家定义存 `agent_specs` 表，界面可增删改、启停、编辑关键词与提示词、绑定模型、调整路由优先级（sort）；首次启动自动 seed 7 位内置专家（幂等，仅空表执行）。
-- **对话**：支持非流式 `POST /chat` 与 SSE 流式 `POST /chat/stream`；三种工作模式——standard 标准执行 / readonly 只读咨询（仅查询工具）/ deep 深度研究（更高工具轮次）。
-- **会话**：多会话管理（新建/重命名/删除），消息持久化，刷新与重启后可回看。
-- **供应商/模型两级管理**：一家供应商一张卡片（协议 openai/anthropic、base_url、api_key、启停），下挂多个模型（上下文/输出上限/多模态标记）；跨供应商激活一个模型作为全局默认；连通性/工具调用/多模态三类测试。
-- **附件**：聊天可上传附件（10MB 上限；xlsx 自动转 CSV），文本类附件注入消息、其余提示 Agent 用 Bash 处理。
-- **扩展能力（默认关闭）**：本地技能池（SKILL.md）、Bash 工具、QwenPaw 插件兼容层，均有独立开关。
+财务域统一按「不为整合而整合」的分级策略接入，引擎零重写：
 
-### 2.6 定时任务（`routers/jobs.py` + `app/scheduler.py` + `JobsView.vue`）
+| 级别 | 含义 | 适用对象 |
+| --- | --- | --- |
+| **L0 纯函数直挂** | `import` 原项目引擎（纯 Python、无 GUI 耦合），包一层 router + schema | 发票提取、费用分类、税额计算 |
+| **L1 任务型薄壳** | 不重写引擎，包装为「上传输入文件 → 后台执行原脚本 → 产物入库供下载」 | 现金流 V1、POS 对账 |
+| **L2 产物聚合** | 只接产物不接过程：静态托管 / iframe 嵌入 | 微信报表 HTML 看板 |
+| **L3 仅登记** | 文档/手册类只在资料库建索引 | 合规手册等（未做成模块） |
+| **底座（可选）** | DuckDB 只读数据仓，供其它模块 `export-to-vault` 落库 | finance_vault |
 
-- **定位**：到点自动把任务提示词交给 Agent 团队执行一次，回复写成笔记（标题「【定时任务】{名称} 时间」，标签含「定时任务」），在笔记页回看全部历史。
-- **数据表** `scheduled_jobs`：`name`、`prompt`、`agent_name`（null=智能路由）、`mode`（standard/readonly/deep）、`schedule_type`（interval/daily）、`interval_minutes`（5~10080）、`daily_at`（HH:MM）、`enabled`、`last_run_at`、`last_status`（ok/error/skipped）、`last_error`、`last_note_id`、`recent_runs`（JSON，最近 20 条 `{at,status,summary}`）。
-- **调度算法** `job_due(job, now)`（纯函数）：interval——距 `last_run_at` 达到间隔即到期，从未运行立即到期；daily——到达当天 `daily_at` 且当天未跑过才到期；首次启动当天已过点的补跑一次。
-- **执行链路**：复用 `orchestrator.chat`——路由（指定专家 > 关键词 > LLM 结构化调度）→ 专用会话 `job-{id}` → 回复写成笔记并回填 `last_status/last_error/recent_runs/last_note_id`；`POST /{id}/run` 立即执行与调度循环共用同一入口。
-- **并发与异常**：同一任务串行执行（上次未结束则本轮跳过）；LLM 未配置标记 skipped 不发请求；单次异常记入 `last_error` 与 recent_runs，调度循环吞掉异常继续下一轮，不影响其他任务。
-- **校验**：`interval` 必须带 `interval_minutes`（5~10080）、`daily` 必须带 `daily_at`（HH:MM），否则 422。
+### 3.4 数据目录
 
-## 3. 实现方法与算法说明
+财务模块数据目录 `data/finance/<module>/{inbox,outbox,tmp}`，由 `get_finance_data_dir()` 解析
+（`FINANCE_DATA_DIR` 留空时默认 `backend/data/finance`）。
 
-### 3.1 关键词路由算法（`agents/team.py`）
+## 4. 功能规格
 
-路由顺序：**用户指定 > 关键词规则 > LLM 结构化调度 > 默认专家**。
+### 4.1 基础四件套 + 概览 + 全局搜索
 
-1. **关键词打分**：对每位启用中的专家，统计其 `keywords` 在消息（小写化）中的出现次数（子串包含），得 `{name, display_name, hits, score}` 列表；按命中数降序排列，**同分时 sort 小者胜**（sort 即路由优先级，先专后宽：security 0 → leasing 1 → … → realestate 6 兜底管家）。命中即由得分最高专家应答，`routed_by="关键词"`。
-2. **LLM 回退**：关键词未命中且模型可用时，调度员 Agent 以名册文本 + 用户消息做结构化输出 `{agent, reason}`；输出不在名册内或任何异常都视为失败，`routed_by="AI 调度"`。
-3. **默认专家**：优先 `realestate`（商业地产管家）；被删除/停用时取 sort 最小者，`routed_by="默认"`。
-4. **缓存与失效**：`load_team()` 进程内 60 秒 TTL 缓存；任何专家/模型/供应商配置变更由路由层调用 `invalidate_team_cache()` + `orchestrator.invalidate()` 立即生效；表为空或数据库不可用时回退代码内置 TEAM 定义，保证离线可用。
-5. **路由预览**：`POST /api/assistant/agents/route-test` 输入 `{text}`，强制刷新团队后返回 `{routed, matched_by, matches}`，供界面调试关键词。
+| 域 | 要点 |
+| --- | --- |
+| 任务 `routers/tasks.py` + `TasksView.vue` | 标题（必填）、描述、状态（todo/in_progress/done）、优先级（low/medium/high/urgent）、截止时间、分类、完成时间。`completed_at` 由后端维护（改 done 写入、改回清空）；删除有前端二次确认。列表支持状态/优先级/分类/逾期过滤、标题与描述关键词、截止区间（含边界）、五种排序、分页 |
+| 日程 `routers/schedules.py` + `ScheduleView.vue` | 月历 + 按天列表，有日程日期显示彩色圆点（最多 3 个，多出 +N）。结束必须晚于开始（否则 422）；全天落库 00:00:00–23:59:59；范围查询按「日程与区间有交集」匹配 |
+| 笔记 `routers/notes.py` + `NotesView.vue` | 标题、正文、标签数组（自动去空格去重，最多 10 个、单个最长 20 字）、置顶。标签 JSON 存储且 `ensure_ascii=False`，LIKE 过滤；列表置顶在前、更新时间倒序 |
+| 概览 | `GET /api/dashboard/summary` 一次取全：统计卡片、任务状态饼图、近 7 天完成趋势、即将到期任务/今日日程/最近笔记三栏 |
+| 全局搜索 | `GET /api/search?q=` 一次检索任务/日程/笔记各前 5 条并返回上下文片段；前端 `Ctrl+K` 唤起，点击跳转并带入筛选 |
 
-### 3.2 SSE 流式对话（`agents/orchestrator.py` 的 `chat_stream`）
+### 4.2 AI 助手（`routers/assistant.py` + `app/agents/`）
 
-- 事件协议（每条 `data: {json}\n\n`，流末 `data: [DONE]`）：
-  - `meta`：路由结果（agent 信息、routed_by、mode），先于正文；
-  - `delta`：正文增量；`thinking_delta`：思考过程增量（思考型模型）；
-  - `tool_start`：一次工具调用开始（含工具名）；
-  - `done`：最终消息（完整 reply、thinking、trace）；
-  - `error`：失败事件（模型未配置时带 `need_llm_config: true`）。
+**对话与模式**
+
+- 非流式 `POST /api/assistant/chat` 与 SSE 流式 `POST /api/assistant/chat/stream`，入参一致。
+- 三种工作模式：`standard` 标准执行 / `readonly` 只读咨询（仅放行查询工具，不注入技能与插件）/ `deep` 深度研究（`max_iters` 抬到 ≥10 并附加深度研究提示）。
+- 思考型模型的思考过程剥离到 `thinking` 字段，独立于正文展示。
+- 多会话管理（新建/重命名/删除/归档/导出），消息持久化，刷新与重启后可回看。
+
+**会话归档与导出（v1.15.0 新增）**
+
+- `agent_sessions.archived` 列（`INTEGER DEFAULT 0`，带索引）：归档后不出现在默认列表。
+- `POST /api/assistant/sessions/{id}/archive` · `POST /api/assistant/sessions/{id}/unarchive` → `{"ok": true}`，不存在 404。
+- `GET /api/assistant/sessions/{id}/export` → Markdown 附件（`text/markdown; charset=utf-8`，
+  `Content-Disposition: attachment; filename="session-{id}.md"`），不存在 404。
+  内容 = 标题/会话 ID/创建时间/导出时间/消息数 + 逐条消息（序号 + 发言人 + 时间 + 正文），
+  思考过程与工具执行轨迹分别以 `<details>` 折叠块附在对应消息后。
+- 列表 `GET /api/assistant/sessions?archived=true|false` 按归档状态过滤，不传返回全部；条目含 `msg_count` / `archived` / `updated_at`。
+- 前端 `SessionList.vue` 提供「进行中 / 已归档」页签与归档、恢复、导出图标（导出走 `window.open` 触发浏览器下载）。
+
+**聊天传图与多模态理解（v1.15.0 新增）**
+
+- 附件上传白名单在原有文本/数据类与 Excel 之外新增图片 `.png .jpg .jpeg .webp .gif`（10MB 上限），
+  图片响应 `kind="image"`（Excel 转 CSV 为 `csv_converted`，其余为 `file`）。
+- `provider_models.supports_vision` 列（`INTEGER DEFAULT 0`）：视觉（图片理解）能力开关。
+- 厂商预设 JSON 新增 `vision_models` 字段（已知视觉模型清单，供界面预勾选 `supports_vision`）；
+  每条预设另有 `models` / `reasoning_models`。
+- 视觉模型下，图片附件读成 base64 经 AgentScope `DataBlock`（`Base64Source`）注入 user 消息：
+  formatter 在 OpenAI 侧转 `image_url` 格式，Anthropic 侧转原生图片块；文本类附件仍按原机制注入。
+- 非视觉模型带图请求：`POST /chat` 与 `/chat/stream` 均返回 **400**，
+  `detail` 为中文提示「当前模型不支持图片理解，请在设置中为该模型开启视觉能力或切换视觉模型」。
+  模型整体未配置时不拦截（走既有 `need_llm_config` 引导）。
+- 单张图片上限与上传一致（10MB），越界路径与不存在的文件直接忽略并在文本中说明。
+
+**供应商 / 模型两级管理**
+
+- 一家供应商一张卡片（协议 openai/anthropic、base_url、api_key、启停），下挂多个模型
+  （上下文/输出上限、多模态标记、视觉开关、温度、备注、思考档位、探测结果）。
+- 跨供应商激活一个模型作为全局默认（`agent_settings.active_model_id`）；专家可独立绑定模型（`agent_specs.model_id`），
+  不可用（删除/停用）时回退全局激活模型。
+- 连通性 / 工具调用 / 多模态三类测试（`POST /api/assistant/config/test`）。
+
+**扩展能力（默认关闭）**
+
+本地技能池（`data/skills/<name>/SKILL.md`）、Bash 工具（自带危险文件黑名单）、QwenPaw 插件兼容层，
+均有独立开关；技能池经 AgentScope `LocalSkillLoader` 注入，专家级 `skills` 为空列表时显式关闭。
+
+### 4.3 定时任务（`routers/jobs.py` + `app/scheduler.py` + `JobsView.vue`）
+
+- **定位**：到点自动把任务提示词交给 Agent 团队执行一次，回复写成笔记
+  （标题「【定时任务】{名称} 时间」，标签含「定时任务」），在笔记页回看全部历史。
+- **调度算法**（纯函数）：`cron_matches()` 五段 cron（`* , - /`，0/7=周日，日与周同时受限按「任一命中」语义，
+  同自然分钟不重复触发）+ `job_due()` 覆盖 interval（距 `last_run_at` 达间隔即到期，从未运行立即到期）
+  与 daily（到达当天 `daily_at` 且当天未跑过才到期；首次启动当天已过点补跑一次）。ADR-001：**不引入 APScheduler**。
+- **执行链路**：复用 `orchestrator.chat`——路由（指定专家 > 关键词 > LLM 结构化调度）→ 专用会话 `job-{id}`
+  → 回复写成笔记并回填 `last_status/last_error/recent_runs/last_note_id`；
+  `POST /{id}/run` 立即执行与调度循环共用同一入口。
+- **模块动作任务**：`action` 非空时到点执行注册的模块动作（`JOB_ACTIONS`，如 `finance_board.run`）而非 LLM 对话，
+  走线程池执行、不写笔记；`GET /api/jobs/actions` 列出已注册动作。
+- **并发与异常**：调度循环每 20s 检查一次；同一任务串行执行（上次未结束则本轮跳过）；
+  LLM 未配置标记 skipped 不发请求；单次异常记入 `last_error` 与 recent_runs，循环吞掉异常继续下一轮。
+- **校验**：`interval` 必须带 `interval_minutes`（5~10080）、`daily` 必须带 `daily_at`（HH:MM）、
+  `cron` 必须带合法 `cron_expr`，否则 422。
+
+### 4.4 财务模块（8 可入库 + 1 本地专用 + 1 机制示例）
+
+| 模块 | 级别 | 关键规格 |
+| --- | --- | --- |
+| finance_expense 费用分类 | L0 | v2.0 引擎直挂，规则只读权威源 |
+| finance_invoice 发票处理 | L0 | 发票工具引擎直挂，仅文本型 PDF |
+| finance_vault 数据仓 | 底座 | DuckDB 只读 SQL（SELECT-only + 表白名单 + 强制 LIMIT + interrupt 超时），`ingest_dataframe` 契约 |
+| finance_ledger_personal 个人记账 | 全新 | 两级账户/分类/交易/预算，CSV 导入导出 |
+| finance_ledger_bip 企业记账 | 全新 | BIP 三类导出列签名识别 + 人工映射，借贷平衡 warning，export-to-vault |
+| finance_tax 企业所得税 | 整体迁入 | 原项目 5 routers + 10 services 零改动移植，`mod_tax_` 表前缀，迁移脚本幂等 |
+| finance_board 报表看板 | L2 | m01–m04 管线子进程触发，HTML 快照归档，iframe 嵌入 |
+| finance_pos POS 对账 | L1 | 台账 + 差异分析两步执行，产物差集归集 |
+| finance_cashflow 现金流填报（本地专用） | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护，**整目录 gitignore** |
+| finance_hello 模块示例 | 机制实证 | 连通性自检 + 样例表 `mod_hello_entry` + 只读工具 `hello_ping`（财税专员白名单内） |
+
+跨项目引擎路径（费用分类 / 发票工具）经 `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH`
+配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。
+BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级。
+
+各模块 HTTP 接口清单见 `API.md`「财务模块接口（/api/finance/*）」一节。
+
+### 4.5 知识、记忆与 MCP
+
+**RAG 知识库（ADR-003：BM25，不引向量库）**
+
+- 笔记 BM25 检索，中文按**字符二元组（bigram）**分词 + 英文/数字单词，零外部依赖、完全离线。
+- 索引常驻内存，按 `max(notes.updated_at)` + 块数失效自动重建（自愈），也提供手动重建。
+- 笔记切块 240 字符、重叠一半，块内带标题便于定位；`search_knowledge` 注册为只读 Agent 工具。
+- 端点：`GET /api/knowledge/rag/stats`、`POST /api/knowledge/rag/rebuild`、`POST /api/knowledge/rag/search`。
+
+**长期记忆（ADR-004：手动为主，抽取为一次性动作）**
+
+- `memories` 表（content/source/tags/pinned/hit_count/last_used_at）。
+- 写入以手动保存为主；「从最近对话抽取」为用户触发的一次性动作（走既有 LLM 编排器，
+  产物经近重复 containment 检查后入库）。
+- 检索 = 关键词 LIKE 多词 OR + 置顶/新近度加权；`recall_memories` 注册为只读 Agent 工具。
+- 编排器在每次对话前把 Top-3 相关记忆作为上下文前缀注入（失败静默，不影响对话）。
+- 端点：`GET/POST /api/knowledge/memories`、`PUT/DELETE /api/knowledge/memories/{id}`、
+  `POST /api/knowledge/memories/recall`、`POST /api/knowledge/memories/extract`。
+
+**MCP 工具接入（ADR-002：自实现 stdio 客户端，不引 SDK）**
+
+- 只做 **stdio 传输**（本地命令起的 MCP Server）；HTTP/SSE 传输预留。
+- 协议按 MCP stdio 规范：换行分隔 JSON-RPC 2.0，握手 `initialize` → `notifications/initialized`
+  → `tools/list` → `tools/call`；协议版本 `2024-11-05`。
+- 每个 Server 一个子进程，同步请求/响应带超时（调用 30s / 握手 15s / 消息 4MB）；
+  暴露给 Agent 的工具为 async 包装（`asyncio.to_thread`），不阻塞事件循环。
+- 工具注册为 `mcp_<srv>__<tool>`；Server 清单持久化在 `mcp_servers` 表（env 含敏感值，仅本机库）。
+- 端点：`GET/POST /api/mcp/servers`、`PUT/DELETE /api/mcp/servers/{id}`、
+  `POST /api/mcp/servers/{id}/connect|disconnect|test-call`；启动时自动拉起启用的服务器。
+
+### 4.6 技能包与专家团文件（v1.13.0）
+
+- **技能包**：`backend/data/skills/<name>/SKILL.md`（zcode/WorkBuddy 同款格式），首次启动从
+  `backend/seed_skills/` 播种；启停走 `_store.json`；AI 助手设置的技能目录指向该目录即注入 Agent。
+  端点：`GET /api/skills/packs`、`POST /api/skills/packs`、`DELETE /api/skills/packs/{name}`、
+  `PUT /api/skills/packs/{name}/enabled`、`GET /api/skills/packs/{name}/files/{filename}`、`POST /api/skills/rescan`。
+- **专家团文件**：`backend/data/expert-packs/<name>.md`（frontmatter：name/label/emoji/color/description/
+  keywords/tools/sort + 正文角色提示词），导入为 **upsert**（工具白名单取**并集**，导入不缩减），
+  导出把数据库专家写回文件；CRLF 归一化。
+  端点：`GET /api/experts/packs`、`POST /api/experts/packs/import-all`、`POST /api/experts/packs/import/{name}`、
+  `POST /api/experts/packs/reset`、`POST /api/experts/packs/export/{expert_name}`、
+  `GET /api/experts/packs/{name}/content`、`DELETE /api/experts/packs/{name}`。
+
+## 5. Agent 团队与四级路由
+
+### 5.1 专家团队（表驱动，13 位）
+
+专家 = `agent_specs` 行；`TEAM` 代码内置 8 位出厂专家（seed 数据源），
+`seed_agent_specs()` 按 **增量 upsert**（缺谁补谁，ADR-005）灌入，绝不覆盖用户改动。
+运行时经 `load_team()` 读取（60 秒进程内缓存），表为空或数据库不可用时回退内置 `TEAM` 保证离线可用。
+
+| name | 中文名 | sort | 来源 | 关键词（内置专家出厂值，界面可改） |
+| --- | --- | --- | --- | --- |
+| security | 网络安全工程师 | 0 | 内置 | 网络安全、漏洞、等保、防火墙、渗透、数据安全 |
+| leasing | 招商专员 | 1 | 内置 | 招商、租约、租赁、租金、免租、装补、空置、铺位 |
+| operations | 运营专员 | 2 | 内置 | 运营、营运、客流、销售额、收缴率、坪效、商户经营 |
+| marketing | 企划策划 | 3 | 内置 | 企划、营销、活动方案、推广、美陈、会员、造节 |
+| property | 工程物业工程师 | 4 | 内置 | 工程、物业、维保、维修、能耗、巡检、空调、电梯、消防 |
+| it_finance | 信息化财务分析师 | 5 | 内置 | 财务、报表、凭证、分录、报销、预算、税、发票、对账、信息化 |
+| realestate | 商业地产管家 | 6 | 内置（默认兜底） | 商业地产、综合体、购物中心、资产管理、日程、待办 |
+| finance_specialist | 财税专员 | 7 | 内置（预置全部财务模块工具） | 发票、税、凭证、台账、记账、报销、费用、财税、现金流 |
+| cre_gm | 商业地产总经理 | 7 | QwenPaw 导入 | 随导入文件 |
+| cloud_orchestrator | CloudPaw 主控编排 | 8 | QwenPaw 导入 | 随导入文件 |
+| cloud_verifier | CloudPaw 验证器 | 9 | QwenPaw 导入 | 随导入文件 |
+| cloud_executor | CloudPaw 执行器 | 10 | QwenPaw 导入 | 随导入文件 |
+| datapaw | DataPaw 数据分析 | 11 | QwenPaw 导入 | 随导入文件 |
+
+> 具体关键词清单以 `agent_specs.keywords`（界面可改）为准；`sort` 即路由优先级，小者优先（先专后宽）。
+
+### 5.2 四级路由
+
+路由顺序：**用户指定 > 关键词规则 > LLM 结构化调度 > 默认专家**（`_resolve_spec`）。
+
+1. **指定**：入参 `agent` 命中启用中的专家，`routed_by="指定"`。
+2. **关键词**：对每位启用中的专家统计 `keywords` 在消息（小写化）中的出现次数（子串包含），
+   按命中数降序排列，**同分时 sort 小者胜**（稳定排序），`routed_by="关键词"`。
+3. **LLM 结构化调度**：关键词未命中且模型可用时，调度员 Agent 以名册文本 + 用户消息做结构化输出
+   `{agent, reason}`；输出不在名册内或任何异常都视为失败，回退下一步，`routed_by="AI 调度"`。
+4. **默认专家**：优先 `realestate`（商业地产管家）；被删除/停用时取 sort 最小者，`routed_by="默认"`。
+
+缓存与失效：`load_team()` 进程内 60 秒 TTL；任何专家/模型/供应商配置变更由路由层调用
+`invalidate_team_cache()` + `orchestrator.invalidate()` 立即生效。
+路由预览：`POST /api/assistant/agents/route-test` 输入 `{text}`，返回 `{routed, matched_by, matches}`。
+
+### 5.3 工具白名单
+
+- 内置业务工具 8 个：`query_tasks` / `create_task` / `complete_task` / `query_schedules` /
+  `create_schedule` / `search_notes` / `create_note` / `workbench_stats`。
+- 知识/记忆 2 个：`search_knowledge` / `recall_memories`（均只读）。
+- 模块工具 10 个（`module_tool_preset.FINANCE_TOOL_NAMES`）：`hello_ping`、`expense_runs_summary`、
+  `invoice_batch_stats`、`vault_list_tables`、`vault_query`、`pl_add_transaction`、`pl_monthly_summary`、
+  `pl_recent`、`bip_voucher_query`、`bip_balance_query`；运行时权威来源是 Module Registry 的 `preset_experts`。
+- MCP 工具：`mcp_<srv>__<tool>`，按服务器连接状态动态注册。
+- `readonly=True` 的工具在只读模式下也可放行；专家 `tools` 为 NULL 表示用默认技能池
+  （查询工具 + 常用写入工具），`skills` 为 NULL 表示跟随全局技能池配置。
+- 工具执行轨迹经 contextvar 收集，随消息落库（`chat_messages.trace`）。
+
+## 6. 模型管理与能力探测（v1.14）
+
+- **18 家厂商预设**数据化（`app/agents/provider_presets.json`，`GET /api/providers/presets` ·
+  `POST /api/providers/presets/reload` 热加载）；文件缺失/解析失败回退内置最小默认集并记警告。
+  每条预设含 `name/label/protocol/base_url/models/reasoning_models/vision_models/note/docs_url`。
+- **模型能力探测**（直连厂商 `/chat/completions`，仅 openai 协议）：
+
+| 探测 | 方法 |
+| --- | --- |
+| 思考能力 `probe/reasoning` | `reasoning_effort` 逐档各发一发，判定 supported / accepted / unsupported |
+| 上下文 `probe/context` | 二分查找，≤6 次小请求，`max_tokens=1` |
+| 最大输出 `probe/output` | 阶梯 1024 → 131072 |
+| `probe/all` | 三连探测，单步失败不中断，汇总写 `probe_result` + `probed_at` |
+| `GET probe` | 只读当前探测状态 |
+
+  探测失败一律 **200 + error** 返回——**不可达 ≠ 不支持**，`supports_thinking` 保持 `-1` 不误判。
+- **模型级自定义**：`temperature`（空 = 跟随系统默认，已接入 `build_model` 运行时、openai/anthropic 双协议注入）、
+  `note`、`supports_thinking` / `thinking_levels` 手动覆盖、`supports_vision`。
+- API Key 存 `model_providers.api_key`，**DPAPI 静态加密**（`dpapi:` 前缀）；回传前端脱敏为 `••••••xxxx`，
+  掩码哨兵 `********`（8 个星号）传回表示保留现值。
+
+## 7. SSE 流式对话协议
+
+`POST /api/assistant/chat/stream`，响应 `Content-Type: text/event-stream`，
+每条 `data: {json}\n\n`，流末 `data: [DONE]`。
+
+| type | 载荷 | 含义 |
+| --- | --- | --- |
+| `meta` | `{agent:{name,label,emoji,color}, routed_by, mode}` | 路由结果，先于正文 |
+| `delta` | `{text}` | 正文增量 |
+| `thinking_delta` | `{text}` | 思考过程增量（思考型模型） |
+| `tool_start` | `{name}` | 一次工具调用开始 |
+| `done` | `{session_id, reply, thinking, agent, routed_by, mode, trace}` | 最终消息（结构同非流式成功体） |
+| `error` | `{message}`；模型未配置时带 `need_llm_config: true` | 失败事件 |
+
 - **中止**：前端 `ChatPanel` 用 AbortController 持有当前流；发送新消息、切换/删除会话、组件卸载时 `abort()` 打断旧流。
-- **错误落库保持历史成对**：用户消息先落库，流执行异常时补写一条 assistant 侧错误消息（`抱歉，本次回复生成失败：<异常类型>`），保证历史里一问一答成对出现。
-- **非流式 `/chat`**：成功返回 `{ok: true, reply, thinking, agent, routed_by, mode, trace}`；模型未配置返回 `{ok: false, need_llm_config: true, message}`；**运行时异常返回 502**（日志记录完整堆栈，对外不回传内部细节）。
-- 正文中的 `<think>…</think>` 标签会被剥离到 thinking 字段，思考块独立于正文展示。
+- **错误落库保持历史成对**：用户消息先落库，流执行异常时补写一条 assistant 侧错误消息
+  （`抱歉，本次回复生成失败：<异常类型>`），保证历史里一问一答成对出现。
+- **非流式 `/chat`**：成功返回 `{ok:true, session_id, reply, thinking, agent, routed_by, mode, trace}`；
+  模型未配置返回 `{ok:false, need_llm_config:true, message}`；带图但模型无视觉能力返回 **400**；
+  **运行时异常返回 502**（日志记录完整堆栈，对外不回传内部细节）。
 
-### 3.3 数据模型（10 张表，`models.py`）
+## 8. 数据模型（35 张表）
+
+ORM 定义 **34 张表**：宿主表 12 张（`app/models.py`）+ 模块表 22 张（`mod_` 前缀，随模块加载注册进
+`Base.metadata`）。老库中另有 v1.2.0 遗留表 `model_profiles`（ORM 已无对应模型，新库不会创建），
+实测运行库合计 35 张表。
+
+### 8.1 宿主表（12）
 
 ```
 tasks            id, title, description, status, priority, due_date?, category, completed_at?, created_at, updated_at
 schedules        id, title, description, location, start_time, end_time, all_day, color, created_at, updated_at
 notes            id, title, content, tags(JSON), pinned, created_at, updated_at
-chat_messages    id, session_id→agent_sessions, role(user/assistant), agent_name, content, trace(JSON), thinking, created_at, updated_at
-agent_sessions   session_id(PK), title, created_at, updated_at
-model_providers  id, name, protocol(openai/anthropic), base_url, api_key, enabled, created_at, updated_at
-provider_models  id, provider_id→model_providers, model, context_size, max_tokens, multimodal, enabled, created_at, updated_at
-agent_settings   id=1 单行：max_iters, enable_memory, history_inject, active_model_id→provider_models,
-                 enable_skills/skills_dir, enable_bash, enable_plugins/plugins_dir, reasoning_effort, updated_at
+chat_messages    id, session_id→agent_sessions, role(user/assistant), agent_name, content, trace(JSON),
+                 thinking, created_at, updated_at
+agent_sessions   session_id(PK), title, archived(bool, 索引), created_at, updated_at
+model_providers  id, name, protocol(openai/anthropic), base_url, api_key(DPAPI), enabled, created_at, updated_at
+provider_models  id, provider_id→model_providers, model, context_size, max_tokens, multimodal, enabled,
+                 temperature(文本, 空=跟随), note, supports_thinking(-1/0/1), thinking_levels(JSON),
+                 probed_context, probed_max_output, supports_vision(bool), probe_result(JSON), probed_at,
+                 created_at, updated_at
 agent_specs      id, name(唯一, ^[a-z][a-z0-9_]*$), display_name, emoji, color, description, role_prompt,
-                 keywords(JSON), tools(JSON 可空), skills(JSON 可空), model_id(可空, 逻辑引用 provider_models.id),
-                 enabled, sort(=路由优先级，小者优先), is_builtin, created_at, updated_at
-scheduled_jobs   id, name, prompt, agent_name?(null=智能路由), mode(standard/readonly/deep),
-                 schedule_type(interval/daily), interval_minutes?(5-10080), daily_at?(HH:MM),
+                 keywords(JSON), tools(JSON 可空), model_id(逻辑引用 provider_models.id), skills(JSON 可空),
+                 enabled, sort(路由优先级，小者优先), is_builtin, created_at, updated_at
+agent_settings   id=1 单行：provider/base_url/api_key/model, context_size, max_tokens, temperature,
+                 multimodal, max_iters, enable_memory, history_inject, active_model_id→provider_models,
+                 enable_skills/skills_dir, enable_bash, enable_plugins/plugins_dir, reasoning_effort, updated_at
+scheduled_jobs   id, name, prompt, agent_name?(null=智能路由), mode, schedule_type(interval/daily/cron),
+                 interval_minutes?(5-10080), daily_at?(HH:MM), cron_expr, action(模块动作名，空=Agent 对话),
                  enabled, last_run_at?, last_status(ok/error/skipped), last_error, last_note_id?,
                  recent_runs(JSON，最近20条 {at,status,summary}), created_at, updated_at
+mcp_servers      id, name(唯一), command, args(JSON), env(JSON), enabled, status(stopped/connected/error),
+                 last_error, tools_json(JSON), created_at
+memories         id, content, source(manual/auto/import), session_id, tags(JSON), pinned, hit_count,
+                 last_used_at?, created_at
 ```
 
-要点：状态/优先级用 Pydantic Literal 校验；时间统一本地 naive datetime；`model_id` 为逻辑引用（无数据库外键），绑定的模型被删除/停用时自动回退全局激活模型。
+### 8.2 模块表（22，`mod_` 前缀）
 
-### 3.4 轻量列迁移机制（`main.py` 的 `_ensure_sqlite_columns`）
+```
+mod_hello_entry         finance_hello（机制示例）
+mod_expense_run         finance_expense
+mod_expense_row         finance_expense
+mod_invoice_batch       finance_invoice
+mod_invoice_item        finance_invoice
+mod_vault_dataset       finance_vault
+mod_pl_account          finance_ledger_personal
+mod_pl_category         finance_ledger_personal
+mod_pl_transaction      finance_ledger_personal
+mod_pl_budget           finance_ledger_personal
+mod_bip_batch           finance_ledger_bip
+mod_bip_voucher         finance_ledger_bip
+mod_bip_entry           finance_ledger_bip
+mod_bip_balance         finance_ledger_bip
+mod_tax_enterprise      finance_tax
+mod_tax_financial_data  finance_tax
+mod_tax_adjustment      finance_tax
+mod_tax_return          finance_tax
+mod_tax_policy          finance_tax
+mod_board_snapshot      finance_board
+mod_pos_run             finance_pos
+mod_cashflow_run        finance_cashflow（本地专用，gitignore）
+```
 
-SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁式迁移：`PRAGMA table_info(表)` 读现有列，缺哪列补哪条 `ALTER TABLE ... ADD COLUMN`（当前覆盖 `chat_messages.thinking` 与 `agent_settings` 的后加列）。表不存在则跳过，整体异常仅告警不阻断启动。专家团队 seed（`seed_agent_specs`）仅空表执行一次，属配置数据，不受 `SEED_ON_STARTUP` 控制。
+要点：
 
-### 3.5 热备份（`backend/scripts/backup_db.py`）
+- 状态/优先级用 Pydantic Literal 校验；时间统一本地 naive datetime。
+- `model_id` / `active_model_id` 为**逻辑引用（无数据库外键）**，绑定的模型被删除/停用时自动回退全局激活模型。
+- 老库中可能残留 v1.2.0 遗留表 `model_profiles`（ORM 已无对应模型，新库不会创建，不影响运行）。
 
-用 `sqlite3 Connection.backup` API 在线热备份：源库以只读 URI 打开、逐页拷贝，服务运行中也可安全执行，不会拷出半成品文件。产物带时间戳存到项目根 `backups/`，自动滚动清理只保留最近 30 份。`备份数据.bat` 调用该脚本。
+## 9. 实现方法与算法说明
 
-### 3.6 附件安全（`routers/assistant.py` 的 `/upload` 与编排器 `_attachments_block`）
+### 9.1 轻量列迁移机制（`main.py` 的 `_ensure_sqlite_columns`）
 
-- 上传：`session_id` 白名单正则校验（防路径穿越）；文件名取 `Path(name).name` 去目录；10MB 上限（超限 400）；落盘到 `data/uploads/{session_id}/`；xlsx/xls 用 openpyxl 读第一张工作表转 CSV（`utf-8-sig`）。
-- 注入：对话时对每个附件路径做 `resolve() + relative_to(UPLOAD_DIR)` 校验，越界路径直接忽略；仅白名单文本后缀（txt/md/csv/json/log/py/html/xml/yaml/sql）且 ≤300KB 的附件按文本注入消息（截断至 8 万字符）；其余仅告知路径，提示 Agent 用 Bash 工具处理（Bash 默认关闭）。
+SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁式迁移：
+`PRAGMA table_info(表)` 读现有列，缺哪列补哪条 `ALTER TABLE ... ADD COLUMN`。
+补丁来源 = 宿主内置补丁 + 各模块 `manifest.column_patches`。宿主内置补丁当前覆盖：
 
-### 3.7 前端架构
+| 表 | 列 |
+| --- | --- |
+| `chat_messages` | `thinking` |
+| `agent_sessions` | `archived` |
+| `agent_settings` | `active_profile_id`、`active_model_id`、`enable_skills`、`skills_dir`、`enable_bash`、`enable_plugins`、`plugins_dir`、`reasoning_effort` |
+| `scheduled_jobs` | `cron_expr`、`action` |
+| `provider_models` | `temperature`、`note`、`supports_thinking`、`supports_vision`、`thinking_levels`、`probed_context`、`probed_max_output`、`probe_result`、`probed_at` |
 
-- **无状态库的组件通信**：不使用 Pinia，页面内用 props/emit + ref 组合。`AssistantView.vue` 拆为容器（约 235 行，持有会话/团队/设置状态）+ `src/components/assistant/` 五个子组件：`SessionList`（会话列表）、`AgentQuickList`（专家快选）、`ChatPanel`（对话区，SSE/中止/工具轨迹折叠）、`SettingsDrawer`（设置抽屉）、`AgentTeamPanel`（专家团队管理）。
-- **列表请求序号防竞态**：任务/日程/笔记列表请求带自增序号（`++loadSeq`），响应返回时序号不是最新则丢弃，避免快速切换筛选时旧响应覆盖新数据。
-- **统一 axios 拦截器**：`src/api/index.js` 把 422 detail 数组/超时/断网统一转成中文 ElMessage 提示；SSE 走原生 fetch 与 axios 共用 `VITE_API_BASE`（默认 `/api`）。
+表不存在则跳过，整体异常仅告警不阻断启动。专家团队 seed（`seed_agent_specs`）属配置数据，
+不受 `SEED_ON_STARTUP` 控制；表为空时全量灌入，升级后新增的内置专家在下次启动自动补齐。
 
-### 3.8 模型接入与配置存储（`agents/llm.py` + `config_store.py`）
+### 9.2 热备份（`backend/scripts/backup_db.py`）
+
+用 `sqlite3 Connection.backup` API 在线热备份：源库以只读 URI 打开、逐页拷贝，
+服务运行中也可安全执行，不会拷出半成品文件。产物带时间戳存到项目根 `backups/`，
+自动滚动清理只保留最近 30 份。`备份数据.bat` 调用该脚本。
+
+### 9.3 附件安全（`routers/assistant.py` 的 `/upload` 与编排器 `_attachments_block`）
+
+- **上传**：`session_id` 白名单正则校验（防路径穿越）；文件名取 `Path(name).name` 去目录并做包含校验；
+  扩展名白名单外返回 400（中文提示列出支持类型）；10MB 上限（超限 400）；
+  落盘到 `data/uploads/{session_id}/`；xlsx/xls 用 openpyxl 读第一张工作表转 CSV（`utf-8-sig`）。
+- **注入**：对话时对每个附件路径做 `resolve() + relative_to(UPLOAD_DIR)` 校验，越界路径直接忽略；
+  仅白名单文本后缀（txt/md/csv/json/log/py/html/xml/yaml/yml/sql）且 ≤300KB 的附件按文本注入消息
+  （截断至 8 万字符）；其余仅告知路径，提示 Agent 用 Bash 工具处理（Bash 默认关闭）。
+- **图片**：以 base64 DataBlock 注入（见 4.2「聊天传图与多模态理解」），同样受上传目录与大小上限约束。
+
+### 9.4 模型接入与配置存储（`agents/llm.py` + `config_store.py`）
 
 - 配置优先级：激活模型（`model_providers` + `provider_models`，界面管理）> `.env` 的 `LLM_*` 兜底。
-- openai 协议 → `OpenAIChatModel`（覆盖 ModelScope/硅基流动/DeepSeek/火山方舟/DashScope 兼容/Ollama）；anthropic 协议 → `AnthropicChatModel`（强制流式聚合）。
-- 思考深度 `reasoning_effort`（''/off/low/medium/high/max）映射到两协议各自的 thinking 参数；温度默认 0.3。
-- API Key 存 `model_providers.api_key`（明文，本机）；回传前端脱敏为 `••••••xxxx`，掩码哨兵 `********`（8 个星号）传回表示保留现值。
-- 专家可独立绑定模型（`agent_specs.model_id`），编排器按 `model_cfg_by_id` 构建并缓存；不可用（删除/停用）时回退全局激活模型。
+- openai 协议 → `OpenAIChatModel`（覆盖 ModelScope/硅基流动/DeepSeek/火山方舟/DashScope 兼容/Ollama）；
+  anthropic 协议 → `AnthropicChatModel`（强制流式聚合）。
+- 思考深度 `reasoning_effort`（''/off/low/medium/high/max）映射到两协议各自的 thinking 参数；
+  温度默认 0.3，模型级 `temperature` 非空时覆盖。
+- 专家可独立绑定模型（`agent_specs.model_id`），编排器按 `model_cfg_by_id` 构建并缓存；
+  不可用（删除/停用）时回退全局激活模型。
 
-### 3.9 QwenPaw Agent 批量导入（`scripts/import_qwenpaw_agents.py`）
+### 9.5 前端架构
+
+- **无状态库的组件通信**：不使用 Pinia，页面内用 props/emit + ref 组合。`AssistantView.vue` 拆为容器
+  （持有会话/团队/设置状态）+ `src/components/assistant/` 五个子组件：`SessionList`（会话列表，含归档页签与导出）、
+  `AgentQuickList`（专家快选）、`ChatPanel`（对话区，SSE/中止/工具轨迹折叠/图片缩略图）、
+  `SettingsDrawer`（设置抽屉，含模型能力探测）、`AgentTeamPanel`（专家团队管理）。
+- **模块化前端**：`src/modules/*/manifest.js` 声明路由（`/finance/<name>/...`，懒加载）与菜单
+  （group/icon/order），`import.meta.glob` 自动汇总进侧边栏财务分组。
+- **列表请求序号防竞态**：任务/日程/笔记列表请求带自增序号（`++loadSeq`），响应返回时序号不是最新则丢弃。
+- **统一 axios 拦截器**：`src/api/index.js` 把 422 detail 数组/超时/断网统一转成中文 ElMessage 提示；
+  SSE 走原生 fetch 与 axios 共用 `VITE_API_BASE`（默认 `/api`）。
+- **构建**：`npm run build`，各视图独立 chunk；生产模式前端产物由后端在 8000 端口直接托管，天然同源。
+
+### 9.6 QwenPaw Agent 批量导入（`scripts/import_qwenpaw_agents.py`）
 
 管道：**source files → sanitize → merge/create → DB**。
 
-1. **source files**：读取 QwenPaw 工作区下每个 Agent 的角色定义文件——SOUL.md / PROFILE.md / AGENTS.md / 00_系统总则.md / 06_协同规则.md（存在才读，按序拼接）。工作区默认 `D:/AIApps/QwenPaw/data/workspaces`，可用 `--from` 或环境变量 `QWENPAW_WORKSPACES` 指定；都没有则友好退出。
+1. **source files**：读取 QwenPaw 工作区下每个 Agent 的角色定义文件——SOUL.md / PROFILE.md / AGENTS.md /
+   00_系统总则.md / 06_协同规则.md（存在才读，按序拼接）。工作区默认 `D:/AIApps/QwenPaw/data/workspaces`，
+   可用 `--from` 或环境变量 `QWENPAW_WORKSPACES` 指定；都没有则友好退出。
 2. **sanitize**：脱敏——「某昵称」等称呼替换为「用户」，本机绝对路径替换为 `[本地路径]`。
-3. **merge/create**：领域重叠的合并进内置专家（cre-leasing→leasing、cre-ops→operations、cre-mkt→marketing、cre-fm→property、cre-finance→it_finance、cre-it→security，追加角色定义 + 关键词取并集）；全新职责的新建专家（cre_gm 商业地产总经理、cloud_orchestrator CloudPaw 主控编排、cloud_executor CloudPaw 执行器、cloud_verifier CloudPaw 验证器、datapaw DataPaw 数据分析），`sort=7..11` 排在内置专家 0–6 之后，同分优先路由到内置。
-4. **DB**：写入 `agent_specs` 表，只进本机数据库、不进 git 仓库。`--dry-run` 只预览不写入；`--overwrite` 剥掉旧导入内容后重导；默认幂等——角色提示词带【QwenPaw 整合】标记，已导入则自动跳过不叠加。导入后 60 秒内团队缓存自动刷新，或重启服务立即生效。
+3. **merge/create**：领域重叠的合并进内置专家（cre-leasing→leasing、cre-ops→operations、cre-mkt→marketing、
+   cre-fm→property、cre-finance→it_finance、cre-it→security，追加角色定义 + 关键词取并集）；
+   全新职责的新建专家（cre_gm、cloud_orchestrator、cloud_executor、cloud_verifier、datapaw），
+   `sort=7..11` 排在内置专家 0–6 之后，同分优先路由到内置。
+4. **DB**：写入 `agent_specs` 表，只进本机数据库、不进 git 仓库。`--dry-run` 只预览不写入；
+   `--overwrite` 剥掉旧导入内容后重导；默认幂等——角色提示词带【QwenPaw 整合】标记，已导入则自动跳过不叠加。
+   导入后 60 秒内团队缓存自动刷新，或重启服务立即生效。
 
-`AgentSpecBase/Update.role_prompt` 上限从 8000 放宽到 60000 字符（QwenPaw 角色定义约 1.4 万字符），脚本对拼接结果另做 60000 硬截断。配套测试 `backend/tests/test_import_qwenpaw_agents.py` 4 例，静态校验、不需要本机装有 QwenPaw。
+`AgentSpecBase/Update.role_prompt` 上限从 8000 放宽到 60000 字符（QwenPaw 角色定义约 1.4 万字符），
+脚本对拼接结果另做 60000 硬截断。配套测试 `backend/tests/test_import_qwenpaw_agents.py` 4 例，
+静态校验、不需要本机装有 QwenPaw。
 
-## 4. 总体架构
+## 10. 安全规格
 
-```
-前端（Vue 3 + Element Plus + ECharts）
-  六页：概览 / 任务 / 日程 / 笔记 / AI 助手（容器 + 5 个子组件）/ 定时任务
-        │  HTTP /api/*（SSE 走 fetch 流）
-        ▼
-FastAPI（routers/）
-  ├─ tasks / schedules / notes / search / dashboard  → SQLAlchemy → SQLite
-  ├─ assistant                                        → app/agents/
-        ├─ llm.py           模型工厂（openai/anthropic 协议分流）
-        ├─ config_store.py  供应商/模型两级存储 + 预设 + 连通性/工具/多模态测试
-        ├─ tools.py         8 个业务工具（显式 schema、contextvar 轨迹）
-        ├─ team.py          专家团队：内置定义 + agent_specs 表加载 + 关键词路由（60s 缓存）
-        ├─ orchestrator.py  路由 → 专家执行（SSE/非流式）→ 轨迹/会话持久化
-        └─ qwenpaw_compat.py QwenPaw 插件兼容层（实验性，默认关闭）
-  └─ jobs                                        → app/scheduler.py 每 20s 检查到期任务，
-                                                   job_due 判定 → 复用 orchestrator → 回复落笔记
-```
+| 面 | 措施 |
+| --- | --- |
+| API Key 静态加密 | DPAPI（`dpapi:<base64>`，绑定本机 + 当前用户）；缺 pywin32 **拒绝启动，绝不降级明文**；回传前端脱敏 `••••••xxxx`，掩码哨兵 `********` 表示保留现值 |
+| SSRF 防护 | 网关/供应商地址协议白名单 http/https，禁内嵌凭据 |
+| 上传安全 | 扩展名白名单 + 大小限制（10MB）+ 文件名包含校验 + `session_id` 白名单正则（防路径穿越） |
+| ZIP 安全 | zip-slip 防护：拒绝越界与绝对路径条目（finance_cashflow） |
+| 数据仓 SQL | SELECT-only + 表名白名单 + 强制 LIMIT + 独立线程 `interrupt()` 超时；去注释后执行 |
+| 执行面 | Bash 工具默认关闭且自带危险文件/目录黑名单；QwenPaw 插件默认关闭且只读模式跳过 |
+| 监听面 | 仅 127.0.0.1；非回环 HOST 启动时告警（未做鉴权，勿在不可信网络开放） |
+| 数据边界 | `gitignore` 分层：`data/`、`.env`、`backups/`、`finance_cashflow` 全目录；提交前无真实业务值 |
 
-## 5. 接口设计
+## 11. 接口设计
 
-统一前缀 `/api`，业务接口详见 API.md。要点：
+统一前缀 `/api`，业务接口详见 `API.md`。要点：
 
 - 列表统一分页 `{items, total, page, page_size}`；PUT 均为部分更新（`exclude_unset`）。
 - 删除返回 204、不存在 404、校验失败 422（含非法日期参数——`utils.parse_dt` 统一把日期解析错误转成 422 而非 500）。
 - `/api/assistant/chat` 运行时异常返回 502；`/chat/stream` 保持 SSE 协议、在流内发 `error` 事件。
+- 删除类数据操作不开放给 Agent（仅页面物理删除，任务可由 Agent 标记完成）。
+- 模块路由按 `manifest.prefix`（`/api/finance/` 开头）挂载；模块自身接口清单见 `API.md`。
 
-## 6. 配置与环境变量
+## 12. 配置与环境变量
 
 对齐 `backend/.env.example`（全部有默认值，可不改直接运行）：
 
@@ -181,15 +508,32 @@ FastAPI（routers/）
 | `DATABASE_URL` | `sqlite:///backend/data/workbench.db` | 数据库连接，默认 SQLite |
 | `SEED_ON_STARTUP` | `1` | 空库时是否写入示例数据（0 关闭；专家团队 seed 不受此控制） |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 跨域来源（仅开发模式需要） |
-| `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 空 | AI 助手模型兜底配置；填齐后三项即激活。界面配置优先于它 |
+| `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 空 | AI 助手模型兜底配置；填齐三项即激活。界面配置优先于它 |
+| `FINANCE_DATA_DIR` | 空（→ `backend/data/finance`） | 财务模块数据目录 |
+| `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` | 空（按AssetLib相对位置推导） | 跨项目引擎路径 |
 
-## 7. 测试与验证
+其余运行时配置（供应商、模型、激活模型、Agent 工作参数、技能/Bash/插件开关、MCP 服务器）
+全部走界面存库（`agent_settings` 单行 + 各配置表），无需手改 `.env`。
 
-- 后端 pytest **99 例**（`backend/tests/`）：业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/连通性测试 + 定时任务（`test_jobs.py` 7 例：job_due 判定/CRUD/调度参数校验/立即执行落笔记/未配置跳过/404）+ QwenPaw 导入脚本静态校验（4 例）。全部离线，独立临时库，conftest 显式清空 LLM 环境变量。
-- 前端 vitest 20 例（`frontend/tests/` 4 个文件：格式化/日历范围/Agent 相关工具函数/定时任务展示逻辑）。
-- 手动验收：六页 + 设置抽屉 + 专家团队 tab + SSE 对话流 + 路由测试工具。
+## 13. 测试与验证
 
-## 8. 交付边界与后续方向
+- **后端 pytest**：`backend/tests/` 共 **315 例全绿**（2026-10-12 实测，约 3 分钟）。conftest 临时库隔离、
+  引擎对拍、monkeypatch 探测/LLM，全部离线可重复。
+  覆盖业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/
+  连通性测试 + 定时任务 + QwenPaw 导入静态校验 + RAG/记忆/MCP/技能包/专家团文件 +
+  模型能力探测 + 各财务模块 + 会话归档导出（`test_session_archive.py`）+ 聊天传图（`test_chat_image.py`）。
+- **前端 vitest**：`frontend/tests/` 共 **98 例全绿**（16 个文件）：注册断言 + 纯逻辑 + setup 级组件测试
+  （格式化/日历范围/Agent 工具函数/定时任务展示/模型探测交互/各财务模块）。
+- **冒烟**：uvicorn 真实端点 + 冒烟数据清理。
+- **构建**：`npm run build` 通过（各视图独立 chunk；AG Grid 为大头）。
+- **手动验收**：十个静态页 + 设置抽屉 + 专家团队 tab + 技能包/专家团文件页 + 知识与记忆页 + MCP 页
+  + 财务分组菜单 + SSE 对话流 + 路由测试工具 + 会话归档/导出 + 聊天传图。
+
+## 14. 交付边界与后续方向
 
 - 单用户、监听 127.0.0.1；删除类数据操作不开放给 Agent（仅页面物理删除，任务可由 Agent 标记完成）。
-- 路线图：LLM 路由 few-shot 增强/会话归档 → 长期记忆与笔记 RAG → MCP 工具接入 → 多渠道（团队共享再考虑多租户）。
+- 已完成的能力闭环：模块化（Module Registry）+ 四级接入 + Agent 工具预置 + 表驱动专家团 +
+  流式对话 + 定时调度（cron/模块动作）+ 知识/记忆/MCP + 模型能力探测 + 会话归档导出 + 多模态传图。
+- 后续候选（按价值排序）：聊天消息「存为记忆」按钮、技能包停用过滤到 Agent 侧、
+  MCP HTTP/SSE 传输与 RAG 向量融合（ADR 预留项）、现金流/POS 高级参数透出、
+  团队共享场景再考虑多租户。

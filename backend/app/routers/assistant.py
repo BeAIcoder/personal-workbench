@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..agents import config_store, orchestrator
@@ -76,6 +76,8 @@ class ModelPayload(BaseModel):
     context_size: Optional[int] = Field(None, ge=4096, le=2000000)
     max_tokens: Optional[int] = Field(None, ge=64, le=500000)
     multimodal: Optional[bool] = None
+    # 视觉（图片理解）能力：开启后聊天可传图片（base64 注入多模态消息）
+    supports_vision: Optional[bool] = Field(None, description="视觉（图片理解）能力；聊天传图需开启")
     enabled: Optional[bool] = None
     # 采样温度：空串 = 跟随系统默认（TEXT 存储，允许手动填写）
     temperature: Optional[str | float] = Field(None, description="采样温度；空/缺省 = 跟随系统默认")
@@ -241,7 +243,17 @@ def discover_plugins(dir: str = Query(..., max_length=300, alias="dir")):
 
 # ---------------- 聊天附件 ----------------
 
-@router.post("/upload", summary="上传聊天附件（xlsx 自动转 CSV；上限 10MB）")
+# 附件扩展名白名单：文本/数据类（可按文本注入）+ Excel + 图片（多模态理解）
+_UPLOAD_SUFFIXES = {
+    ".txt", ".md", ".csv", ".json", ".log", ".py", ".html", ".xml", ".yaml", ".yml", ".sql",
+    ".xlsx", ".xls",
+    ".png", ".jpg", ".jpeg", ".webp", ".gif",
+}
+# 图片扩展名（多模态注入）
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+@router.post("/upload", summary="上传聊天附件（图片/文本/Excel；xlsx 自动转 CSV；上限 10MB）")
 async def upload_attachment(
     session_id: str = Form(...),
     file: UploadFile = File(...),
@@ -251,6 +263,13 @@ async def upload_attachment(
     safe_name = Path(file.filename or "file.bin").name
     if safe_name in ("", ".", ".."):
         safe_name = "file.bin"
+    suffix = Path(safe_name).suffix.lower()
+    # 扩展名白名单（无扩展名按普通文件放行）；图片单独标记 kind=image
+    if suffix and suffix not in _UPLOAD_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件类型：{suffix}（支持：{', '.join(sorted(_UPLOAD_SUFFIXES))}）",
+        )
     dest_dir = UPLOAD_DIR / session_id
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / safe_name
@@ -263,8 +282,9 @@ async def upload_attachment(
     dest.write_bytes(content)
 
     kind, note = "file", ""
-    suffix = dest.suffix.lower()
-    if suffix in (".xlsx", ".xls"):
+    if suffix in _IMAGE_SUFFIXES:
+        kind = "image"
+    elif suffix in (".xlsx", ".xls"):
         try:
             import openpyxl
 
@@ -413,9 +433,9 @@ class SessionRequest(BaseModel):
     title: Optional[str] = Field(None, max_length=100)
 
 
-@router.get("/sessions", summary="会话列表（按更新时间倒序）")
-def get_sessions(limit: int = Query(50, ge=1, le=200)):
-    return {"sessions": orchestrator.sessions_list(limit)}
+@router.get("/sessions", summary="会话列表（按更新时间倒序；archived 参数按归档状态过滤）")
+def get_sessions(limit: int = Query(50, ge=1, le=200), archived: Optional[bool] = Query(None, description="true=仅归档 / false=仅未归档；不传=全部")):
+    return {"sessions": orchestrator.sessions_list(limit, archived)}
 
 
 @router.post("/sessions", summary="新建会话")
@@ -434,12 +454,47 @@ def delete_session(session_id: str):
     return {"ok": True}
 
 
+@router.post("/sessions/{session_id}/archive", summary="归档会话（不存在返回 404）")
+def archive_session(session_id: str):
+    try:
+        orchestrator.session_set_archived(session_id, True)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"ok": True}
+
+
+@router.post("/sessions/{session_id}/unarchive", summary="恢复会话（不存在返回 404）")
+def unarchive_session(session_id: str):
+    try:
+        orchestrator.session_set_archived(session_id, False)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"ok": True}
+
+
+@router.get("/sessions/{session_id}/export", summary="导出会话为 Markdown 附件（不存在返回 404）")
+def export_session(session_id: str):
+    try:
+        data = orchestrator.session_export(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return Response(
+        content=data["markdown"],
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="session-{session_id}.md"'},
+    )
+
+
 # ---------------- 对话 ----------------
 
 @router.post("/chat", summary="与 Agent 团队对话（非流式）")
 async def chat(payload: ChatRequest):
+    atts = [a.model_dump() for a in (payload.attachments or [])]
     try:
-        atts = [a.model_dump() for a in (payload.attachments or [])]
+        orchestrator.assert_vision_supported(atts, payload.agent)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
         return await orchestrator.chat(
             payload.session_id, payload.message, payload.agent, payload.mode or "standard", atts
         )
@@ -452,6 +507,10 @@ async def chat(payload: ChatRequest):
 @router.post("/chat/stream", summary="与 Agent 团队对话（SSE 流式）")
 async def chat_stream(payload: ChatRequest):
     atts = [a.model_dump() for a in (payload.attachments or [])]
+    try:
+        orchestrator.assert_vision_supported(atts, payload.agent)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     async def sse():
         try:

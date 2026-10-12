@@ -5,10 +5,14 @@
       <SessionList
         :sessions="sessions"
         :current-session-id="currentSessionId"
+        :archived="archivedTab"
         @create="newSession"
         @select="switchSession"
         @rename="renameSession"
         @delete="deleteSession"
+        @archive="archiveSession"
+        @restore="restoreSession"
+        @update:archived="switchArchivedTab"
       />
       <AgentQuickList
         v-model:selected-agent="selectedAgent"
@@ -53,6 +57,7 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { assistantApi } from '../api'
+import { sessionListParams } from '../utils/assistant'
 import SessionList from '../components/assistant/SessionList.vue'
 import AgentQuickList from '../components/assistant/AgentQuickList.vue'
 import ChatPanel from '../components/assistant/ChatPanel.vue'
@@ -75,15 +80,46 @@ const selectedAgent = ref(null)
 // ---------------- 会话 ----------------
 const sessions = ref([])
 const currentSessionId = ref('')
+const archivedTab = ref(false)  // false=进行中 / true=已归档
 const chatRef = ref(null)
 
 async function loadSessions() {
   try {
-    const { data } = await assistantApi.sessions.list()
+    const { data } = await assistantApi.sessions.list(sessionListParams(archivedTab.value))
     sessions.value = data.sessions
   } catch {
     /* 服务未启动 */
   }
+}
+
+// 切换「进行中 / 已归档」页签：记住状态并按 archived 参数重新拉取
+function switchArchivedTab(v) {
+  archivedTab.value = v
+  loadSessions()
+}
+
+// 归档/恢复后：若动的是当前正在查看的会话，则清空选中并打断流式回复
+function detachCurrentSession() {
+  chatRef.value?.abortStream()
+  currentSessionId.value = ''
+  chatRef.value?.clearMessages()
+}
+
+async function archiveSession(s) {
+  await assistantApi.sessions.archive(s.session_id)
+  if (s.session_id === currentSessionId.value) {
+    detachCurrentSession()
+    ElMessage.success('会话已归档，并已从当前视图中移除')
+  } else {
+    ElMessage.success(`会话「${s.title}」已归档`)
+  }
+  await loadSessions()
+}
+
+async function restoreSession(s) {
+  await assistantApi.sessions.unarchive(s.session_id)
+  ElMessage.success(`会话「${s.title}」已恢复到进行中`)
+  await loadSessions()
 }
 
 function onSessionCreated(placeholder) {
@@ -92,6 +128,7 @@ function onSessionCreated(placeholder) {
 
 async function newSession() {
   chatRef.value?.abortStream()  // 打断正在进行的流式回复
+  archivedTab.value = false  // 新会话一定在「进行中」页签，切回去保证可见
   const sid = 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
   try {
     await assistantApi.sessions.create({ session_id: sid, title: '新会话' })

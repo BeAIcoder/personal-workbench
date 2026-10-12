@@ -10,6 +10,7 @@ Agent 实例按 (会话, 专家, 模式) 缓存在进程内；会话消息持久
 - deep    深度研究：全部工具 + 更高工具轮次 + 深度分析提示词
 """
 import asyncio
+import base64
 import logging
 import re
 from collections import OrderedDict
@@ -319,6 +320,88 @@ _THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 # 附件按文本注入的白名单后缀与大小上限
 _TEXT_SUFFIXES = {".txt", ".md", ".csv", ".json", ".log", ".py", ".html", ".xml", ".yaml", ".yml", ".sql"}
 
+# 聊天图片附件：扩展名 → MIME（base64 注入多模态消息用）；单张原始大小上限
+_IMAGE_ATTACH_SUFFIXES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+# 当前模型未开启视觉能力时带图聊天的报错（用户可见，中文）
+VISION_UNSUPPORTED_MESSAGE = "当前模型不支持图片理解，请在设置中为该模型开启视觉能力或切换视觉模型"
+
+
+def _is_image_attachment(att) -> bool:
+    """判断聊天附件是否为图片（按路径后缀，回退文件名后缀）。"""
+    path = Path(str(att.get("path") or ""))
+    suffix = path.suffix.lower() or Path(str(att.get("name") or "")).suffix.lower()
+    return suffix in _IMAGE_ATTACH_SUFFIXES
+
+
+def _vision_cfg(agent_name: str | None = None) -> dict:
+    """当前生效模型配置：指定专家且绑定了模型时用其配置，否则用全局激活模型。"""
+    if agent_name:
+        try:
+            spec = load_team().get(agent_name)
+        except Exception:
+            spec = None
+        if spec is not None and spec.model_id:
+            cfg = config_store.model_cfg_by_id(spec.model_id)
+            if cfg:
+                return cfg
+    return config_store.load()
+
+
+def assert_vision_supported(attachments, agent_name: str | None = None) -> None:
+    """带图聊天前置校验：附件含图片而当前模型未开启视觉能力时抛 ValueError（路由层转 400）。
+
+    模型整体未配置时不做拦截（走既有的 need_llm_config 引导）。
+    """
+    if not attachments or not any(_is_image_attachment(a) for a in attachments):
+        return
+    if not llm_status()["configured"]:
+        return
+    if not _vision_cfg(agent_name).get("supports_vision"):
+        raise ValueError(VISION_UNSUPPORTED_MESSAGE)
+
+
+def _image_blocks(attachments) -> list:
+    """把图片附件读成 base64，构造 AgentScope DataBlock（OpenAI 侧转 image_url，Anthropic 侧转原生图片块）。"""
+    from agentscope.message import Base64Source, DataBlock
+
+    from ..config import UPLOAD_DIR
+
+    blocks, notes = [], []
+    for a in attachments or []:
+        if not _is_image_attachment(a):
+            continue
+        name = Path(str(a.get("name") or "image")).name
+        path = Path(str(a.get("path") or ""))
+        try:
+            path.resolve().relative_to(UPLOAD_DIR.resolve())
+        except Exception:
+            continue  # 越界路径直接忽略
+        if not path.exists():
+            notes.append(f"【图片附件：{name}】文件不存在")
+            continue
+        if path.stat().st_size > _MAX_IMAGE_BYTES:
+            notes.append(f"【图片附件：{name}】超过大小上限，已忽略")
+            continue
+        media_type = _IMAGE_ATTACH_SUFFIXES.get(path.suffix.lower(), "image/png")
+        b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        blocks.append(
+            DataBlock(
+                type="data",
+                source=Base64Source(type="base64", data=b64, media_type=media_type),
+                name=name,
+            )
+        )
+        notes.append(f"【图片附件：{name}】")
+    return blocks, notes
+
 
 def _attachments_block(attachments) -> str:
     """把聊天附件拼成可注入消息的文本块（安全：仅允许上传目录内的文件）。"""
@@ -406,6 +489,32 @@ def _with_memory_context(message: str) -> str:
         return message
 
 
+def _user_content_blocks(message: str, attachments, agent_name: str | None) -> list:
+    """构造发给 LLM 的 user 消息内容块。
+
+    文本部分 = 记忆上下文 + 文本类附件说明；当前模型开启视觉能力时，
+    图片附件以 base64 DataBlock 追加（OpenAI 协议转 image_url，Anthropic 转原生图片块）。
+    """
+    from agentscope.message import TextBlock
+
+    text = _with_memory_context(message)
+    text_attachments = [a for a in (attachments or []) if not _is_image_attachment(a)]
+    block = _attachments_block(text_attachments)
+    if block:
+        text = f"{text}\n\n{block}"
+
+    image_blocks: list = []
+    notes: list[str] = []
+    if any(_is_image_attachment(a) for a in (attachments or [])):
+        if _vision_cfg(agent_name).get("supports_vision"):
+            image_blocks, notes = _image_blocks(attachments)
+        else:
+            notes.append(f"【图片附件】{VISION_UNSUPPORTED_MESSAGE}")
+    if notes:
+        text = f"{text}\n\n" + "\n".join(notes)
+    return [TextBlock(type="text", text=text)] + image_blocks
+
+
 async def chat(
     session_id: str,
     message: str,
@@ -425,14 +534,12 @@ async def chat(
     spec, routed_by = await _resolve_spec(message, agent_name)
     agent = await _ensure_agent(session_id, spec, mode)
 
-    full_message = _with_memory_context(message) + ("\n\n" + _attachments_block(attachments) if attachments else "")
-
-    from agentscope.message import Msg, TextBlock
+    from agentscope.message import Msg
 
     token = tool_trace.set([])
     try:
         reply = await agent.reply(
-            Msg(name="用户", role="user", content=[TextBlock(type="text", text=full_message)])
+            Msg(name="用户", role="user", content=_user_content_blocks(message, attachments, agent_name))
         )
         text = (reply.get_text_content() or "").strip() or "（模型未返回内容）"
         text, inline_think = _split_inline_think(text)
@@ -479,14 +586,12 @@ async def chat_stream(
 
     agent = await _ensure_agent(session_id, spec, mode)
 
-    full_message = _with_memory_context(message) + ("\n\n" + _attachments_block(attachments) if attachments else "")
-
     from agentscope.event import (
         ThinkingBlockDeltaEvent,
         TextBlockDeltaEvent,
         ToolCallStartEvent,
     )
-    from agentscope.message import Msg, TextBlock
+    from agentscope.message import Msg
 
     _touch_session(session_id, message)
     _persist(session_id, "user", "", message, [])
@@ -495,7 +600,7 @@ async def chat_stream(
     try:
         final_msg = None
         async for ev in agent.reply_stream(
-            Msg(name="用户", role="user", content=[TextBlock(type="text", text=full_message)]),
+            Msg(name="用户", role="user", content=_user_content_blocks(message, attachments, agent_name)),
             yield_final_msg=True,
         ):
             if isinstance(ev, TextBlockDeltaEvent):
@@ -542,15 +647,17 @@ async def chat_stream(
 
 # ---------------- 会话管理 ----------------
 
-def sessions_list(limit: int = 50) -> list[dict]:
+def sessions_list(limit: int = 50, archived: bool | None = None) -> list[dict]:
+    """会话列表（按更新时间倒序）。
+
+    archived=None 返回全部（含归档）；True/False 时按归档状态过滤。
+    """
     try:
         with SessionLocal() as db:
-            rows = (
-                db.query(AgentSession)
-                .order_by(AgentSession.updated_at.desc())
-                .limit(max(1, min(limit, 200)))
-                .all()
-            )
+            query = db.query(AgentSession)
+            if archived is not None:
+                query = query.filter(AgentSession.archived == bool(archived))
+            rows = query.order_by(AgentSession.updated_at.desc()).limit(max(1, min(limit, 200))).all()
             counts = dict(db.query(ChatMessage.session_id, func.count()).group_by(ChatMessage.session_id).all())
     except OperationalError:
         logger.warning("会话列表查询失败（数据库暂不可用）", exc_info=True)
@@ -560,6 +667,7 @@ def sessions_list(limit: int = 50) -> list[dict]:
             "session_id": r.session_id,
             "title": r.title or "新会话",
             "msg_count": counts.get(r.session_id, 0),
+            "archived": bool(r.archived),
             "updated_at": r.updated_at.isoformat(),
         }
         for r in rows
@@ -594,6 +702,104 @@ def session_delete(session_id: str) -> None:
     # 清理该会话的进程内 Agent 缓存
     for key in [k for k in list(_agents) if k[0] == session_id]:
         _agents.pop(key, None)
+
+
+def session_set_archived(session_id: str, archived: bool) -> dict:
+    """归档/恢复会话；会话不存在抛 ValueError（路由层转 404）。"""
+    with SessionLocal() as db:
+        row = db.get(AgentSession, session_id)
+        if row is None:
+            raise ValueError(f"会话不存在：{session_id}")
+        row.archived = bool(archived)
+        row.updated_at = datetime.now()
+        db.commit()
+        db.refresh(row)
+        return {"session_id": row.session_id, "title": row.title or "新会话", "archived": bool(row.archived)}
+
+
+def session_export(session_id: str) -> dict:
+    """导出会话为 Markdown（标题/创建时间/消息数 + 全量消息，思考与轨迹折叠附上）。
+
+    会话不存在抛 ValueError（路由层转 404）。
+    """
+    with SessionLocal() as db:
+        row = db.get(AgentSession, session_id)
+        if row is None:
+            raise ValueError(f"会话不存在：{session_id}")
+        title = row.title or "新会话"
+        created_at = row.created_at or datetime.now()
+        msgs = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.id.asc())
+            .all()
+        )
+        payload = [
+            {
+                "role": m.role,
+                "agent_name": m.agent_name or "",
+                "content": m.content or "",
+                "thinking": m.thinking or "",
+                "trace": m.trace or [],
+                "created_at": m.created_at or datetime.now(),
+            }
+            for m in msgs
+        ]
+
+    team = load_team()
+
+    def _label(agent_name: str) -> str:
+        spec = team.get(agent_name) or TEAM.get(agent_name)
+        return spec.label if spec else (agent_name or "助手")
+
+    lines: list[str] = [
+        f"# 会话导出：{title}",
+        "",
+        f"- 会话 ID：{session_id}",
+        f"- 创建时间：{created_at.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- 消息数：{len(payload)}",
+        "",
+        "---",
+        "",
+    ]
+    for i, m in enumerate(payload, 1):
+        if m["role"] == "user":
+            who = "用户"
+        else:
+            who = _label(m["agent_name"])
+        lines.append(f"## {i}. {who} · {m['created_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+        lines.append(m["content"] or "（空）")
+        lines.append("")
+        if m["thinking"]:
+            lines.append("<details><summary>思考过程</summary>")
+            lines.append("")
+            lines.append(m["thinking"])
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+        if m["trace"]:
+            lines.append("<details><summary>工具执行轨迹</summary>")
+            lines.append("")
+            for t in m["trace"]:
+                if not isinstance(t, dict):
+                    continue
+                name = t.get("tool") or t.get("name") or "工具"
+                args = t.get("args")
+                result = t.get("result")
+                lines.append(f"- `{name}`" + (f" 参数：`{args}`" if args not in (None, "", {}, []) else ""))
+                if result not in (None, ""):
+                    lines.append(f"  - 结果：{result}")
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+    return {
+        "session_id": session_id,
+        "title": title,
+        "msg_count": len(payload),
+        "markdown": "\n".join(lines).rstrip() + "\n",
+    }
 
 
 def history(session_id: str, limit: int = 50) -> list[dict]:

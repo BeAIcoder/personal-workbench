@@ -241,9 +241,9 @@
         <el-form-item label="备注">
           <el-input v-model="modelDialog.note" maxlength="200" placeholder="模型用途、计费方式等备注" />
         </el-form-item>
-        <el-form-item label="多模态">
-          <el-switch v-model="modelDialog.multimodal" />
-          <div class="cfg-hint">模型支持图片输入时打开（标记用途，聊天传图功能后续开放）</div>
+        <el-form-item label="支持视觉/图片理解">
+          <el-switch v-model="modelDialog.supports_vision" />
+          <div class="cfg-hint">开启后可在聊天中直接发送图片，由该模型做视觉理解；模型不支持时发送图片会返回错误提示</div>
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="modelDialog.enabled" />
@@ -497,7 +497,7 @@ function thinkingLevelsOf(m) {
 }
 
 function modelTip(m) {
-  return `上下文 ${m.context_size} · 输出 ${m.max_tokens}${m.multimodal ? ' · 多模态' : ''}${m.note ? ' · 备注：' + m.note : ''}`
+  return `上下文 ${m.context_size} · 输出 ${m.max_tokens}${m.multimodal || m.supports_vision ? ' · 支持视觉' : ''}${m.note ? ' · 备注：' + m.note : ''}`
 }
 
 function applyProbeData(m, data) {
@@ -701,7 +701,7 @@ const modelDialog = reactive({
   model: '',
   context_size: 128000,
   max_tokens: 2048,
-  multimodal: false,
+  supports_vision: false,
   enabled: true,
   temperature: null,
   note: '',
@@ -718,7 +718,8 @@ function openModelForm(p, m) {
     model: m ? m.model : '',
     context_size: m ? m.context_size : 128000,
     max_tokens: m ? m.max_tokens : 2048,
-    multimodal: m ? !!m.multimodal : false,
+    // 视觉开关：supports_vision 缺省时回退读旧的 multimodal 字段
+    supports_vision: m ? !!(m.supports_vision ?? m.multimodal) : false,
     enabled: m ? m.enabled !== false : true,
     temperature: m ? (m.temperature === '' || m.temperature == null ? null : Number(m.temperature)) : null,
     note: m ? m.note || '' : '',
@@ -740,7 +741,9 @@ async function saveModel() {
       model: modelDialog.model.trim(),
       context_size: modelDialog.context_size,
       max_tokens: modelDialog.max_tokens,
-      multimodal: modelDialog.multimodal,
+      // 视觉开关：新字段 supports_vision 为准，旧字段 multimodal 同步保持一致
+      supports_vision: modelDialog.supports_vision,
+      multimodal: modelDialog.supports_vision,
       enabled: modelDialog.enabled,
       // 温度留空传空串 = 跟随系统默认（后端约定）
       temperature: modelDialog.temperature ?? '',

@@ -100,6 +100,7 @@ def _ensure_sqlite_columns() -> None:
 
     patches = {
         "chat_messages": {"thinking": "TEXT DEFAULT ''"},
+        "agent_sessions": {"archived": "INTEGER DEFAULT 0"},
         "agent_settings": {
             "active_profile_id": "INTEGER",
             "active_model_id": "INTEGER",
@@ -118,6 +119,7 @@ def _ensure_sqlite_columns() -> None:
             "temperature": "TEXT DEFAULT ''",
             "note": "TEXT DEFAULT ''",
             "supports_thinking": "INTEGER DEFAULT -1",
+            "supports_vision": "INTEGER DEFAULT 0",
             "thinking_levels": "TEXT DEFAULT ''",
             "probed_context": "INTEGER DEFAULT 0",
             "probed_max_output": "INTEGER DEFAULT 0",
