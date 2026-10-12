@@ -19,6 +19,9 @@ P = "/api/mcp"
 
 FAKE_SERVER = textwrap.dedent('''
     import sys, json
+    # 显式 UTF-8：CI（en-US）管道默认 cp1252，写中文会 UnicodeEncodeError 崩进程
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     def send(obj):
         sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\\n")
         sys.stdout.flush()
@@ -49,6 +52,9 @@ FAKE_SERVER = textwrap.dedent('''
 
 SILENT_CALL_SERVER = textwrap.dedent('''
     import sys, json
+    # 显式 UTF-8：CI（en-US）管道默认 cp1252，写中文会 UnicodeEncodeError 崩进程
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     def send(obj):
         sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\\n")
         sys.stdout.flush()
