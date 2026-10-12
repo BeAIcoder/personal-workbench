@@ -23,11 +23,11 @@ from app.models import ChatMessage
 
 # ---------- 团队名册 ----------
 
-def test_team_has_seven_specialists(client):
+def test_team_has_eight_specialists(client):
     body = client.get("/api/assistant/team").json()
-    assert len(body["agents"]) == 7
+    assert len(body["agents"]) == 8
     names = {a["name"] for a in body["agents"]}
-    assert names == {"realestate", "leasing", "operations", "marketing", "property", "security", "it_finance"}
+    assert names == {"realestate", "leasing", "operations", "marketing", "property", "security", "it_finance", "finance_specialist"}
     for agent in body["agents"]:
         assert agent["label"] and agent["description"] and agent["tools"]
 

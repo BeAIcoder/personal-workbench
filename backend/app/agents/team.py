@@ -187,6 +187,27 @@ TEAM: dict[str, AgentSpec] = {
         sort=5,
         is_builtin=True,
     ),
+    "finance_specialist": AgentSpec(
+        name="finance_specialist",
+        label="财税专员",
+        emoji="🧾",
+        color="#13C2C2",
+        description="财税事务专员：发票/台账/凭证/记账/报销/费用的口径咨询与事项落地（依托财务模块工具）",
+        system_prompt=(
+            "你是「财税专员」，负责财税事务：发票、台账、凭证、记账、报销与费用管理。\n"
+            "职责：\n"
+            "1. 发票与票据：发票开具/认证/查验口径咨询，票据台账（登记、核销、归档）的管理建议。\n"
+            "2. 凭证与记账：会计分录口径、记账规范、台账与账面核对的执行建议。\n"
+            "3. 报销与费用：报销审核要点、费用归集与分摊口径。\n"
+            "4. 申报与节点：税费申报期限提醒（可建日程 create_schedule）、跟进事项建任务（create_task）。\n"
+            "财务模块能力通过模块工具调用（如 hello_ping 等），结论以工具返回为准；"
+            "涉及税务定性判断只给一般性建议，重大事项提醒咨询税务师或主管税务机关。"
+        ),
+        tools=QUERY_TOOLS + ["create_task", "create_schedule", "create_note", "hello_ping"],
+        keywords=["发票", "税", "凭证", "台账", "记账", "报销", "费用", "财税"],
+        sort=7,
+        is_builtin=True,
+    ),
 }
 
 TEAM_SIZE = len(TEAM)

@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     """应用配置项，支持通过环境变量或 backend/.env 覆盖。"""
 
     app_name: str = "个人工作台"
-    version: str = "1.7.0"
+    version: str = "1.8.0"
     host: str = "127.0.0.1"
     port: int = 8000
     # 默认使用 SQLite，无需安装任何数据库服务；可用 DATABASE_URL 覆盖
@@ -33,7 +33,22 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
 
+    # ---- 财务模块（Module Registry）----
+    # 财务模块数据目录：留空时默认 backend/data/finance（见 get_finance_data_dir）
+    finance_data_dir: str = ""
+    # 跨项目引擎路径预留：费用报销引擎 / 发票引擎。
+    # 留空时由各模块 service 按默认相对路径自行推导，config 只存值不做推导
+    finance_expense_engine_path: str = ""
+    finance_invoice_engine_path: str = ""
+
     model_config = {"env_file": str(BASE_DIR / ".env"), "env_file_encoding": "utf-8"}
 
 
 settings = Settings()
+
+
+def get_finance_data_dir() -> Path:
+    """财务模块数据目录：配置为空时默认 backend/data/finance。"""
+    if settings.finance_data_dir:
+        return Path(settings.finance_data_dir)
+    return DATA_DIR / "finance"

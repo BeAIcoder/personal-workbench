@@ -108,6 +108,7 @@ personal-workbench/
 - [ ] 长期记忆 / RAG 知识库
 - [ ] MCP 工具接入
 - [x] 定时 Agent（计划任务自动执行）
+- [x] 模块加载机制（Module Registry：后端 `app/modules` + 前端 `src/modules`，含示例模块 finance_hello）
 - [ ] 聊天窗口传图与多模态理解
 - [ ] 会话归档与导出
 

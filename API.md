@@ -314,6 +314,27 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 ```
 - `status`：`ok`（成功，`note_id` 为结果笔记 id）/ `skipped`（模型未配置，或上一次尚未结束）/ `error`（`summary` 为错误摘要，同时记入任务 `last_error`）。
 
+## 模块机制（Module Registry）/api/finance/*
+
+工作台支持按目录加载业务模块（当前用于财务域）。模块机制约定：
+
+- **发现与加载**：后端扫描 `backend/app/modules/*/manifest.py`（`_` 开头目录如 `_template` 跳过）；manifest 校验失败或挂载异常仅记日志跳过该模块，不影响宿主与其它模块。
+- **路由挂载**：模块 router 按 manifest.prefix（必须 `/api/finance/` 开头）挂载，如 `/api/finance/hello/ping`。
+- **建表**：模块 models 随 manifest 导入注册进 `Base.metadata`（`load_modules(app)` 在 lifespan 之前执行），启动时 `create_all` 建出模块表；表名统一 `mod_` 前缀。
+- **轻量迁移**：manifest.column_patches（`{表名: {列名: DDL}}`）并入启动时的列补齐逻辑。
+- **Agent 工具**：manifest.agent_tools 经 `register_module_tools()` 并入工具注册表（与内置工具重名不覆盖）；专家白名单引用已禁用模块的工具时自动跳过不崩。
+- **前端**：`frontend/src/modules/*/manifest.js` 声明路由（`/finance/<name>/...`，懒加载）与菜单（group/icon/order），自动进侧边栏对应分组。
+
+### GET /api/finance/hello/ping
+示例模块 finance_hello 的连通性自检（机制实证）：
+```json
+{ "module": "finance_hello", "ok": true }
+```
+
+模块自带样例表 `mod_hello_entry`（id/name/created_at）与条目接口：`GET /api/finance/hello/entries`、`POST /api/finance/hello/entries`（`{"name": "..."}`，返回 201）。模块还注册只读 Agent 工具 `hello_ping`（财税专员白名单内）。
+
+新建模块：复制 `backend/app/modules/_template` 为 `finance_<name>` 并按目录内注释改造；前端对应建 `frontend/src/modules/finance-<name>/`（manifest.js + views）。重启生效。
+
 ## 前端接入说明
 
 - axios 实例：`frontend/src/api/index.js`，`baseURL` 取 `VITE_API_BASE`（默认 `/api`）；响应拦截器统一弹出中文错误提示。

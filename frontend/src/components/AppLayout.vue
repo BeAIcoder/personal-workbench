@@ -10,30 +10,19 @@
         text-color="#bfc9d4"
         active-text-color="#ffffff"
       >
-        <el-menu-item index="/">
-          <el-icon><Odometer /></el-icon>
-          <span>工作台概览</span>
+        <el-menu-item v-for="item in staticMenus" :key="item.path" :index="item.path">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.title }}</span>
         </el-menu-item>
-        <el-menu-item index="/tasks">
-          <el-icon><Finished /></el-icon>
-          <span>任务管理</span>
-        </el-menu-item>
-        <el-menu-item index="/schedules">
-          <el-icon><Calendar /></el-icon>
-          <span>日程管理</span>
-        </el-menu-item>
-        <el-menu-item index="/notes">
-          <el-icon><Notebook /></el-icon>
-          <span>笔记管理</span>
-        </el-menu-item>
-        <el-menu-item index="/assistant">
-          <el-icon><ChatDotRound /></el-icon>
-          <span>AI 助手</span>
-        </el-menu-item>
-        <el-menu-item index="/jobs">
-          <el-icon><Timer /></el-icon>
-          <span>定时任务</span>
-        </el-menu-item>
+        <el-sub-menu v-for="group in menuGroups" :key="group.name" :index="`group-${group.name}`">
+          <template #title>
+            <el-icon><component :is="group.icon" /></el-icon>
+            <span>{{ group.name }}</span>
+          </template>
+          <el-menu-item v-for="m in group.items" :key="m.path" :index="m.path">
+            <span>{{ m.title }}</span>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
       <div class="aside-footer">v{{ version }} · 数据本地存储</div>
     </el-aside>
@@ -51,11 +40,24 @@
   </el-container>
 </template>
 
+<script>
+// 静态菜单：原有 6 项，文案/图标/顺序保持不变（导出供测试断言不丢失）
+export const STATIC_MENUS = [
+  { path: '/', title: '工作台概览', icon: 'Odometer' },
+  { path: '/tasks', title: '任务管理', icon: 'Finished' },
+  { path: '/schedules', title: '日程管理', icon: 'Calendar' },
+  { path: '/notes', title: '笔记管理', icon: 'Notebook' },
+  { path: '/assistant', title: 'AI 助手', icon: 'ChatDotRound' },
+  { path: '/jobs', title: '定时任务', icon: 'Timer' },
+]
+</script>
+
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import dayjs from 'dayjs'
 import api from '../api'
+import { getModuleMenus } from '../modules'
 import GlobalSearch from './GlobalSearch.vue'
 
 const route = useRoute()
@@ -63,6 +65,20 @@ const searchRef = ref(null)
 const activeMenu = computed(() => route.path)
 const todayText = dayjs().format('YYYY年MM月DD日 dddd')
 const version = ref('')
+const staticMenus = STATIC_MENUS
+
+// 模块菜单按 group 分组渲染（如「财务」组）；组图标取组内首项图标
+const menuGroups = computed(() => {
+  const groups = new Map()
+  for (const m of getModuleMenus()) {
+    const name = m.group || '模块'
+    if (!groups.has(name)) {
+      groups.set(name, { name, icon: m.icon || 'Folder', items: [] })
+    }
+    groups.get(name).items.push(m)
+  }
+  return [...groups.values()]
+})
 
 function onKeydown(e) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
