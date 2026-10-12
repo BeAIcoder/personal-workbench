@@ -344,6 +344,8 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 | finance_vault 数据仓 | `/api/finance/vault` | `GET /tables`、`POST /ingest/file`、`POST /query`（只读 SQL）、`GET /tables/{name}/preview` |
 | finance_ledger_personal 个人记账 | `/api/finance/ledger/personal` | 账户/分类/交易 CRUD、`GET /stats/monthly`、`GET /stats/trend`、`GET/PUT /budgets`、`POST /import/csv`、`GET /export/csv` |
 | finance_ledger_bip 企业记账 | `/api/finance/ledger/bip` | `POST /imports/preview`、`POST /imports/confirm`、`GET /imports`、`GET /vouchers`、`GET /vouchers/{id}`、`GET /entries`、`GET /balances/summary`、`POST /vouchers/export-to-vault` |
+| finance_tax 企业所得税 | `/api/finance/tax` | `/enterprises`（CRUD）、`/financial-import`（导入+模板下载）、`/policies`（政策库）、`/tax-returns`（申报 CRUD/提交/计算/导出 Excel·PDF）、`/textbook-reference`（教材对照） |
+| finance_board 报表看板 | `/api/finance/board` | `GET /snapshots`、`POST /run`（触发管线）、`GET /latest`、`GET /snapshots/{id}/html`（iframe 嵌入） |
 
 > 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级。
 
