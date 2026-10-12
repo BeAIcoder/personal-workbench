@@ -42,3 +42,9 @@
 - [ ] 阶段四（按需）：L1 薄壳（现金流/POS）、finance-vault、APScheduler 升级
 
 待用户拍板（来自主方案/记录）：① finance-tax 前端 Vue 重写 or iframe 过渡时长；② finance-vault 是否首批；③ 个人记账/预算模块是否入路线图。
+
+## 阶段七与逆向分析（2026-10-12 晚）
+
+- `progress/` 新增：skill_store / expert_packs 开发记录、阶段六验收、阶段七记录（见下）
+- `adr/` 新增：ADR-005（专家 seed 增量 upsert 与导入并集语义）
+- **逆向分析套件**（REVERSE_01~07）：CI-CD 分析、SPEC 重构、开发计划回溯、进度回溯、使用说明、运行环境要求、当前运行环境概况——系统化盘点当前工程的交付全貌
