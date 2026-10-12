@@ -698,10 +698,11 @@ def query_vouchers(
     if voucher_no:
         q = q.filter(BipVoucher.voucher_no.contains(voucher_no, autoescape=True))
     if keyword:
-        like = f"%{keyword}%"
         q = q.filter(or_(
-            BipVoucher.summary.like(like),
-            BipVoucher.id.in_(db.query(BipEntry.voucher_id).filter(BipEntry.summary.like(like))),
+            BipVoucher.summary.contains(keyword, autoescape=True),
+            BipVoucher.id.in_(
+                db.query(BipEntry.voucher_id).filter(BipEntry.summary.contains(keyword, autoescape=True))
+            ),
         ))
     total = q.count()
     rows = (
@@ -781,7 +782,7 @@ def query_entries(
     if voucher_no:
         q = q.filter(BipVoucher.voucher_no.contains(voucher_no, autoescape=True))
     if keyword:
-        q = q.filter(BipEntry.summary.like(f"%{keyword}%"))
+        q = q.filter(BipEntry.summary.contains(keyword, autoescape=True))
     total = q.count()
     rows = (
         q.order_by(BipVoucher.voucher_date.desc(), BipVoucher.id.desc(), BipEntry.line_no)

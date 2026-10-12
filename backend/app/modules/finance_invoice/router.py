@@ -1,4 +1,5 @@
 """finance_invoice 模块接口：/api/finance/invoice（前缀由注册器按 manifest.prefix 挂载）。"""
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -33,7 +34,8 @@ async def create_batch(
 ):
     uploads = [(f.filename or "file.pdf", await f.read()) for f in files]
     try:
-        batch = service.create_batch(db, uploads, name=name)
+        # 逐张 PDF 解析为重活：丢线程池执行，避免阻塞事件循环
+        batch = await asyncio.to_thread(service.create_batch, db, uploads, name=name)
     except EngineUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"发票解析引擎不可用：{exc}")
     except ValueError as exc:

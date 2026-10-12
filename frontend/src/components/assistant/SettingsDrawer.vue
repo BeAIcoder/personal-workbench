@@ -668,8 +668,12 @@ async function saveProvider() {
 }
 
 async function toggleProvider(p) {
-  await assistantApi.providers.save({ provider_id: p.id, name: p.name, protocol: p.protocol, base_url: p.base_url, enabled: p.enabled })
-  emit('refresh')
+  try {
+    await assistantApi.providers.save({ provider_id: p.id, name: p.name, protocol: p.protocol, base_url: p.base_url, enabled: p.enabled })
+    emit('refresh')
+  } catch {
+    p.enabled = !p.enabled  // 启停失败回滚开关（拦截器已提示）
+  }
 }
 
 async function deleteProvider(p) {

@@ -10,6 +10,7 @@
 import importlib
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,8 @@ class EngineUnavailableError(RuntimeError):
 
 # 引擎加载缓存：仅缓存成功结果；失败不缓存，下次调用重新探测（目录后补上也无需重启）
 _ENGINE: dict[str, Any] = {"classifier_cls": None, "load_rules": None, "app_config": None, "engine_dir": ""}
+# 引擎加载锁：os.chdir 是进程级状态，并发请求下 chdir+import 临界区必须串行化
+_ENGINE_LOCK = threading.Lock()
 
 
 def _reset_engine_state() -> None:
@@ -85,48 +88,55 @@ def _ensure_engine() -> dict[str, Any]:
     - 引擎以顶层 `import config` 读取自带 config.py，import 期间临时遮蔽
       sys.modules 里可能存在的同名外来模块，import 完成后恢复原状（引擎内部
       已绑定自身 config 引用，本模块加载规则时也显式传入该引用）。
+
+    并发安全：模块级 _ENGINE_LOCK + 双重检查，把 chdir+import+恢复 整个临界区
+    串行化（CWD 是进程级状态，并发 chdir 会互相漂移）。
     """
     if _ENGINE["classifier_cls"] is not None:
         return _ENGINE
 
-    engine_dir = find_engine_dir()
-    if engine_dir is None:
-        raise EngineUnavailableError(
-            "费用分类引擎不可用：未找到引擎目录（现金流滚动预测/费用分类汇总系统-v2.0），"
-            "请检查 FINANCE_EXPENSE_ENGINE_PATH 配置或确认引擎项目在位"
-        )
+    with _ENGINE_LOCK:
+        if _ENGINE["classifier_cls"] is not None:  # 双重检查：等锁期间可能已被其他线程加载
+            return _ENGINE
 
-    tmp_dir = module_subdir("tmp")
-    engine_key = str(engine_dir)
-    prev_cwd = os.getcwd()
-    stashed_config = sys.modules.pop("config", None)
-    try:
-        if engine_key in sys.path:
-            sys.path.remove(engine_key)
-        sys.path.insert(0, engine_key)
-        os.chdir(tmp_dir)
+        engine_dir = find_engine_dir()
+        if engine_dir is None:
+            raise EngineUnavailableError(
+                "费用分类引擎不可用：未找到引擎目录（现金流滚动预测/费用分类汇总系统-v2.0），"
+                "请检查 FINANCE_EXPENSE_ENGINE_PATH 配置或确认引擎项目在位"
+            )
+
+        tmp_dir = module_subdir("tmp")
+        engine_key = str(engine_dir)
+        prev_cwd = os.getcwd()
+        stashed_config = sys.modules.pop("config", None)
         try:
-            ec_mod = importlib.import_module("expense_classification")
-            rl_mod = importlib.import_module("rules_loader")
+            if engine_key in sys.path:
+                sys.path.remove(engine_key)
+            sys.path.insert(0, engine_key)
+            os.chdir(tmp_dir)
+            try:
+                ec_mod = importlib.import_module("expense_classification")
+                rl_mod = importlib.import_module("rules_loader")
+            finally:
+                os.chdir(prev_cwd)
+        except EngineUnavailableError:
+            raise
+        except Exception as exc:
+            raise EngineUnavailableError(f"费用分类引擎加载失败：{exc}") from exc
         finally:
-            os.chdir(prev_cwd)
-    except EngineUnavailableError:
-        raise
-    except Exception as exc:
-        raise EngineUnavailableError(f"费用分类引擎加载失败：{exc}") from exc
-    finally:
-        # 恢复 sys.modules 中的外来 config（若有）；引擎自带的 config 引用已绑定在模块内
-        sys.modules.pop("config", None)
-        if stashed_config is not None:
-            sys.modules["config"] = stashed_config
+            # 恢复 sys.modules 中的外来 config（若有）；引擎自带的 config 引用已绑定在模块内
+            sys.modules.pop("config", None)
+            if stashed_config is not None:
+                sys.modules["config"] = stashed_config
 
-    _ENGINE.update(
-        classifier_cls=ec_mod.ExpenseClassifier,
-        load_rules=rl_mod.load_classification_rules,
-        app_config=getattr(ec_mod, "_app_config", None),
-        engine_dir=engine_key,
-    )
-    return _ENGINE
+        _ENGINE.update(
+            classifier_cls=ec_mod.ExpenseClassifier,
+            load_rules=rl_mod.load_classification_rules,
+            app_config=getattr(ec_mod, "_app_config", None),
+            engine_dir=engine_key,
+        )
+        return _ENGINE
 
 
 def ensure_engine_ready() -> None:

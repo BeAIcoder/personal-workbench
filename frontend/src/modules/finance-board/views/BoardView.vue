@@ -13,7 +13,7 @@
         </div>
       </template>
       <el-empty v-if="!items.length" description="暂无快照，点右上角「运行管线刷新」生成（首次运行需数秒）" />
-      <iframe v-else-if="htmlUrl" :src="htmlUrl" class="board-frame" frameborder="0" />
+      <iframe v-else-if="htmlUrl" :src="htmlUrl" class="board-frame" frameborder="0" sandbox="allow-scripts" />
       <el-alert v-else type="info" :closable="false" title="请选择一个成功快照查看" />
     </el-card>
 

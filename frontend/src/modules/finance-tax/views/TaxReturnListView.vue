@@ -73,7 +73,11 @@ async function reload() {
 }
 
 async function submit(row) {
-  await ElMessageBox.confirm(`提交 ${row.year} 年申报记录？提交后不可修改。`, '提交确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm(`提交 ${row.year} 年申报记录？提交后不可修改。`, '提交确认', { type: 'warning' })
+  } catch {
+    return  // 用户取消
+  }
   await api.put(`/finance/tax/tax-returns/${row.id}/submit`)
   ElMessage.success('已提交')
   await reload()

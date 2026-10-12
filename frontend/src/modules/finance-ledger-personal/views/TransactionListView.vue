@@ -3,7 +3,10 @@
     <el-card shadow="never">
       <template #header>
         <div class="card-head">
-          <span>交易流水</span>
+          <span>
+            交易流水<span v-if="total" class="total-hint">（共 {{ total }} 条）</span>
+            <span v-if="total > items.length" class="total-hint warn">仅显示前 {{ items.length }} 条，共 {{ total }} 条，请用筛选缩小范围或导出 CSV 查看全部</span>
+          </span>
           <div class="filters">
             <el-select v-model="filters.month" placeholder="月份" size="small" clearable style="width: 120px">
               <el-option v-for="m in monthOptions" :key="m" :label="m" :value="m" />
@@ -129,6 +132,17 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.total-hint {
+  color: #909399;
+  font-size: 12px;
+  font-weight: 400;
+  margin-left: 8px;
+}
+
+.total-hint.warn {
+  color: #e6a23c;
 }
 
 .filters {

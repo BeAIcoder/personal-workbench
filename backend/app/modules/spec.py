@@ -46,9 +46,18 @@ class ModuleManifest:
         if not isinstance(self.menu, dict):
             errors.append("menu 必须是 dict（group/icon/order）")
         for tool in self.agent_tools:
-            for key in ("name", "description", "readonly"):
+            if not isinstance(tool, dict):
+                errors.append(f"agent_tools 元素必须是 dict，当前为 {type(tool).__name__}")
+                continue
+            for key in ("name", "description", "func", "params", "required", "readonly"):
                 if key not in tool:
                     errors.append(f"agent_tools 元素 {tool.get('name', '?')!r} 缺少字段 {key}")
+            if "func" in tool and not callable(tool["func"]):
+                errors.append(f"agent_tools 元素 {tool.get('name', '?')!r} 的 func 必须可调用")
+            if "params" in tool and not isinstance(tool["params"], dict):
+                errors.append(f"agent_tools 元素 {tool.get('name', '?')!r} 的 params 必须是 dict")
+            if "required" in tool and not isinstance(tool["required"], list):
+                errors.append(f"agent_tools 元素 {tool.get('name', '?')!r} 的 required 必须是 list")
         if not isinstance(self.requires, list):
             errors.append("requires 必须是 list")
         if not isinstance(self.preset_experts, list):

@@ -27,6 +27,7 @@ LEDGER_SCRIPT = "generate_pos_ledger.py"
 ANALYZE_SCRIPT = "analyze_pos_reconciliation.py"
 STEP_TIMEOUT = 900
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UNZIP_BYTES = 200 * 1024 * 1024  # ZIP 解压后总量上限（防解压炸弹）
 ALLOWED_SUFFIXES = (".xlsx", ".xls", ".zip")
 
 
@@ -52,14 +53,20 @@ def _runs_root() -> Path:
 
 
 def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> list[str]:
+    """解压 ZIP 到 dest：is_relative_to 防 zip-slip（拒绝越界条目），累计解压后总量防炸弹。"""
     names: list[str] = []
+    root = dest.resolve()
+    total_unc = 0
     for info in zf.infolist():
         name = info.filename.replace("\\", "/")
         if info.is_dir() or name.startswith("~$"):
             continue
         target = (dest / name).resolve()
-        if not str(target).startswith(str(dest.resolve())):
+        if not target.is_relative_to(root):
             raise ValueError(f"ZIP 内含非法路径：{name}")
+        total_unc += info.file_size
+        if total_unc > MAX_UNZIP_BYTES:
+            raise ValueError(f"ZIP 解压后总大小超过 {MAX_UNZIP_BYTES // 1024 // 1024}MB 上限")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(zf.read(info))
         names.append(Path(name).name)
@@ -150,6 +157,30 @@ def execute_run(db: Session, run_id: int) -> dict:
         logs.append(f"== {ANALYZE_SCRIPT} ==\n" + _run_script(
             ANALYZE_SCRIPT, ["--root", str(input_dir)], edir,
         ))
+
+        run.elapsed_sec = round(time.perf_counter() - t0, 2)
+        run.log_tail = "\n".join(logs)[-4000:]
+
+        # 产物归档：output/* 与 input 下新生成的文件（差集）
+        art_dir = run_dir / "artifacts"
+        art_dir.mkdir(parents=True, exist_ok=True)
+        artifacts: list[dict] = []
+        sources = [p for p in out_dir.iterdir() if p.is_file()]
+        sources += [p for p in input_dir.iterdir()
+                    if p.is_file() and p.name not in before and Path(p.name).name not in uploaded]
+        for f in sorted(set(sources)):
+            if f.name.startswith("~$"):
+                continue
+            dest = art_dir / f.name
+            dest.write_bytes(f.read_bytes())
+            artifacts.append({"name": f.name, "size": dest.stat().st_size, "path": str(dest)})
+        run.artifacts = artifacts
+        run.status = "ok" if artifacts else "failed"
+        if not artifacts:
+            run.error = "引擎执行完成但未产生产物"
+        db.commit()
+        db.refresh(run)
+        return _out(run)
     except subprocess.TimeoutExpired:
         run.status = "failed"
         run.error = f"引擎执行超时（>{STEP_TIMEOUT}s）"
@@ -163,30 +194,16 @@ def execute_run(db: Session, run_id: int) -> dict:
         run.elapsed_sec = round(time.perf_counter() - t0, 2)
         db.commit()
         raise EngineUnavailableError(run.error) from None
-
-    run.elapsed_sec = round(time.perf_counter() - t0, 2)
-    run.log_tail = "\n".join(logs)[-4000:]
-
-    # 产物归档：output/* 与 input 下新生成的文件（差集）
-    art_dir = run_dir / "artifacts"
-    art_dir.mkdir(parents=True, exist_ok=True)
-    artifacts: list[dict] = []
-    sources = [p for p in out_dir.iterdir() if p.is_file()]
-    sources += [p for p in input_dir.iterdir()
-                if p.is_file() and p.name not in before and Path(p.name).name not in uploaded]
-    for f in sorted(set(sources)):
-        if f.name.startswith("~$"):
-            continue
-        dest = art_dir / f.name
-        dest.write_bytes(f.read_bytes())
-        artifacts.append({"name": f.name, "size": dest.stat().st_size, "path": str(dest)})
-    run.artifacts = artifacts
-    run.status = "ok" if artifacts else "failed"
-    if not artifacts:
-        run.error = "引擎执行完成但未产生产物"
-    db.commit()
-    db.refresh(run)
-    return _out(run)
+    except EngineUnavailableError:
+        raise
+    except Exception as exc:
+        # 兜底：归档等任何异常都回写 failed，避免运行记录永久卡在 running 无法重试
+        run.status = "failed"
+        run.error = f"执行异常：{type(exc).__name__}: {exc}"[:500]
+        run.elapsed_sec = round(time.perf_counter() - t0, 2)
+        db.commit()
+        logger.exception("POS 运行 %s 执行异常", run.id)
+        raise EngineUnavailableError(run.error) from exc
 
 
 def _out(r: PosRun) -> dict:

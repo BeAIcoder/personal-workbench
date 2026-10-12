@@ -127,9 +127,15 @@ def load_modules(app: FastAPI) -> list[ModuleManifest]:
             logger.exception("模块 %s 路由挂载失败，已跳过", name)
             continue
         if manifest.agent_tools:
-            register_module_tools({t["name"]: t for t in manifest.agent_tools})
+            try:
+                register_module_tools({t["name"]: t for t in manifest.agent_tools})
+            except Exception:
+                logger.exception("模块 %s 工具注册失败，已跳过该模块的工具注册（不影响宿主）", name)
         if manifest.preset_experts:
-            _preset_expert_tools(manifest)
+            try:
+                _preset_expert_tools(manifest)
+            except Exception:
+                logger.exception("模块 %s 工具预置失败，已跳过该模块的工具预置（不影响宿主）", name)
         _loaded.append(manifest)
         logger.info("模块已加载：%s v%s（prefix=%s）", manifest.name, manifest.version, manifest.prefix)
     return _loaded

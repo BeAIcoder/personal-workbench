@@ -64,7 +64,11 @@ const goCalculate = (id) => router.push({ name: 'finance-tax-calculate', params:
 const goEdit = (id) => router.push({ name: 'finance-tax-enterprise-edit', params: { id } })
 
 async function remove(row) {
-  await ElMessageBox.confirm(`删除企业「${row.name}」将同时删除其申报记录，确认？`, '删除确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm(`删除企业「${row.name}」将同时删除其申报记录，确认？`, '删除确认', { type: 'warning' })
+  } catch {
+    return  // 用户取消
+  }
   await api.delete(`/finance/tax/enterprises/${row.id}`)
   ElMessage.success('已删除')
   await load()

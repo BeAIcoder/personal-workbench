@@ -7,6 +7,7 @@ tools/call 执行、连接失败 503、env 脱敏。
 import json
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,29 @@ FAKE_SERVER = textwrap.dedent('''
                 "isError": False}})
         elif isinstance(method, str) and method.startswith("notifications/"):
             pass
+''')
+
+SILENT_CALL_SERVER = textwrap.dedent('''
+    import sys, json
+    def send(obj):
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\\n")
+        sys.stdout.flush()
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        msg = json.loads(line)
+        mid, method = msg.get("id"), msg.get("method")
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": "2024-11-05", "capabilities": {},
+                "serverInfo": {"name": "silent", "version": "0.1"}}})
+        elif method == "tools/list":
+            send({"jsonrpc": "2.0", "id": mid, "result": {"tools": [{
+                "name": "hang", "description": "收到调用但不回行的工具",
+                "inputSchema": {"type": "object", "properties": {}}}]}})
+        elif method == "tools/call":
+            pass  # 模拟服务器挂起：进程活着但永不回行
 ''')
 
 
@@ -140,3 +164,26 @@ def test_mcp_duplicate_name_rejected(client, tmp_path, fake_server):
 def test_mcp_module_tools_not_in_loaded_modules():
     """MCP 工具不走 Module Registry（宿主级能力），模块清单不含 mcp。"""
     assert "mcp" not in {m.name for m in get_loaded_modules()}
+
+
+def test_mcp_call_timeout_when_server_hangs(tmp_path, monkeypatch):
+    """服务器收到 tools/call 但不回行：CALL_TIMEOUT 内抛 McpError，不永久阻塞。"""
+    from app.agents import mcp
+
+    script = tmp_path / "silent_mcp_server.py"
+    script.write_text(SILENT_CALL_SERVER, encoding="utf-8")
+    monkeypatch.setattr(mcp, "CALL_TIMEOUT", 1)  # 缩短注入；默认值在调用时解析
+
+    server = mcp.McpStdioServer(name="silent", command=sys.executable, args=[str(script)])
+    server.start()
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(mcp.McpError, match="超时"):
+            server.call_tool("hang", {})
+        elapsed = time.monotonic() - t0
+        assert elapsed < 10  # 旧行为会永久阻塞在 readline
+        # 超时后连接状态可控：进程仍在，可正常 stop 回收
+        assert server.is_alive()
+    finally:
+        server.stop()
+    assert not server.is_alive()

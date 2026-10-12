@@ -5,6 +5,7 @@ DuckDB 库文件路径经 monkeypatch 重定向到 tmp_path，不写真实数据
 覆盖：ingest_dataframe 契约、上传入仓（白名单/大小/坏文件）、只读 SQL 校验
 （注入防护）、预览、HTTP 端点、Agent 工具注册与行为。
 """
+import asyncio
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +13,7 @@ import pytest
 
 from app.agents.tools import TOOL_SPECS
 from app.modules import get_loaded_modules
+from app.modules.finance_vault import router as vault_router
 from app.modules.finance_vault import service as svc
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -141,6 +143,11 @@ def test_http_endpoints(client, vault_dir, tmp_path):
 
     miss = client.get("/api/finance/vault/tables/nope/preview")
     assert miss.status_code == 404
+
+
+def test_ingest_handler_remains_coroutine():
+    """ingest_file 保持协程（await file.read 语义不变），解析入仓重活经 asyncio.to_thread 进线程池。"""
+    assert asyncio.iscoroutinefunction(vault_router.ingest_file)
 
 
 # ---------------- 模块注册与 Agent 工具 ----------------

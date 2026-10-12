@@ -177,3 +177,27 @@ def test_readonly_agent_has_query_tools_only(client):
     finally:
         client.delete(f"/api/assistant/providers/{pid}")
         orchestrator.invalidate()
+
+
+# ---------------- session_id 字符集校验（路径参数统一套用 _SESSION_ID_RE） ----------------
+
+def test_session_path_endpoints_reject_illegal_session_id(client):
+    """路径参数 session_id 不合法 → 400（导出会拼进响应文件名，必须拦在入口处）。"""
+    bad_ids = ["bad id", "short", "x" * 65, "含有中文123", "a.b"]
+    for bad in bad_ids:
+        assert client.get(f"/api/assistant/sessions/{bad}/export").status_code == 400
+        assert client.get(f"/api/assistant/history/{bad}").status_code == 400
+        assert client.delete(f"/api/assistant/sessions/{bad}").status_code == 400
+        assert client.post(f"/api/assistant/sessions/{bad}/archive").status_code == 400
+        assert client.post(f"/api/assistant/sessions/{bad}/unarchive").status_code == 400
+        # body 用合法 session_id，单独验证路径参数校验生效（body 非法会先被 pydantic 拦成 422）
+        assert client.put(f"/api/assistant/sessions/{bad}", json={"session_id": "sess-ok-01"}).status_code == 400
+
+
+def test_session_path_endpoints_legal_id_keep_original_semantics(client):
+    """合法字符集不受影响：会话不存在仍走 404，存在则正常导出。"""
+    assert client.get("/api/assistant/sessions/sess-none-01/export").status_code == 404
+    orchestrator.session_create("sess-ok-01", "校验回归")
+    resp = client.get("/api/assistant/sessions/sess-ok-01/export")
+    assert resp.status_code == 200
+    assert 'filename="session-sess-ok-01.md"' in resp.headers["content-disposition"]

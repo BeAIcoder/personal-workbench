@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import subprocess
 import sys
 import threading
@@ -120,6 +121,25 @@ class McpStdioServer:
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
 
+    def _read_line(self, timeout: float) -> str:
+        """读一行 stdout；超时抛 queue.Empty。
+
+        readline 是不可中断的阻塞调用，放到一次性守护线程里执行：
+        超时后调用方放弃等待，线程在进程退出/管道关闭时自然结束。
+        """
+        proc = self.proc
+        assert proc and proc.stdout
+        q: queue.Queue[str] = queue.Queue(maxsize=1)
+
+        def _reader() -> None:
+            try:
+                q.put(proc.stdout.readline())
+            except (ValueError, OSError):
+                q.put("")
+
+        threading.Thread(target=_reader, daemon=True).start()
+        return q.get(timeout=timeout)
+
     def _read_response(self, msg_id: int, timeout: float) -> dict:
         assert self.proc and self.proc.stdout
         deadline = time.monotonic() + timeout
@@ -127,7 +147,10 @@ class McpStdioServer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise McpError(f"等待响应超时（>{timeout:g}s）")
-            line = self.proc.stdout.readline()
+            try:
+                line = self._read_line(remaining)
+            except queue.Empty:
+                raise McpError(f"等待响应超时（>{timeout:g}s）") from None
             if not line:
                 raise McpError("服务器关闭了输出流（进程可能已退出）")
             line = line.strip()
@@ -144,7 +167,9 @@ class McpStdioServer:
                 return msg.get("result", {})
             # 其他 id / 通知：继续读
 
-    def _request(self, method: str, params: dict, timeout: float = CALL_TIMEOUT) -> dict:
+    def _request(self, method: str, params: dict, timeout: float | None = None) -> dict:
+        if timeout is None:
+            timeout = CALL_TIMEOUT
         with self._lock:
             if not self.is_alive():
                 raise McpError("服务器进程未运行")

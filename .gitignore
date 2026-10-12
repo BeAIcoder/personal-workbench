@@ -51,3 +51,6 @@ backend/app/modules/finance_cashflow/
 backend/tests/test_module_finance_cashflow.py
 frontend/src/modules/finance-cashflow/
 frontend/tests/finance-cashflow.test.js
+
+# 脱敏映射表（私有钥匙，永不入库；机制见 dev/SANITIZE.md）
+dev/sanitize-map.local.json

@@ -1,0 +1,9 @@
+# 脱敏过滤器：文本文件提交时经 dev/git_sanitize_filter.py 处理（见 dev/SANITIZE.md）
+*.md    filter=sanitize
+*.py    filter=sanitize
+*.js    filter=sanitize
+*.vue   filter=sanitize
+*.json  filter=sanitize
+*.yml   filter=sanitize
+*.yaml  filter=sanitize
+*.txt   filter=sanitize

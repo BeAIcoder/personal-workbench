@@ -118,11 +118,15 @@ async function importAll() {
 }
 
 async function resetFromSeed() {
-  await ElMessageBox.confirm(
-    '将用内置种子（backend/seed_experts）覆盖专家包目录中的同名文件，确定继续？',
-    '从种子重置',
-    { type: 'warning' },
-  )
+  try {
+    await ElMessageBox.confirm(
+      '将用内置种子（backend/seed_experts）覆盖专家包目录中的同名文件，确定继续？',
+      '从种子重置',
+      { type: 'warning' },
+    )
+  } catch {
+    return  // 用户取消
+  }
   const { data } = await api.post('/experts/packs/reset')
   ElMessage.success(`已重置 ${data.reset.length} 个种子文件`)
   await loadAll()
@@ -136,11 +140,15 @@ async function viewPack(row) {
 }
 
 async function removePack(row) {
-  await ElMessageBox.confirm(
-    `确定删除专家包文件 ${row.file}？（不影响数据库中的专家）`,
-    '删除专家包',
-    { type: 'warning' },
-  )
+  try {
+    await ElMessageBox.confirm(
+      `确定删除专家包文件 ${row.file}？（不影响数据库中的专家）`,
+      '删除专家包',
+      { type: 'warning' },
+    )
+  } catch {
+    return  // 用户取消
+  }
   const { data } = await api.delete(`/experts/packs/${encodeURIComponent(row.name)}`)
   ElMessage.success(`已删除 ${data.deleted}`)
   await loadAll()
