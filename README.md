@@ -109,6 +109,7 @@ personal-workbench/
 - [ ] MCP 工具接入
 - [x] 定时 Agent（计划任务自动执行）
 - [x] 模块加载机制（Module Registry：后端 `app/modules` + 前端 `src/modules`，含示例模块 finance_hello）
+- [x] 首批财务模块（v1.9.0）：费用分类 / 发票处理 / 数据仓（DuckDB）/ 个人记账 / 企业记账（用友 BIP 导入）
 - [ ] 聊天窗口传图与多模态理解
 - [ ] 会话归档与导出
 

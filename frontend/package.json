@@ -1,6 +1,6 @@
 {
   "name": "personal-workbench-frontend",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
+    "ag-grid-community": "^36.2.0",
+    "ag-grid-vue3": "^36.2.0",
     "axios": "^1.7.2",
     "dayjs": "^1.11.11",
     "echarts": "^5.5.0",
