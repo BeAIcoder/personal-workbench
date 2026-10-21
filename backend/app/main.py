@@ -61,6 +61,13 @@ async def lifespan(_: FastAPI):
         ensure_seed_packs()
     except Exception:
         logger.warning("技能包种子初始化跳过", exc_info=True)
+    # 调试中心种子问题：首次启动写入 data/debug/issues.json（幂等；失败仅记日志）
+    try:
+        from .modules.debug_center import service as debug_center_svc
+
+        debug_center_svc.ensure_seed_issues()
+    except Exception:
+        logger.warning("调试中心种子初始化跳过", exc_info=True)
     # 模块工具预置补齐：load_modules 早于本步骤，新库场景下暂存的预置在此生效
     from .modules import apply_pending_presets
 

@@ -323,10 +323,13 @@ def test_list_packs_states(client, tmp_path):
     new = items["legal_advisor"]
     assert new["valid"] is True and new["imported"] is False and new["diff"] is None
     assert new["label"] == "法务顾问" and new["file"] == "legal_advisor.md"
+    assert new["diff_fields"] == []  # 未导入无差异字段
 
     diff = items["realestate"]
     assert diff["imported"] is True
     assert diff["diff"] and "工具" in diff["diff"]
+    # 差异字段名随清单返回（P0-4：界面据此列出具体差异项）：提示词/关键词/工具/描述四项
+    assert diff["diff_fields"] == ["角色提示词", "关键词", "工具", "描述"]
 
     broken = items["broken"]
     assert broken["valid"] is False and broken["imported"] is False

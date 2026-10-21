@@ -72,11 +72,15 @@
           </el-select>
         </el-tooltip>
         <el-dropdown trigger="click" @command="onModelCommand">
-          <span class="model-chip" :title="'当前模型：' + (llmInfo.model || '未配置')">
+          <span class="model-chip" :title="modelChipTitle">
             🤖 {{ shortModel }} <el-icon><ArrowDown /></el-icon>
+            <span v-if="isEnvFallback" class="env-fallback-badge">env 兜底</span>
           </span>
           <template #dropdown>
             <el-dropdown-menu>
+              <el-dropdown-item v-if="isEnvFallback" disabled class="env-fallback-tip">
+                当前供应商均已停用，正在使用 .env 兜底模型（不在下方列表中）
+              </el-dropdown-item>
               <el-dropdown-item v-for="m in models" :key="m.id" :command="m.id" :disabled="m.active">
                 {{ m.active ? '✓ ' : '' }}{{ m.label }}
               </el-dropdown-item>
@@ -133,7 +137,7 @@ import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { ArrowDown, Close, Paperclip } from '@element-plus/icons-vue'
 import { assistantApi, API_BASE } from '../../api'
-import { ASSISTANT_ACCEPT, attachmentImageSrc, isImageAttachment, isImageFile } from '../../utils/assistant'
+import { ASSISTANT_ACCEPT, attachmentImageSrc, canSend, isImageAttachment, isImageFile, sendBlockHint, splitPreviewUrls } from '../../utils/assistant'
 
 const props = defineProps({
   sessionId: { type: String, default: '' },
@@ -215,9 +219,13 @@ function revokePreviewUrl(url) {
   objectUrls.delete(url)
 }
 
-function releaseAllPreviewUrls() {
-  for (const url of objectUrls) URL.revokeObjectURL(url)
-  objectUrls.clear()
+// 回收缩略图 objectURL；exceptUrls 中的地址保留（待发送附件的 previewUrl 是唯一显示源，不能连带回收）
+function releaseAllPreviewUrls(exceptUrls = []) {
+  const { revoke } = splitPreviewUrls([...objectUrls], exceptUrls)
+  for (const url of revoke) {
+    URL.revokeObjectURL(url)
+    objectUrls.delete(url)
+  }
 }
 
 onBeforeUnmount(() => {
@@ -265,7 +273,8 @@ function ensureSession() {
 
 // 父组件切换会话时调用：拉历史并渲染
 async function loadHistory(sid) {
-  releaseAllPreviewUrls()  // 旧会话气泡里的本地缩略图 objectURL 一并回收
+  // 旧会话气泡里的本地缩略图 objectURL 一并回收；待发送附件的预览地址保留
+  releaseAllPreviewUrls(attachments.value.map((a) => a.previewUrl))
   messages.value = []
   try {
     const { data } = await assistantApi.history(sid)
@@ -286,13 +295,20 @@ async function loadHistory(sid) {
 }
 
 function clearMessages() {
-  releaseAllPreviewUrls()
+  // 清空气泡：只回收已入气泡的缩略图，待发送附件的预览地址保留
+  releaseAllPreviewUrls(attachments.value.map((a) => a.previewUrl))
   messages.value = []
 }
 
 async function send(text) {
   const content = (text || draft.value).trim()
-  if (!content || loading.value) return
+  if (loading.value) return
+  if (!canSend(content, attachments.value)) {
+    // 空文本+附件：后端不支持只发附件，给明确提示而不是静默吞掉
+    const hint = sendBlockHint(content, attachments.value)
+    if (hint) ElMessage.warning(hint)
+    return
+  }
   draft.value = ''
   const sid = ensureSession()
   messages.value.push({ role: 'user', content, time: nowTime() })
@@ -486,9 +502,17 @@ async function onFilePicked(uploadFile) {
 }
 
 // ---------------- 模型快速切换 ----------------
+// .env 兜底：供应商全关/未配置时后端回退 .env 模型（不在 models 下拉里），chip 与下拉均明示
+const isEnvFallback = computed(() => props.llmInfo?.source === 'env' && !!props.llmInfo?.configured)
+
 const shortModel = computed(() => {
   const m = props.llmInfo.model || '未配置'
   return m.length > 26 ? m.slice(0, 24) + '…' : m
+})
+
+const modelChipTitle = computed(() => {
+  const base = '当前模型：' + (props.llmInfo.model || '未配置')
+  return isEnvFallback.value ? base + '（.env 兜底，供应商均已停用）' : base
 })
 
 function onModelCommand(cmd) {
@@ -816,6 +840,24 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 .model-chip:hover {
   background: #ecf5ff;
+}
+
+.env-fallback-badge {
+  font-size: 10px;
+  line-height: 15px;
+  color: #e6a23c;
+  border: 1px solid #f3d19e;
+  border-radius: 8px;
+  padding: 0 5px;
+}
+
+/* 下拉顶部的 env 兜底说明行：禁用态样式 + 自动换行 */
+.env-fallback-tip {
+  max-width: 280px;
+  white-space: normal;
+  line-height: 1.5;
+  color: #e6a23c;
+  cursor: default;
 }
 
 .input-row {

@@ -6,6 +6,8 @@ import tempfile
 _TEST_DB = pathlib.Path(tempfile.gettempdir()) / f"workbench_test_{os.getpid()}.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB.as_posix()}"
 os.environ["SEED_ON_STARTUP"] = "0"
+# 调试中心数据目录指向临时目录：测试不碰真实 backend/data/debug
+os.environ["DEBUG_DATA_DIR"] = str(pathlib.Path(tempfile.gettempdir()) / f"workbench_debug_{os.getpid()}")
 # 测试环境不接入模型：显式清空 LLM 配置，避免受开发者本地 backend/.env 影响
 for _k in ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
     os.environ[_k] = ""

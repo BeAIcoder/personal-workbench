@@ -26,7 +26,7 @@
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="总行数">{{ preview.row_count }}</el-descriptions-item>
-          <el-descriptions-item v-if="preview.file_type === 'balance'" label="会计期间">
+          <el-descriptions-item v-if="preview.file_type === 'balance' || form.file_type === 'balance'" label="会计期间">
             <el-input v-model="form.period" placeholder="YYYY-MM" size="small" style="width: 120px" />
           </el-descriptions-item>
         </el-descriptions>
@@ -42,7 +42,7 @@
 
         <h4>列映射（规范字段 → 实际列）</h4>
         <el-select
-          v-for="f in preview.required_fields"
+          v-for="f in mappingFieldList"
           :key="f"
           v-model="form.mapping[f]"
           size="small"
@@ -94,8 +94,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { takeFile } from '../../_shared/fileInput'
+import { canConfirmImport, mappingFields } from '../importForm'
 
 const router = useRouter()
 const loading = ref(false)
@@ -116,15 +117,13 @@ const fieldLabels = {
 
 const form = reactive({ file: null, file_type: '', period: '', mapping: {} })
 
-const canConfirm = computed(() => {
-  if (!preview.value) return false
-  if (preview.value.file_type === 'unknown' && !form.file_type) return false
-  if (preview.value.file_type === 'balance' && !/^\d{4}-(0[1-9]|1[0-2])$/.test(form.period)) return false
-  return preview.value.required_fields.every((f) => form.mapping[f])
-})
+// 未识别类型按用户指定的类型给出手动映射清单；自动识别类型用预览下发的 required_fields
+const mappingFieldList = computed(() => mappingFields(preview.value, form.file_type))
+
+const canConfirm = computed(() => canConfirmImport(preview.value, form))
 
 async function onFile(e) {
-  const file = e.target.files?.[0]
+  const file = takeFile(e)
   if (!file) return
   form.file = file
   loading.value = true
@@ -139,8 +138,8 @@ async function onFile(e) {
     form.mapping = { ...(data.mapping || {}) }
     form.period = ''
     step.value = 1
-  } catch (err) {
-    ElMessage.error(err?.response?.data?.detail || '解析失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     loading.value = false
   }
@@ -157,8 +156,8 @@ async function doConfirm() {
     confirmResult.value = data
     step.value = 2
     await loadBatches()
-  } catch (err) {
-    ElMessage.error(err?.response?.data?.detail || '入库失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     submitting.value = false
   }

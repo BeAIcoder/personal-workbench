@@ -137,4 +137,28 @@ export const providerPresetsApi = {
   reload: () => api.post('/providers/presets/reload'),
 }
 
+// 调试中心：问题记录 / 测试运行归档 / 前端报错采集
+export const debugApi = {
+  summary: () => api.get('/debug/summary'),
+  issues: {
+    list: (params) => api.get('/debug/issues', { params }),
+    create: (data) => api.post('/debug/issues', data),
+    update: (id, data) => api.put(`/debug/issues/${id}`, data),
+    remove: (id) => api.delete(`/debug/issues/${id}`),
+  },
+  runs: {
+    list: () => api.get('/debug/runs'),
+    get: (runId) => api.get(`/debug/runs/${encodeURIComponent(runId)}`),
+    shotUrl: (runId, filename) =>
+      `${API_BASE}/debug/runs/${encodeURIComponent(runId)}/shots/${encodeURIComponent(filename)}`,
+    remove: (runId) => api.delete(`/debug/runs/${encodeURIComponent(runId)}`),
+  },
+  clientErrors: {
+    list: (limit = 200) => api.get('/debug/client-errors', { params: { limit } }),
+    clear: () => api.delete('/debug/client-errors'),
+    // 报错上报用裸 axios：不走拦截器（失败不弹消息、不触发二次报错），调用方自行 catch
+    report: (data) => axios.post(`${API_BASE}/debug/client-errors`, data, { timeout: 5000 }),
+  },
+}
+
 export default api

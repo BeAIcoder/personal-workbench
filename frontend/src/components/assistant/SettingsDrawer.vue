@@ -2,6 +2,8 @@
   <el-drawer :model-value="visible" title="AI 助手设置" size="640px" @update:model-value="emit('update:visible', $event)">
     <el-tabs v-model="tab">
       <el-tab-pane label="供应商与模型" name="providers">
+        <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
+          :title="effectiveModelText(teamConfig)" />
         <el-divider content-position="left">供应商与模型（点模型名即切换）</el-divider>
         <div class="prov-list">
           <div v-for="p in providers" :key="p.id" class="prov-card" :class="{ off: !p.enabled }">
@@ -14,7 +16,10 @@
               <el-button size="small" link type="danger" @click="deleteProvider(p)">删除</el-button>
             </div>
             <div class="prov-line">🔗 {{ p.base_url || '（未填）' }}</div>
-            <div class="prov-line">🔑 {{ p.api_key_set ? '已配置' : '未配置 Key' }}</div>
+            <div class="prov-line">
+              🔑
+              <el-tag size="small" :type="providerKeyBadge(p).type" effect="plain">{{ providerKeyBadge(p).text }}</el-tag>
+            </div>
             <div class="prov-models">
               <div v-for="m in p.models" :key="m.id" class="model-row" :class="{ active: m.active, off: !m.enabled }">
                 <div class="model-row-main">
@@ -57,6 +62,7 @@
               <el-button size="small" link :loading="testingProvId === p.id + ':text'" @click="testProvider(p, 'text')">连通</el-button>
               <el-button size="small" link :loading="testingProvId === p.id + ':tools'" @click="testProvider(p, 'tools')">工具</el-button>
               <el-button size="small" link :loading="testingProvId === p.id + ':image'" @click="testProvider(p, 'image')">图片</el-button>
+              <el-button size="small" link :loading="probingProviderId === p.id" @click="runProbeAllModels(p)">探测全部模型</el-button>
             </div>
             <div v-if="provTestResult[p.id]" class="prov-test" :class="{ ok: provTestResult[p.id].ok }">
               <div v-for="(line, j) in provTestResult[p.id].lines" :key="j">{{ line }}</div>
@@ -293,6 +299,22 @@ export function probeAtShort(v) {
   if (!v) return ''
   const m = String(v).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/)
   return m ? `${m[1]} ${m[2]}` : String(v)
+}
+
+// 当前生效模型文案（供应商页顶部展示）：来源=界面供应商激活模型 / .env 兜底
+// teamConfig 为脱敏后的 config（含 model/provider_name）；未配置时引导去下方添加
+export function effectiveModelText(cfg) {
+  const model = String((cfg && cfg.model) || '').trim()
+  const provider = String((cfg && cfg.provider_name) || '').trim()
+  if (!model) return '当前生效模型：未配置（可在下方添加供应商并激活模型）'
+  const source = provider === 'env兜底' ? '.env 兜底' : `供应商「${provider}」`
+  return `当前生效模型：${model}（来源：${source}）`
+}
+
+// 供应商 Key 状态徽标：停用时不显示「已配置」，改显「已停用」（与聊天页状态口径一致）
+export function providerKeyBadge(p) {
+  if (!p || !p.enabled) return { text: '已停用', type: 'info' }
+  return p.api_key_set ? { text: '已配置', type: 'success' } : { text: '未配置 Key', type: 'info' }
 }
 
 // 探测响应解包：后端实际返回 {model_id, result, probe}（result=分步详情，probe=权威状态）；
@@ -551,6 +573,48 @@ async function runProbeAll(m) {
     /* 拦截器已提示 */
   } finally {
     probingId.value = null
+  }
+}
+
+// 批量入口：对某供应商下全部启用中的模型依次全量探测（只确认一次，失败容错不中断）
+const probingProviderId = ref(null)
+
+async function runProbeAllModels(p) {
+  const targets = (p.models || []).filter((m) => m.enabled !== false)
+  if (!targets.length) {
+    ElMessage.warning(`供应商「${p.name}」下没有启用中的模型`)
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将对「${p.name}」下 ${targets.length} 个启用中的模型依次执行全量能力探测（每个模型约 15 次小型 API 请求，消耗少量 token）。确定开始？`,
+      '批量全量能力探测',
+      { type: 'warning', confirmButtonText: '开始探测', cancelButtonText: '取消' },
+    )
+  } catch {
+    return  // 用户取消
+  }
+  probingProviderId.value = p.id
+  const failed = []
+  try {
+    for (const m of targets) {
+      probingId.value = m.id + ':all'
+      try {
+        const { data } = await modelProbeApi.probeAll(m.id)
+        applyProbeData(m, data)
+      } catch {
+        failed.push(m.model)  // 单个模型失败不中断其余（拦截器已提示后端 detail）
+      }
+    }
+  } finally {
+    probingId.value = null
+    probingProviderId.value = null
+  }
+  emit('refresh')
+  if (failed.length) {
+    ElMessage.warning(`批量探测完成：成功 ${targets.length - failed.length} 个，失败 ${failed.length} 个（${failed.join('、')}）`)
+  } else {
+    ElMessage.success(`批量探测完成：${targets.length} 个模型均已更新`)
   }
 }
 

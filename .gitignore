@@ -21,6 +21,7 @@ backups/
 # 日志与测试缓存
 *.log
 .pytest_cache/
+backend/pytest-*/
 
 # 环境
 .env
@@ -54,3 +55,10 @@ frontend/tests/finance-cashflow.test.js
 
 # 脱敏映射表（私有钥匙，永不入库；机制见 dev/SANITIZE.md）
 dev/sanitize-map.local.json
+
+# e2e 运行产物（源码脚本入库，产物每次运行重建不入库）
+dev/e2e/probe_results/
+dev/e2e/finance_data_edge/
+dev/e2e/shots/
+dev/dev/
+*.duckdb

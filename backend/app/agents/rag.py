@@ -26,21 +26,46 @@ _index: dict | None = None   # {"stamp": str, "chunks": [...], "df": Counter, "a
 
 
 def _bigrams(text: str) -> list[str]:
-    """中文友好的轻量分词：连续二元组 + 英文/数字单词。"""
+    """中文友好的轻量分词：连续二元组 + 英文/数字单词。
+
+    含汉字的 alnum 连续段（如 "10月完成"）除整段 token 外，再补段内相邻
+    bigram 与汉字单字，使 "10月"、"税" 这类混合词/单字查询可命中。
+    """
     text = (text or "").lower()
     tokens: list[str] = []
     buf: list[str] = []
+
+    def _flush() -> None:
+        if not buf:
+            return
+        run = "".join(buf)
+        tokens.append(run)
+        if any("一" <= c <= "鿿" for c in run):
+            tokens.extend(run[i : i + 2] for i in range(len(run) - 1))
+            tokens.extend(c for c in run if "一" <= c <= "鿿")
+        buf.clear()
+
     for ch in text:
         if ch.isalnum():
             buf.append(ch)
         else:
-            if buf:
-                tokens.append("".join(buf))
-                buf = []
-    if buf:
-        tokens.append("".join(buf))
+            _flush()
+    _flush()
     han = re.sub(r"[^一-鿿]", "", text)
     tokens.extend(han[i : i + 2] for i in range(len(han) - 1))
+    return tokens
+
+
+def _query_tokens(text: str) -> list[str]:
+    """查询侧分词：存在多字 token 时丢弃单字 token。
+
+    防单字泄漏误命中（「量子引力波探测器xyz」不应命中仅共享单字「子」的笔记）；
+    单字查询（「税」）无多字 token 可丢弃，行为不变；混合词（「10月」）仍有
+    多字 token（10月/10/0月）兜底命中。文档侧分词保持原样（单字可被查）。
+    """
+    tokens = _bigrams(text)
+    if any(len(t) >= 2 for t in tokens):
+        tokens = [t for t in tokens if len(t) >= 2]
     return tokens
 
 
@@ -129,7 +154,7 @@ def search(query: str, top_k: int = TOP_K_DEFAULT) -> list[dict]:
     avgdl = idx["avgdl"] or 1.0
     k1, b = 1.5, 0.75
 
-    q_tokens = _bigrams(query)
+    q_tokens = _query_tokens(query)
     if not q_tokens:
         return []
     scores: list[tuple[float, dict]] = []

@@ -24,7 +24,7 @@
         </div>
       </template>
       <el-table :data="tableRows" size="small" max-height="480" border>
-        <el-table-column v-for="c in result.columns" :key="c" :prop="c" :label="c" min-width="120" show-overflow-tooltip />
+        <el-table-column v-for="(c, i) in result.columns" :key="'c' + i" :prop="'c' + i" :label="c" min-width="120" show-overflow-tooltip />
       </el-table>
     </el-card>
   </div>
@@ -35,19 +35,14 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { toTableRows } from '../tableRows'
 
 const route = useRoute()
 const loading = ref(false)
 const sql = ref('')
 const result = ref(null)
 
-const tableRows = computed(() =>
-  (result.value?.rows || []).map((row) => {
-    const obj = {}
-    result.value.columns.forEach((c, i) => { obj[c] = row[i] })
-    return obj
-  }),
-)
+const tableRows = computed(() => toTableRows(result.value?.columns, result.value?.rows))
 
 async function run() {
   if (!sql.value.trim()) return
@@ -55,9 +50,9 @@ async function run() {
   try {
     const { data } = await api.post('/finance/vault/query', { sql: sql.value })
     result.value = data
-  } catch (e) {
+  } catch {
     result.value = null
-    ElMessage.error(e?.response?.data?.detail || '查询失败')
+    /* 拦截器已统一提示 */
   } finally {
     loading.value = false
   }

@@ -197,6 +197,11 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
                 con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM staging_df')
             rows = con.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
             cols = [{"name": r[0], "type": str(r[1])} for r in con.execute(f'DESCRIBE "{table}"').fetchall()]
+        except ValueError:
+            raise
+        except duckdb.Error as exc:
+            # 列不匹配等 DuckDB 层错误属于数据/参数问题：降级为 ValueError（路由层转 400），不裸抛 500
+            raise ValueError(f"入仓失败：{exc}") from exc
         finally:
             con.close()
     _register_dataset(table, source=source or "dataframe", rows=rows, columns=cols)
@@ -204,20 +209,29 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
 
 
 def _read_table_file(path: Path, sheet: str = "") -> pd.DataFrame:
-    """把 xlsx/csv 读成 DataFrame；CSV 依次尝试 utf-8-sig / gbk 编码。"""
+    """把 xlsx/csv 读成 DataFrame；CSV 依次尝试 utf-8-sig / gbk 编码。
+
+    解析异常统一降级为 ValueError（路由层转 400）：损坏文件（如 ZIP 魔数残缺的
+    BadZipFile、pandas 引擎异常）属于客户端错误，不应裸抛成 500。
+    """
     suffix = path.suffix.lower()
-    if suffix == ".xlsx":
-        s = (sheet or "").strip()
-        sheet_name: str | int = int(s) if s.isdigit() else (s or 0)
-        return pd.read_excel(path, sheet_name=sheet_name)
-    if suffix == ".csv":
-        for enc in ("utf-8-sig", "gbk"):
-            try:
-                return pd.read_csv(path, encoding=enc)
-            except UnicodeDecodeError:
-                continue
-        raise ValueError("无法识别 CSV 编码（仅支持 UTF-8 / GBK）")
-    raise ValueError(f"不支持的文件类型：{suffix}")
+    try:
+        if suffix == ".xlsx":
+            s = (sheet or "").strip()
+            sheet_name: str | int = int(s) if s.isdigit() else (s or 0)
+            return pd.read_excel(path, sheet_name=sheet_name)
+        if suffix == ".csv":
+            for enc in ("utf-8-sig", "gbk"):
+                try:
+                    return pd.read_csv(path, encoding=enc)
+                except UnicodeDecodeError:
+                    continue
+            raise ValueError("无法识别 CSV 编码（仅支持 UTF-8 / GBK）")
+        raise ValueError(f"不支持的文件类型：{suffix}")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"文件解析失败：{type(exc).__name__}: {exc}") from exc
 
 
 def ingest_uploaded_file(table: str, filename: str, content: bytes, mode: str = "replace", sheet: str = "") -> dict:

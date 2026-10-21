@@ -16,10 +16,14 @@ def llm_status(cfg: dict | None = None) -> dict:
     """模型接入状态（不回传密钥内容）。"""
     cfg = cfg or config_store.load()
     configured = bool(cfg.get("api_key") and cfg.get("base_url") and cfg.get("model"))
+    provider_name = cfg.get("provider_name") or ""
     return {
         "configured": configured,
         "protocol": cfg.get("protocol") or "openai",
-        "provider": cfg.get("provider_name") or cfg.get("provider") or "custom",
+        "provider": provider_name or cfg.get("provider") or "custom",
+        # 来源标识：provider=界面配置的供应商激活模型；env=.env 兜底
+        # （供应商全关/未配置时生效，模型不在快速切换下拉里，界面需明示）
+        "source": "env" if provider_name == "env兜底" else "provider",
         "base_url": cfg.get("base_url") or "",
         "model": cfg.get("model") or "",
     }
@@ -46,9 +50,11 @@ def _apply_reasoning(parameters_cls, cfg: dict, protocol: str, kwargs: dict) -> 
         # openai
         if effort == "off":
             return {**kwargs, "thinking_enable": False, "reasoning_effort": "none"}
-        level = effort if effort in EFFORT_OPENAI else "medium"
-        if level == "max":
+        if effort == "max":
+            # openai 协议无 max 档：映射到 xhigh（对齐 anthropic 分支的 max 语义）
             level = "xhigh"
+        else:
+            level = effort if effort in EFFORT_OPENAI else "medium"
         return {**kwargs, "thinking_enable": effort != "off", "reasoning_effort": level}
     except Exception:
         logger.warning("思考深度参数映射失败，忽略该设置：effort=%s", effort, exc_info=True)
@@ -67,8 +73,10 @@ def build_model(cfg: dict | None = None):
 
         base_url = cfg["base_url"].strip()
         # anthropic SDK 会在 base_url 后追加 /v1/messages；去掉多余的 /v1 尾巴
-        if base_url.rstrip("/").lower().endswith("/v1"):
-            base_url = base_url.rstrip("/").lower()[: -len("/v1")]
+        # （仅剥结尾 /v1，大小写不敏感；URL 其余部分保持原样，不做小写化）
+        stripped = base_url.rstrip("/")
+        if stripped.lower().endswith("/v1"):
+            base_url = stripped[: -len("/v1")]
 
         try:
             credential = AnthropicCredential(api_key=cfg["api_key"], base_url=base_url)

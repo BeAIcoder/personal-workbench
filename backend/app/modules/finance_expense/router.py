@@ -53,7 +53,8 @@ async def classify(file: UploadFile = File(...), db: Session = Depends(get_db)):
             detail=f"文件超过 {service.MAX_UPLOAD_BYTES // 1024 // 1024}MB 大小上限",
         )
     try:
-        service.ensure_engine_ready()
+        # 引擎首载含 os.chdir + pandas import，同为秒级重活，丢线程池避免阻塞事件循环
+        await asyncio.to_thread(service.ensure_engine_ready)
     except service.EngineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 

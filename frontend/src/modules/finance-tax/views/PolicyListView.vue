@@ -29,7 +29,6 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
 import api from '../../../api'
 
 const loading = ref(false)
@@ -57,8 +56,8 @@ async function toggle(row) {
       await api.post(`/finance/tax/policies/${row.id}/activate`)
     }
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 

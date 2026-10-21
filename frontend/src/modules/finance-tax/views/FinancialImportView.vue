@@ -85,8 +85,8 @@ async function doImport() {
     })
     result.value = data
     ElMessage.success(data.success ? '导入成功' : '导入完成，但存在问题，见下方明细')
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '导入失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     importing.value = false
   }

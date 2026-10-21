@@ -316,6 +316,11 @@ async def clone_policy(
     # 生成新文号
     new_number = f"{source.policy_number}-v{new_version}"
 
+    # 与 create_policy 同口径：文号唯一，重复克隆返回 400 而非唯一约束 500
+    existing = db.query(Policy).filter(Policy.policy_number == new_number).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"版本 '{new_version}' 已存在（政策文号 '{new_number}' 重复）")
+
     db_policy = Policy(
         policy_number=new_number,
         title=source.title,

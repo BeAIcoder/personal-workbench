@@ -19,6 +19,10 @@ router = APIRouter(prefix="/financial-import", tags=["财务数据导入"])
 
 importer = FinancialDataImporter()
 
+# 上传约束：扩展名白名单（大小写不敏感）+ 大小上限（与 finance_expense 模块一致，测试可 monkeypatch 调低）
+ALLOWED_EXTENSIONS = (".xlsx", ".xls")
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
 
 class ImportResponse(BaseModel):
     """导入响应模型"""
@@ -43,13 +47,19 @@ async def import_financial_statement(file: UploadFile = File(...)):
     - 财务系统导出的Excel文件
     """
     # Validate file type
-    if not file.filename or not file.filename.endswith((".xlsx", ".xls")):
+    if not file.filename or not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
         raise HTTPException(status_code=400, detail="仅支持.xlsx或.xls格式的Excel文件")
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 大小上限",
+        )
 
     # Save uploaded file temporarily
     suffix = os.path.splitext(file.filename)[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -94,12 +104,18 @@ async def import_financial_statement_to_enterprise(
     注意：此端点仅解析数据，不自动写入数据库。
     解析结果返回后由前端确认后调用写入接口。
     """
-    if not file.filename or not file.filename.endswith((".xlsx", ".xls")):
+    if not file.filename or not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
         raise HTTPException(status_code=400, detail="仅支持.xlsx或.xls格式的Excel文件")
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 大小上限",
+        )
 
     suffix = os.path.splitext(file.filename)[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
 

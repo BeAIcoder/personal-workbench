@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..agents import orchestrator
 from ..agents.skill_store import (
     create_pack,
     delete_pack,
@@ -32,9 +33,11 @@ def list_packs():
 @router.post("/packs", status_code=201, summary="新建技能包（内置模板生成 SKILL.md）")
 def create(payload: PackCreateIn):
     try:
-        return create_pack(payload.name, payload.description, payload.body)
+        result = create_pack(payload.name, payload.description, payload.body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    orchestrator.invalidate()  # 技能池已变：失效已缓存 Agent，下次对话重建
+    return result
 
 
 @router.delete("/packs/{name}", summary="删除技能包（整目录）")
@@ -43,17 +46,22 @@ def delete(name: str):
         delete_pack(name)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    orchestrator.invalidate()
     return {"ok": True, "deleted": name}
 
 
 @router.put("/packs/{name}/enabled", summary="启用/停用技能包")
 def set_pack_enabled(name: str, payload: PackEnabledIn):
     try:
-        return set_enabled(name, payload.enabled)
+        result = set_enabled(name, payload.enabled)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    orchestrator.invalidate()
+    return result
 
 
 @router.get("/packs/{name}/files/{filename:path}", summary="读取技能包内文件内容")

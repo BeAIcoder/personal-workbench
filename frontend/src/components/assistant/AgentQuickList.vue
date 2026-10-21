@@ -4,7 +4,7 @@
       <div class="card-head">
         <span>Agent 团队（{{ agents.length }}）</span>
         <div class="team-actions">
-          <el-tag size="small" :type="llmReady ? 'success' : 'warning'">{{ llmReady ? '模型已接入' : '模型未配置' }}</el-tag>
+          <el-tag size="small" :type="llmBadge.type">{{ llmBadge.text }}</el-tag>
           <el-button link type="primary" size="small" style="margin-left: 8px" @click="emit('open-settings')">
             <el-icon><Setting /></el-icon>&nbsp;设置
           </el-button>
@@ -49,15 +49,24 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { Setting } from '@element-plus/icons-vue'
 
-defineProps({
+const props = defineProps({
   agents: { type: Array, default: () => [] },
   llmReady: { type: Boolean, default: false },
+  llmInfo: { type: Object, default: () => ({}) },
   selectedAgent: { type: String, default: null },
 })
 
 const emit = defineEmits(['update:selectedAgent', 'open-settings'])
+
+// 模型状态徽标：未配置 / env 兜底（供应商全关，用 .env 模型）/ 已接入
+const llmBadge = computed(() => {
+  if (!props.llmReady) return { text: '模型未配置', type: 'warning' }
+  if (props.llmInfo?.source === 'env') return { text: 'env 兜底', type: 'warning' }
+  return { text: '模型已接入', type: 'success' }
+})
 </script>
 
 <style scoped>

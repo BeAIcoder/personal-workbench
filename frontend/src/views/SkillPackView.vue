@@ -11,7 +11,7 @@
         </div>
       </template>
       <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
-        title="技能包（SKILL.md 格式）存放在后端 data/skills 目录，启用技能池的 Agent 对话时会自动注入启用的技能包。若 AI 助手设置里的「技能目录」为空，可手动指向该目录（backend/data/skills）。" />
+        title="技能包（SKILL.md 格式）存放在后端 backend/data/skills 目录，启用技能池的 Agent 对话时会自动注入启用的技能包（停用的包不会注入）。若 AI 助手设置里的「技能池目录」为空，可手动指向该目录（backend/data/skills）。" />
       <el-table :data="items" size="small" empty-text="暂无技能包，点右上角「新建技能包」或等待首次启动自动播种">
         <el-table-column prop="name" label="名称" min-width="140" />
         <el-table-column prop="version" label="版本" width="80">

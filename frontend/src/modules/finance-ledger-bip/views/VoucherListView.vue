@@ -11,8 +11,8 @@
         <el-input v-model="filters.period" placeholder="期间 YYYY-MM" size="small" style="width: 140px" clearable />
         <el-input v-model="filters.ledger" placeholder="核算账簿" size="small" style="width: 140px" clearable />
         <el-input v-model="filters.voucher_no" placeholder="凭证号" size="small" style="width: 130px" clearable />
-        <el-input v-model="filters.keyword" placeholder="摘要关键词" size="small" style="width: 150px" clearable @keyup.enter="reload" />
-        <el-button size="small" type="primary" @click="reload">筛选</el-button>
+        <el-input v-model="filters.keyword" placeholder="摘要关键词" size="small" style="width: 150px" clearable @keyup.enter="search" />
+        <el-button size="small" type="primary" @click="search">筛选</el-button>
         <el-button size="small" @click="exportToVault" :disabled="!filters.period">按期间入仓</el-button>
       </div>
       <el-table :data="items" size="small" border empty-text="暂无凭证">
@@ -78,6 +78,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { applyFilters } from '../../_shared/filters'
 
 const loading = ref(false)
 const items = ref([])
@@ -106,13 +107,17 @@ async function reload() {
   }
 }
 
+function search() {
+  applyFilters(page, reload)
+}
+
 async function showDetail(id) {
   try {
     const { data } = await api.get(`/finance/ledger/bip/vouchers/${id}`)
     Object.assign(detail, data)
     detailVisible.value = true
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '加载失败')
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 
@@ -122,9 +127,8 @@ async function exportToVault() {
       period: filters.period,
     })
     ElMessage.success(`已入仓：${data.table}（${data.rows} 行）`)
-  } catch (e) {
-    const code = e?.response?.status
-    ElMessage.error(code === 503 ? '数据仓模块当前不可用' : (e?.response?.data?.detail || '入仓失败'))
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 

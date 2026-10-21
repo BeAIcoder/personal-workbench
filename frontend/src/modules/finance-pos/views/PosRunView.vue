@@ -59,6 +59,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { takeFiles } from '../../_shared/fileInput'
 
 const loading = ref(false)
 const items = ref([])
@@ -87,7 +88,7 @@ async function load() {
 }
 
 function onFiles(e) {
-  form.files = Array.from(e.target.files || [])
+  form.files = takeFiles(e)
 }
 
 async function create() {
@@ -103,8 +104,8 @@ async function create() {
     dialog.visible = false
     form.files = []
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '创建失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     creating.value = false
   }
@@ -116,9 +117,8 @@ async function execute(row) {
     const { data } = await api.post(`/finance/pos/runs/${row.id}/execute`, {}, { timeout: 600000 })
     ElMessage.success(data.status === 'ok' ? `执行完成，产物 ${data.artifacts.length} 个` : `执行失败：${data.error}`)
     await load()
-  } catch (e) {
-    const code = e?.response?.status
-    ElMessage.error(code === 503 ? `引擎不可用：${e?.response?.data?.detail}` : (e?.response?.data?.detail || '执行失败'))
+  } catch {
+    /* 拦截器已统一提示 */
     await load()
   } finally {
     runningId.value = null

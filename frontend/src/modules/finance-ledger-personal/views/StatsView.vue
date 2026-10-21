@@ -23,11 +23,11 @@
           <template #default="{ row }">{{ row.amount.toFixed(2) }}</template>
         </el-table-column>
         <el-table-column label="占比" width="140" align="right">
-          <template #default="{ row }">{{ (row.percent * 100).toFixed(1) }}%</template>
+          <template #default="{ row }">{{ formatPercent(row.percent) }}%</template>
         </el-table-column>
         <el-table-column label="" min-width="200">
           <template #default="{ row }">
-            <el-progress :percentage="Math.min(100, +(row.percent * 100).toFixed(1))" :stroke-width="8" />
+            <el-progress :percentage="Math.min(100, +formatPercent(row.percent))" :stroke-width="8" />
           </template>
         </el-table-column>
       </el-table>
@@ -44,6 +44,8 @@
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import * as echarts from 'echarts'
 import api from '../../../api'
+import { localMonth } from '../../_shared/dates'
+import { formatPercent } from '../utils'
 
 const loading = ref(false)
 const months = ref(6)
@@ -57,7 +59,7 @@ async function load() {
   loading.value = true
   try {
     const [m, t] = await Promise.all([
-      api.get('/finance/ledger/personal/stats/monthly', { params: { month: new Date().toISOString().slice(0, 7) } }),
+      api.get('/finance/ledger/personal/stats/monthly', { params: { month: localMonth() } }),
       api.get('/finance/ledger/personal/stats/trend', { params: { months: months.value } }),
     ])
     Object.assign(stats, m.data)

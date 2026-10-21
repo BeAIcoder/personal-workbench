@@ -299,9 +299,10 @@ class ScheduledJobBase(BaseModel):
             if not self.daily_at:
                 raise ValueError("daily 类型必须提供 daily_at（HH:MM）")
         elif self.schedule_type == "cron":
-            parts = (self.cron_expr or "").split()
-            if len(parts) != 5:
-                raise ValueError("cron 类型必须提供五段 cron_expr（分 时 日 月 周）")
+            from .scheduler import validate_cron_expr  # 延迟导入，沿用 memory.recall 的先例
+
+            if not validate_cron_expr(self.cron_expr or ""):
+                raise ValueError("cron 类型必须提供合法的五段 cron_expr（分 时 日 月 周；项：数字/*/a-b//n，逗号分隔）")
         else:
             if self.interval_minutes is None:
                 raise ValueError("interval 类型必须提供 interval_minutes（5-10080）")

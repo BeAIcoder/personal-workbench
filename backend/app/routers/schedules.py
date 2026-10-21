@@ -73,6 +73,8 @@ def update_schedule(schedule_id: int, payload: ScheduleUpdate, db: Session = Dep
     schedule = _get_or_404(db, schedule_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(schedule, field, value)
+    if schedule.start_time is None or schedule.end_time is None:
+        raise HTTPException(status_code=422, detail="开始/结束时间不能为空")
     if schedule.end_time <= schedule.start_time:
         raise HTTPException(status_code=422, detail="结束时间必须晚于开始时间")
     db.commit()

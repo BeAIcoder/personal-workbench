@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 _STUB_APPLIED = False
+_loaded_plugins: dict[str, dict] = {}  # 已加载插件缓存（按目录幂等，避免重复 exec_module 副作用）
 
 
 def _ensure_qwenpaw_stub() -> None:
@@ -92,6 +93,9 @@ def load_qwenpaw_plugin(plugin_dir: str) -> dict:
     agentscope.tool.FunctionTool(name, description, input_schema) 包装进 Toolkit。
     """
     plugin_dir = Path(plugin_dir)
+    cache_key = str(plugin_dir.resolve())
+    if cache_key in _loaded_plugins:
+        return _loaded_plugins[cache_key]
     manifest_path = plugin_dir / "plugin.json"
     if not manifest_path.exists():
         raise FileNotFoundError(f"未找到插件清单：{manifest_path}")
@@ -102,7 +106,9 @@ def load_qwenpaw_plugin(plugin_dir: str) -> dict:
         raise ValueError(f"插件 {manifest.get('id')} 没有后端入口（entry.backend），无法兼容加载")
 
     _ensure_qwenpaw_stub()
-    sys.path.insert(0, str(plugin_dir))
+    path_str = str(plugin_dir)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
     spec = importlib.util.spec_from_file_location(f"qwenpaw_plugin_{manifest.get('id', 'x')}", plugin_dir / entry)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -128,10 +134,12 @@ def load_qwenpaw_plugin(plugin_dir: str) -> dict:
                 "schema": _schema_from_signature(item["func"]),
             }
         )
-    return {
+    result = {
         "id": manifest.get("id"),
         "name": manifest.get("name"),
         "description": manifest.get("description"),
         "dependencies": manifest.get("dependencies", []),
         "tools": tools,
     }
+    _loaded_plugins[cache_key] = result
+    return result

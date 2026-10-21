@@ -38,7 +38,7 @@
         <el-table-column prop="invoice_number" label="发票号" min-width="140" />
         <el-table-column label="类型" width="90">
           <template #default="{ row }">
-            {{ row.invoice_type }}<el-tag v-if="row.invoice_direction === '红字'" type="danger" size="small" style="margin-left: 4px">红</el-tag>
+            {{ row.invoice_type }}<el-tag v-if="isRedInvoice(row)" type="danger" size="small" style="margin-left: 4px">红</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="invoice_date" label="开票日期" width="110" />
@@ -72,6 +72,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { isRedInvoice } from '../itemDisplay'
 
 const route = useRoute()
 const loading = ref(false)
@@ -99,7 +100,7 @@ async function load() {
     const { data } = await api.get(`/finance/invoice/batches/${route.params.id}`)
     batch.value = data
   } catch {
-    ElMessage.error('批次不存在')
+    /* 拦截器已统一提示 */
   } finally {
     loading.value = false
   }
@@ -111,8 +112,8 @@ async function patchItem(row) {
       project_name: row.project_name || null,
       remark: row.remark || null,
     })
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 
@@ -122,8 +123,8 @@ async function doExport() {
     const { data } = await api.post(`/finance/invoice/batches/${batch.value.id}/export`)
     ElMessage.success(`导出完成：${data.projects} 个项目，${(data.zip_size / 1024).toFixed(1)} KB`)
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '导出失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     exporting.value = false
   }

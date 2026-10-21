@@ -6,7 +6,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Note
+from ..models import Note, ScheduledJob
 from ..schemas import NoteCreate, NoteOut, NoteUpdate, Page
 from ..utils import tag_like_pattern
 
@@ -90,5 +90,9 @@ def update_note(note_id: int, payload: NoteUpdate, db: Session = Depends(get_db)
 @router.delete("/{note_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除笔记")
 def delete_note(note_id: int, db: Session = Depends(get_db)):
     note = _get_or_404(db, note_id)
+    # 清理定时任务对该笔记的悬挂引用
+    db.query(ScheduledJob).filter(ScheduledJob.last_note_id == note_id).update(
+        {ScheduledJob.last_note_id: None}, synchronize_session=False
+    )
     db.delete(note)
     db.commit()

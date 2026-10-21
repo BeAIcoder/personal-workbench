@@ -11,6 +11,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -30,9 +31,17 @@ DASHBOARD_NAME = "经营财务报表监控看板.html"
 # 单步超时（秒）
 STEP_TIMEOUT = 600
 
+# 管线互斥锁：stamp 精度到秒且是快照目录名，并发 /run 会共用同一快照目录互相踩踏；
+# 非阻塞抢占，抢不到即视为「运行中」由路由层返回 409。
+_PIPELINE_LOCK = threading.Lock()
+
 
 class PipelineUnavailableError(RuntimeError):
     """管线目录缺失或不可用。"""
+
+
+class PipelineBusyError(RuntimeError):
+    """已有管线正在运行中，由路由层映射为 409。"""
 
 
 def pipeline_dir() -> Path:
@@ -70,7 +79,20 @@ def _run_step(script: Path) -> str:
 
 
 def run_pipeline() -> dict:
-    """触发一次完整管线并归档快照。返回快照信息；管线不可用/失败抛异常。"""
+    """触发一次完整管线并归档快照。返回快照信息；管线不可用/失败抛异常。
+
+    运行中重入抛 PipelineBusyError（409）：并发运行会共用同一 stamp 快照目录。
+    """
+    if not _PIPELINE_LOCK.acquire(blocking=False):
+        raise PipelineBusyError("报表监控管线正在运行中，请等待本次运行结束后再试")
+    try:
+        return _run_pipeline_locked()
+    finally:
+        _PIPELINE_LOCK.release()
+
+
+def _run_pipeline_locked() -> dict:
+    """run_pipeline 的本体（调用方须已持有 _PIPELINE_LOCK）。"""
     pdir = pipeline_dir()
     if not (pdir / "scripts").is_dir():
         raise PipelineUnavailableError(f"管线目录无效：{pdir}")

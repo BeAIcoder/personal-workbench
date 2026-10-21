@@ -46,7 +46,7 @@
               <span v-if="ev.location"> · 📍{{ ev.location }}</span>
             </div>
           </div>
-          <el-button size="small" link type="primary" title="AI 备会" @click="aiPrepare(ev)"><el-icon><MagicStick /></el-icon></el-button>
+          <el-button size="small" link type="primary" title="AI 备会" @click.stop="aiPrepare(ev)"><el-icon><MagicStick /></el-icon></el-button>
           <el-button size="small" type="danger" plain @click.stop="remove(ev)">删除</el-button>
         </div>
       </div>

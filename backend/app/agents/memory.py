@@ -110,9 +110,11 @@ def recall(query: str, top_k: int = RECALL_TOP_K) -> list[dict]:
     单用户规模（数百条）内一次性取「置顶 + 最近 300 条」在内存打分，
     避免中文无分词条件下的 LIKE 全句匹配失效。
     """
-    from .rag import _bigrams
+    from .rag import _query_tokens
 
-    q_tokens = set(_bigrams(query or ""))
+    q_tokens = set(_query_tokens(query or ""))
+    if not q_tokens:
+        return []  # 纯空白/标点查询无有效 token，不返回任意结果也不累计 hit_count
     with SessionLocal() as db:
         pinned = (
             db.query(Memory)

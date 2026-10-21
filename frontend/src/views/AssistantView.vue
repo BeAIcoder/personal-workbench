@@ -18,6 +18,7 @@
         v-model:selected-agent="selectedAgent"
         :agents="agents"
         :llm-ready="llmReady"
+        :llm-info="llmInfo"
         @open-settings="openSettings()"
       />
     </div>
@@ -246,7 +247,7 @@ onMounted(async () => {
     workModes.value = data.work_modes || {}
     teamConfig.value = data.config || {}
   } catch {
-    ElMessage.error('无法获取团队信息，请确认后端服务已启动')
+    /* 拦截器已提示 */
   }
   await loadSessions()
   if (sessions.value.length) await switchSession(sessions.value[0].session_id)

@@ -10,10 +10,13 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from ....database import get_db
 from ..models import TaxReturn, TaxAdjustment, Enterprise
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from datetime import datetime
 from fastapi.responses import StreamingResponse
 import io
+import re
+
+from urllib.parse import quote
 
 from ..services.tax_form_generator import (
     EnterpriseInfo,
@@ -44,6 +47,24 @@ class TaxReturnCreate(BaseModel):
     tax_adjustments: float = 0.0
     tax_preferential: float = 0.0
     adjustments: List[TaxAdjustmentCreate] = []
+
+    @field_validator("tax_period")
+    @classmethod
+    def _check_tax_period(cls, v: str) -> str:
+        """年度须为 4 位数字（非法输入 422，避免 int() 转换 500）。"""
+        if not v or not re.fullmatch(r"\d{4}", v):
+            raise ValueError("tax_period 须为 4 位年度数字（如 2026）")
+        return v
+
+    @field_validator("quarter")
+    @classmethod
+    def _check_quarter(cls, v: str | None) -> str | None:
+        """季度须为 Q1-Q4（兼容裸数字与大小写；空串归一为 None=年度申报）。"""
+        if v is None or v == "":
+            return None
+        if not re.fullmatch(r"[Qq]?[1-4]", v):
+            raise ValueError("quarter 须为 Q1-Q4")
+        return v
 
 class TaxReturnResponse(BaseModel):
     id: int
@@ -616,6 +637,22 @@ def _is_small_micro(enterprise: Enterprise) -> bool:
     return True
 
 
+def _export_filename(enterprise: Enterprise, tax_return: TaxReturn, suffix: str) -> str:
+    """导出文件名：TaxReturn 模型只有 year/quarter（季度为空即年度申报）。"""
+    period = f"{tax_return.year}年Q{tax_return.quarter}" if tax_return.quarter else f"{tax_return.year}年度"
+    return f"A200000_{enterprise.name}_{period}.{suffix}"
+
+
+def _download_headers(filename: str) -> dict:
+    """Content-Disposition：ASCII 回退文件名 + RFC5987 UTF-8 编码（中文文件名直接拼接会触发 latin-1 编码崩溃）。"""
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").replace('"', "").strip()
+    if not ascii_fallback:
+        ascii_fallback = f"A200000.{filename.rsplit('.', 1)[-1]}"
+    return {
+        "Content-Disposition": f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
+    }
+
+
 @router.get("/{return_id}/export/excel")
 async def export_tax_return_excel(return_id: int, db: Session = Depends(get_db)):
     """导出申报表为Excel文件"""
@@ -631,12 +668,12 @@ async def export_tax_return_excel(return_id: int, db: Session = Depends(get_db))
     
     excel_bytes = export_a200000_excel(form_data)
     
-    filename = f"A200000_{enterprise.name}_{tax_return.tax_period}.xlsx"
-    
+    filename = _export_filename(enterprise, tax_return, "xlsx")
+
     return StreamingResponse(
         io.BytesIO(excel_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers=_download_headers(filename)
     )
 
 
@@ -655,10 +692,10 @@ async def export_tax_return_pdf(return_id: int, db: Session = Depends(get_db)):
     
     pdf_bytes = export_a200000_pdf(form_data)
     
-    filename = f"A200000_{enterprise.name}_{tax_return.tax_period}.pdf"
-    
+    filename = _export_filename(enterprise, tax_return, "pdf")
+
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers=_download_headers(filename)
     )

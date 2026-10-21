@@ -1,8 +1,8 @@
 # 个人工作台 · 需求与设计规格（spec）
 
-> **版本 v1.15.1（2026-10-13）**
+> **版本 v1.16.1（2026-10-19）**
 >
-> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → v1.15.0 会话归档与导出 + 聊天传图多模态理解 → **v1.15.1 复核加固轮（三路并行审计驱动：zip-slip 同前缀绕过 / 解压总量上限 / 事件循环阻塞 / MCP 超时失效等中危全修，前端 sandbox 与 SSE 防御等 23 项修复）**。
+> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → v1.15.0 会话归档与导出 + 聊天传图多模态理解 → **v1.15.1 复核加固轮（三路并行审计驱动：zip-slip 同前缀绕过 / 解压总量上限 / 事件循环阻塞 / MCP 超时失效等中危全修，前端 sandbox 与 SSE 防御等 23 项修复）** → v1.16.0 调试中心（问题记录 + E2E 运行归档 + 前端报错采集）→ v1.16.1 体验修复十一项（技能包停用对 Agent 生效、env 兜底来源标识、专家包导入确认、AI 配置子菜单收纳等）。
 >
 > 权威 as-built 快照：`20261012New/REVERSE_02-SPEC重构.md`；接口细节：`API.md`；架构决策：`20261012New/adr/ADR-001~005`。
 
@@ -51,7 +51,7 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
 | --- | --- |
 | `name` | 目录名（唯一），财务域模块统一 `finance_` 前缀 |
 | `title` / `version` | 显示名与版本 |
-| `prefix` | HTTP 路由前缀，**必须以 `/api/finance/` 开头**，挂载时 `include_router(router, prefix=prefix)` |
+| `prefix` | HTTP 路由前缀，财务模块**必须以 `/api/finance/` 开头**，调试类模块以 `/api/debug/` 开头，挂载时 `include_router(router, prefix=prefix)` |
 | `tables` | 本模块创建的表名清单，**统一 `mod_` 前缀**（与宿主表隔离，便于盘点） |
 | `menu` | 前端菜单元数据 `{group, icon, order}` |
 | `agent_tools` | 模块贡献给 Agent 团队的工具 spec（`name`/`description`/`readonly` + `func`/`params`/`required`，与宿主 `TOOL_SPECS` 同构） |
@@ -149,7 +149,8 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
 **扩展能力（默认关闭）**
 
 本地技能池（`data/skills/<name>/SKILL.md`）、Bash 工具（自带危险文件黑名单）、QwenPaw 插件兼容层，
-均有独立开关；技能池经 AgentScope `LocalSkillLoader` 注入，专家级 `skills` 为空列表时显式关闭。
+均有独立开关；技能池经 AgentScope `LocalSkillLoader` 注入（已停用的包在 loader 侧过滤，停用对 Agent 生效），
+专家级 `skills` 为空列表时显式关闭。
 
 ### 4.3 定时任务（`routers/jobs.py` + `app/scheduler.py` + `JobsView.vue`）
 
@@ -222,7 +223,8 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 ### 4.6 技能包与专家团文件（v1.13.0）
 
 - **技能包**：`backend/data/skills/<name>/SKILL.md`（zcode/WorkBuddy 同款格式），首次启动从
-  `backend/seed_skills/` 播种；启停走 `_store.json`；AI 助手设置的技能目录指向该目录即注入 Agent。
+  `backend/seed_skills/` 播种；启停走 `_store.json`；AI 助手设置的「技能池目录」指向该目录即注入 Agent
+  （停用的包不注入）。
   端点：`GET /api/skills/packs`、`POST /api/skills/packs`、`DELETE /api/skills/packs/{name}`、
   `PUT /api/skills/packs/{name}/enabled`、`GET /api/skills/packs/{name}/files/{filename}`、`POST /api/skills/rescan`。
 - **专家团文件**：`backend/data/expert-packs/<name>.md`（frontmatter：name/label/emoji/color/description/
@@ -231,6 +233,45 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
   端点：`GET /api/experts/packs`、`POST /api/experts/packs/import-all`、`POST /api/experts/packs/import/{name}`、
   `POST /api/experts/packs/reset`、`POST /api/experts/packs/export/{expert_name}`、
   `GET /api/experts/packs/{name}/content`、`DELETE /api/experts/packs/{name}`。
+
+### 4.7 调试中心（v1.16.0）
+
+**定位**：问题记录 + E2E 测试运行归档 + 前端报错采集的一体化调试入口。后端模块
+`debug_center`（`prefix=/api/debug`，manifest 校验已放开 `/api/debug/` 前缀族）；
+**纯 JSON 文件存储，不建表**。
+
+- **存储结构**（根目录默认 `backend/data/debug/`，`DEBUG_DATA_DIR` 可覆盖——运行时读取，
+  供测试隔离；写入统一临时文件 + `os.replace` 原子写，读取对缺失/损坏宽容降级）：
+  - `issues.json`：问题记录数组（id 短 uuid / title / severity(P0-P3) /
+    status(open/in_progress/done/wontfix) / source(manual/e2e/analysis) / page /
+    description / evidence / created_at / updated_at）。首次使用自动写入 11 条
+    analysis 种子问题（`ensure_seed_issues()` 幂等，挂 lifespan + 接口首用双保险）。
+  - `runs/<run_id>/result.json` + `runs/<run_id>/shots/*.png`：测试运行归档，
+    run_id 形如 `20261013-153000_recon`。
+  - `client_errors.jsonl`：前端报错，每行一条 `{ts, page, message, stack, ua}`。
+- **端点**：`/issues` CRUD（PUT 部分更新、自动刷 updated_at）；
+  `/runs` 列表/详情/截图（FileResponse，`is_relative_to` 防穿越）/删除（整目录）；
+  `/client-errors` 追加（**宽容解析，垃圾输入绝不 500**）/尾部读取/清空；
+  `/summary` 总览（未决按严重度计数、问题总数、运行次数、最近一次运行、报错数）。
+  清单详见 `API.md`「调试中心 /api/debug」一节。
+- **E2E 接入**：`dev/e2e/debug_reporter.py` 的 `save_run(kind, ...)` 以同一文件格式
+  直接落库（不经 HTTP）；`e2e_recon.py`（kind=recon，含截图）、`e2e_interactions.py`
+  （kind=interactions）、`e2e_edge.py`（kind=edge）跑完自动归档，并保留原有独立
+  测试库/独立财务目录隔离。有错误的页面/失败用例自动建/更新问题（source=e2e、P1：
+  同 title+page 且 open/in_progress 已存在则只刷 updated_at 与 evidence=run_id，
+  否则新建；全绿不写 issues.json，不做自动关闭）。
+- **AI 验收层**：`dev/e2e/ai_walkthrough.py` + `dev/e2e/AI-WALKTHROUGH.md`——
+  AI 控制真实浏览器（desktop browser MCP / Kimi 网页桥）像人一样点击/悬停/看确认框，
+  验收脚本断言不了的交互与文案（确认框、悬停提示、徽标状态、菜单结构、空态文案）。
+  走查完执行 `python ai_walkthrough.py`（失败项 `--fail ID:原因`，可重复），
+  经同一 `save_run()` 以 `kind=ai-verify` 归档；失败项自动建/更新问题（source=e2e、P1）。
+  验收集 `CHECKLIST` 随功能演进维护；操作流程见 AI-WALKTHROUGH.md。
+- **前端**：`调试` 菜单组三页——问题记录 `/debug/issues`（summary 卡片 + 级别彩色
+  标签 P0 红/P1 橙/P2 黄/P3 灰 + 状态下拉即改 + 筛选 + 新建/编辑对话框 + 删除确认）、
+  测试运行 `/debug/runs`（列表 + 详情抽屉：页面/用例行 + 错误清单展开 + 截图预览放大
+  + 删除）、前端报错 `/debug/errors`（表格 + 堆栈展开 + 清空确认 + 自动刷新开关）。
+  `main.js` 注册 `app.config.errorHandler` + `window error/unhandledrejection`
+  全局采集：裸 axios 直 POST（不走拦截器）、同消息 5 秒去重、失败静默。
 
 ## 5. Agent 团队与四级路由
 
@@ -510,6 +551,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 跨域来源（仅开发模式需要） |
 | `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 空 | AI 助手模型兜底配置；填齐三项即激活。界面配置优先于它 |
 | `FINANCE_DATA_DIR` | 空（→ `backend/data/finance`） | 财务模块数据目录 |
+| `DEBUG_DATA_DIR` | 空（→ `backend/data/debug`） | 调试中心数据目录（运行时读取，测试隔离用） |
 | `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` | 空（按AssetLib相对位置推导） | 跨项目引擎路径 |
 
 其余运行时配置（供应商、模型、激活模型、Agent 工作参数、技能/Bash/插件开关、MCP 服务器）
@@ -517,15 +559,23 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 ## 13. 测试与验证
 
-- **后端 pytest**：`backend/tests/` 共 **335 例全绿**（2026-10-13 实测，约 3 分钟）。conftest 临时库隔离、
+- **后端 pytest**：`backend/tests/` 共 **415 例全绿**（2026-10-19 实测，约 2 分 30 秒）。conftest 临时库隔离、
   引擎对拍、monkeypatch 探测/LLM，全部离线可重复。
   覆盖业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/
   连通性测试 + 定时任务 + QwenPaw 导入静态校验 + RAG/记忆/MCP/技能包/专家团文件 +
   模型能力探测 + 各财务模块 + 会话归档导出（`test_session_archive.py`）+ 聊天传图（`test_chat_image.py`）
+  + 调试中心（`test_module_debug_center.py`：种子幂等/issue CRUD/run 归档与防穿越/报错容错/summary）
   + v1.15.1 复核加固回归（zip-slip 同前缀绕过/解压炸弹/running 兜底/掩码双形态/session_id 校验/
-  LIKE 转义/registry 异常隔离/manifest 校验/MCP 挂起超时）。
-- **前端 vitest**：`frontend/tests/` 共 **98 例全绿**（16 个文件）：注册断言 + 纯逻辑 + setup 级组件测试
-  （格式化/日历范围/Agent 工具函数/定时任务展示/模型探测交互/各财务模块）。
+  LIKE 转义/registry 异常隔离/manifest 校验/MCP 挂起超时）
+  + 2026-10-19 审计修复回归（`test_bugfix_*.py` 五件 67 例：只读 readonly 放行/技能启停失效缓存/
+  转义闭环/供应商级联删除/cron 更新校验与错过补偿/手动运行不吞定时/RAG 中文混合词/MCP 更新停旧进程/
+  debug 并发锁/发票 failed 态/税务导出与校验/企业字段/记账账户警告/上传大小写与上限/aware 日期/
+  引擎线程池/管线 409 等）。
+- **前端 vitest**：`frontend/tests/` 共 **150 例全绿**（21 个文件）：注册断言 + 纯逻辑 + setup 级组件测试
+  （格式化/日历范围/Agent 工具函数/定时任务展示/模型探测交互/各财务模块/调试中心三模块）
+  + 审计修复回归（`bugfix-frontend-*.test.js` 两件 36 例：笔记新建定位/记忆表单重置/highlight 参数/
+  MCP env 保护/附件-only 发送/会话切换不破图/全部导入确认/拦截器去重/本地时区日期/月份下拉/
+  筛选复位页码/file input 重置）。
 - **冒烟**：uvicorn 真实端点 + 冒烟数据清理。
 - **构建**：`npm run build` 通过（各视图独立 chunk；AG Grid 为大头）。
 - **手动验收**：十个静态页 + 设置抽屉 + 专家团队 tab + 技能包/专家团文件页 + 知识与记忆页 + MCP 页
@@ -536,6 +586,6 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - 单用户、监听 127.0.0.1；删除类数据操作不开放给 Agent（仅页面物理删除，任务可由 Agent 标记完成）。
 - 已完成的能力闭环：模块化（Module Registry）+ 四级接入 + Agent 工具预置 + 表驱动专家团 +
   流式对话 + 定时调度（cron/模块动作）+ 知识/记忆/MCP + 模型能力探测 + 会话归档导出 + 多模态传图。
-- 后续候选（按价值排序）：聊天消息「存为记忆」按钮、技能包停用过滤到 Agent 侧、
+- 后续候选（按价值排序）：聊天消息「存为记忆」按钮、
   MCP HTTP/SSE 传输与 RAG 向量融合（ADR 预留项）、现金流/POS 高级参数透出、
   团队共享场景再考虑多租户。

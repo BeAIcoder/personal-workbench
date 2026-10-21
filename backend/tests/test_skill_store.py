@@ -1,4 +1,5 @@
-"""技能包 store 测试：seed 幂等、扫描校验、启停持久化、新建/删除、防穿越、HTTP 端点。
+"""技能包 store 测试：seed 幂等、扫描校验、启停持久化、新建/删除、防穿越、HTTP 端点，
+以及停用过滤到 Agent 技能注入（disabled_packs 读取与 orchestrator loader 过滤）。
 
 store_dir 统一 monkeypatch 到 tmp_path（保留「不存在则创建」的真实行为），
 不写真实 data 目录；种子来源仍为仓库内的 backend/seed_skills（只读）。
@@ -173,6 +174,67 @@ def test_read_pack_file_and_traversal(store):
         skill_store.read_pack_file("ghost", "SKILL.md")
     with pytest.raises(ValueError):
         skill_store.read_pack_file("..", "SKILL.md")
+
+
+# ---------- 停用过滤到 Agent 技能注入（P0-1） ----------
+
+def test_disabled_packs_reads_store_json(store):
+    """disabled_packs：默认读 store 根目录；指定目录有 _store.json 以它为准，否则回退。"""
+    _write_pack(store, "demo", "---\nname: demo\ndescription: d\n---\n")
+    assert skill_store.disabled_packs() == []
+    skill_store.set_enabled("demo", False)
+    assert skill_store.disabled_packs() == ["demo"]
+    assert skill_store.disabled_packs(store) == ["demo"]
+    # 自定义目录无 _store.json：回退 store 根目录的停用记录
+    other = store.parent / "other-pool"
+    other.mkdir()
+    assert skill_store.disabled_packs(other) == ["demo"]
+    # 自定义目录自带 _store.json：以它为准
+    (other / "_store.json").write_text('{"disabled": ["custom-off"]}', encoding="utf-8")
+    assert skill_store.disabled_packs(other) == ["custom-off"]
+    # 损坏文件按空列表处理
+    (other / "_store.json").write_text("坏 JSON", encoding="utf-8")
+    assert skill_store.disabled_packs(other) == []
+
+
+def test_disabled_pack_filtered_from_agent_skill_injection(store):
+    """停用开关对 Agent 注入生效：loader 与 Toolkit 只返回启用中的技能包。"""
+    import asyncio
+
+    from agentscope.tool import Toolkit
+
+    from app.agents import orchestrator
+    from app.agents.team import TEAM
+
+    _write_pack(store, "alpha", "---\nname: alpha\ndescription: A\n---\n正文A")
+    _write_pack(store, "beta", "---\nname: beta\ndescription: B\n---\n正文B")
+    assert skill_store.set_enabled("beta", False)["enabled"] is False
+
+    cfg = {"enable_skills": True, "skills_dir": str(store)}
+    loaders = asyncio.run(orchestrator._resolve_skill_loaders(cfg, TEAM["realestate"]))
+    assert loaders  # 仍有启用中的包：返回 loader 列表
+    assert {s.name for s in asyncio.run(loaders[0].list_skills())} == {"alpha"}
+    # 经 Toolkit 汇总的技能同样不含停用包（Agent 实际注入路径）
+    toolkit = Toolkit(skills_or_loaders=loaders)
+    assert set(asyncio.run(toolkit._get_available_skills())) == {"alpha"}
+
+
+def test_expert_skills_empty_list_disables_injection(store):
+    """专家级 skills=[] 显式关闭技能池；None 跟随全局；全局关闭/目录缺失不注入。"""
+    import asyncio
+
+    from app.agents import orchestrator
+    from app.agents.team import AgentSpec
+
+    _write_pack(store, "alpha", "---\nname: alpha\ndescription: A\n---\n正文")
+    cfg = {"enable_skills": True, "skills_dir": str(store)}
+    spec_off = AgentSpec(name="x", label="X", emoji="", color="", description="", system_prompt="", skills=[])
+    spec_follow = AgentSpec(name="y", label="Y", emoji="", color="", description="", system_prompt="", skills=None)
+    assert asyncio.run(orchestrator._resolve_skill_loaders(cfg, spec_off)) is None
+    assert asyncio.run(orchestrator._resolve_skill_loaders(cfg, spec_follow))
+    assert asyncio.run(orchestrator._resolve_skill_loaders({"enable_skills": False, "skills_dir": str(store)}, spec_follow)) is None
+    assert asyncio.run(orchestrator._resolve_skill_loaders({"enable_skills": True, "skills_dir": ""}, spec_follow)) is None
+    assert asyncio.run(orchestrator._resolve_skill_loaders({"enable_skills": True, "skills_dir": str(store / "missing")}, spec_follow)) is None
 
 
 # ---------- HTTP 端点 ----------

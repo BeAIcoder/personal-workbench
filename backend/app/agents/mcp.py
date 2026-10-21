@@ -146,10 +146,12 @@ class McpStdioServer:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self.stop()  # 终止进程关闭管道，释放阻塞在 readline 的读线程
                 raise McpError(f"等待响应超时（>{timeout:g}s）")
             try:
                 line = self._read_line(remaining)
             except queue.Empty:
+                self.stop()  # 同上：超时不回收会导致守护线程永久泄漏
                 raise McpError(f"等待响应超时（>{timeout:g}s）") from None
             if not line:
                 raise McpError("服务器关闭了输出流（进程可能已退出）")
@@ -350,6 +352,11 @@ def update_server(db: Session, server_id: int, data: dict) -> dict:
     row = db.get(McpServer, server_id)
     if row is None:
         raise LookupError("服务器不存在")
+    # 配置变更前先停掉运行中的旧实例（对齐 delete/disconnect），避免旧进程+旧工具残留
+    with _manager_lock:
+        running = _servers.pop(row.name, None)
+    if running:
+        running.stop()
     for field in ("command", "args", "env", "enabled"):
         if field in data and data[field] is not None:
             setattr(row, field, data[field])

@@ -62,9 +62,12 @@ def test_recall_keyword_and_pinned_boost(client):
     hits = client.post(f"{P}/memories/recall", json={"query": "免租期", "top_k": 3}).json()["items"]
     assert hits and "免租期" in hits[0]["content"]
 
-    # 无关键词时置顶优先（三条记忆都含句号，用「。」做共同 token）
-    allhits = client.post(f"{P}/memories/recall", json={"query": "。", "top_k": 3}).json()["items"]
-    assert allhits[0]["content"].startswith("置顶记忆")
+    # 纯标点查询（空 token）返回空，不再返回任意 TopK（B8 修复后的口径）
+    assert client.post(f"{P}/memories/recall", json={"query": "。", "top_k": 3}).json()["items"] == []
+
+    # 同词命中时置顶优先（两条记忆都含「万元」，置顶层 +2 分）
+    pin_hits = client.post(f"{P}/memories/recall", json={"query": "万元", "top_k": 3}).json()["items"]
+    assert pin_hits[0]["content"].startswith("置顶记忆")
 
     # 命中累计 hit_count
     with SessionLocal() as db:

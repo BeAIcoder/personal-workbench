@@ -188,8 +188,8 @@ def test_mcp_call_timeout_when_server_hangs(tmp_path, monkeypatch):
             server.call_tool("hang", {})
         elapsed = time.monotonic() - t0
         assert elapsed < 10  # 旧行为会永久阻塞在 readline
-        # 超时后连接状态可控：进程仍在，可正常 stop 回收
-        assert server.is_alive()
+        # 超时后进程被终止：管道关闭，阻塞在 readline 的读线程随之退出（防线程泄漏）
+        assert not server.is_alive()
     finally:
         server.stop()
     assert not server.is_alive()

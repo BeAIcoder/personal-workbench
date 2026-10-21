@@ -75,9 +75,8 @@ async function run() {
     ElMessage.success(`运行完成（${data.elapsed_sec}s），已归档快照 ${data.stamp}`)
     await load()
     selected.value = data.id
-  } catch (e) {
-    const code = e?.response?.status
-    ElMessage.error(code === 503 ? `管线不可用：${e?.response?.data?.detail}` : (e?.response?.data?.detail || '运行失败'))
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     running.value = false
   }

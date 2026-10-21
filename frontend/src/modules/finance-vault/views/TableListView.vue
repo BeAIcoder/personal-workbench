@@ -46,8 +46,8 @@
     </el-dialog>
 
     <el-dialog v-model="previewDialog" :title="`预览：${previewData.table}`" width="760px">
-      <el-table :data="previewData.rows" size="small" max-height="420" border>
-        <el-table-column v-for="c in previewData.columns" :key="c" :prop="c" :label="c" min-width="120" show-overflow-tooltip />
+      <el-table :data="previewRows" size="small" max-height="420" border>
+        <el-table-column v-for="(c, i) in previewData.columns" :key="'c' + i" :prop="'c' + i" :label="c" min-width="120" show-overflow-tooltip />
       </el-table>
     </el-dialog>
   </div>
@@ -58,6 +58,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { takeFile } from '../../_shared/fileInput'
+import { toTableRows } from '../tableRows'
 
 const router = useRouter()
 const loading = ref(false)
@@ -82,7 +84,7 @@ async function load() {
 }
 
 function onFile(e) {
-  form.file = e.target.files?.[0] || null
+  form.file = takeFile(e)
 }
 
 async function submitUpload() {
@@ -101,8 +103,8 @@ async function submitUpload() {
     form.table = ''
     form.file = null
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '入仓失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     submitting.value = false
   }
@@ -111,6 +113,9 @@ async function submitUpload() {
 const previewDialog = ref(false)
 const previewData = reactive({ table: '', columns: [], rows: [] })
 
+// 预览行按列序扁平化为安全键：列名含点号时 el-table 的 prop 会被当作深层路径
+const previewRows = computed(() => toTableRows(previewData.columns, previewData.rows))
+
 async function preview(row) {
   try {
     const { data } = await api.get(`/finance/vault/tables/${encodeURIComponent(row.table)}/preview`)
@@ -118,8 +123,8 @@ async function preview(row) {
     previewData.columns = data.columns
     previewData.rows = data.rows
     previewDialog.value = true
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '预览失败')
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 

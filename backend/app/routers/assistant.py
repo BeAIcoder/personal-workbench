@@ -508,6 +508,9 @@ async def chat(payload: ChatRequest):
         return await orchestrator.chat(
             payload.session_id, payload.message, payload.agent, payload.mode or "standard", atts
         )
+    except ValueError as exc:
+        # 编排层业务校验失败（如路由后按专家绑定模型复核视觉能力）：与前置校验同口径 400
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         # 模型网络/鉴权等运行时错误：记录完整堆栈，对外不回传内部细节
         logger.exception("chat 接口执行失败：session_id=%s", payload.session_id)

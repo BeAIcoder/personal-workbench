@@ -11,7 +11,7 @@
 ### GET /api/health
 健康检查。
 ```json
-{ "status": "ok", "app": "个人工作台", "version": "1.15.1" }
+{ "status": "ok", "app": "个人工作台", "version": "1.16.1" }
 ```
 
 ## 任务管理 /api/tasks
@@ -220,7 +220,7 @@ route-test 入参与返回：
 团队名册 + 模型状态 + 配置（脱敏）+ 供应商/模型 + 工作模式。**注意**：只返回启用中的专家、按 sort 排序，专家条目含 `id / model_id / keywords / enabled / sort / is_builtin` 字段。
 ```json
 {
-  "llm": { "configured": true, "protocol": "openai", "provider": "…", "base_url": "…", "model": "…" },
+  "llm": { "configured": true, "protocol": "openai", "provider": "…", "source": "provider", "base_url": "…", "model": "…" },
   "config": { /* api_key 已脱敏为 ••••••xxxx，附 api_key_set */ },
   "presets": [ /* 18 家供应商预设 */ ],
   "providers": [ /* 供应商及其模型 */ ],
@@ -230,6 +230,7 @@ route-test 入参与返回：
                 "id", "model_id", "keywords", "enabled", "sort", "is_builtin" } ]
 }
 ```
+`llm.source`：模型来源标识，`provider` = 界面配置的供应商激活模型，`env` = .env 兜底（供应商全关/未配置时生效，该模型不在 `models` 下拉里，界面需明示「env 兜底」）。
 
 ### 模型与参数配置
 
@@ -415,7 +416,7 @@ name 重复或必填缺失返回 400。
 工作台支持按目录加载业务模块（当前用于财务域）。模块机制约定：
 
 - **发现与加载**：后端扫描 `backend/app/modules/*/manifest.py`（`_` 开头目录如 `_template` 跳过）；manifest 校验失败或挂载异常仅记日志跳过该模块，不影响宿主与其它模块。
-- **路由挂载**：模块 router 按 manifest.prefix（必须 `/api/finance/` 开头）挂载，如 `/api/finance/hello/ping`。
+- **路由挂载**：模块 router 按 manifest.prefix 挂载（财务模块必须 `/api/finance/` 开头，调试类模块以 `/api/debug/` 开头），如 `/api/finance/hello/ping`。
 - **建表**：模块 models 随 manifest 导入注册进 `Base.metadata`（`load_modules(app)` 在 lifespan 之前执行），启动时 `create_all` 建出模块表；表名统一 `mod_` 前缀。
 - **轻量迁移**：manifest.column_patches（`{表名: {列名: DDL}}`）并入启动时的列补齐逻辑。
 - **Agent 工具**：manifest.agent_tools 经 `register_module_tools()` 并入工具注册表（与内置工具重名不覆盖）；专家白名单引用已禁用模块的工具时自动跳过不崩。
@@ -453,6 +454,57 @@ name 重复或必填缺失返回 400。
 
 > 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级。
 
+## 调试中心 /api/debug（v1.16.0）
+
+调试中心模块 `debug_center`：问题记录 + E2E 测试运行归档 + 前端报错采集。**纯 JSON 文件存储**
+（根目录默认 `backend/data/debug/`，`DEBUG_DATA_DIR` 可覆盖），不建表、不开放给 Agent。
+
+### 问题记录 /api/debug/issues
+
+问题字段：`{id, title, severity(P0-P3), status(open/in_progress/done/wontfix), source(manual/e2e/analysis), page, description, evidence, created_at, updated_at}`。
+首次使用自动写入 11 条 analysis 种子问题（幂等）。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/debug/issues?status=&severity=` | 问题列表（可选筛选），返回 `{total, items}`（按严重度+创建时间排序） |
+| `POST /api/debug/issues` | 新建（返回 201）；body 仅需 `title`，其余字段有默认（severity=P2/status=open/source=manual） |
+| `PUT /api/debug/issues/{id}` | 部分更新（未传字段不变），自动刷新 `updated_at`；不存在 404，非法枚举 422 |
+| `DELETE /api/debug/issues/{id}` | 删除，返回 `{"ok": true}`；不存在 404 |
+
+### 测试运行 /api/debug/runs
+
+`dev/e2e/*` 脚本跑完经 `dev/e2e/debug_reporter.py` 落库（`runs/<run_id>/result.json` + `shots/*.png`），
+run_id 形如 `20261013-153000_recon`；有错误的页面/失败用例自动建/更新问题（source=e2e、P1）。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/debug/runs` | 运行列表（时间倒序），每项 `{id, kind, base, started_at, finished_at, totals{pages,bad_pages,tests,failed_tests}, shots}` |
+| `GET /api/debug/runs/{run_id}` | 运行详情（result.json 全文 + `shots` 截图文件名列表）；不存在 404，非法 run_id 400 |
+| `GET /api/debug/runs/{run_id}/shots/{filename}` | 截图（image/png，FileResponse）；路径穿越 400、文件缺失 404 |
+| `DELETE /api/debug/runs/{run_id}` | 整目录删除该次运行，返回 `{"ok": true}` |
+
+### 前端报错 /api/debug/client-errors
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/debug/client-errors?limit=200` | 尾部读取最近 limit 条（1-1000），返回 `{total, items}`（按写入顺序） |
+| `POST /api/debug/client-errors` | 追加一条（返回 201）；**宽容解析**——非 JSON body/数组/字符串/缺字段一律归一记录为 `{ts, page, message, stack, ua}`，绝不 500。前端 `main.js` 全局 errorHandler/error/unhandledrejection 自动上报（裸 axios、同消息 5 秒去重） |
+| `DELETE /api/debug/client-errors` | 清空，返回 `{"ok": true}` |
+
+### GET /api/debug/summary
+
+调试中心总览：
+```json
+{
+  "open_issues_by_severity": {"P0": 4, "P1": 3, "P2": 4, "P3": 0},
+  "total_issues": 11,
+  "runs_count": 1,
+  "last_run": {"id": "20261013-153000_recon", "kind": "recon", "finished_at": "2026-10-13 15:30:42", "bad_pages": 0, "failed_tests": 0},
+  "client_errors_count": 0
+}
+```
+无运行时 `last_run` 为 `null`；未决计数含 status 为 open 与 in_progress 的问题。
+
 ## 前端接入说明
 
 - axios 实例：`frontend/src/api/index.js`，`baseURL` 取 `VITE_API_BASE`（默认 `/api`）；响应拦截器统一弹出中文错误提示。
@@ -467,8 +519,9 @@ name 重复或必填缺失返回 400。
 | 技能包 | `GET /api/skills/packs`、`POST /api/skills/packs`、`DELETE /api/skills/packs/{name}`、`PUT /api/skills/packs/{name}/enabled`、`GET /api/skills/packs/{name}/files/{filename}`、`POST /api/skills/rescan` |
 | 专家团文件 | `GET /api/experts/packs`、`POST /api/experts/packs/import-all`、`POST /api/experts/packs/import/{name}`、`POST /api/experts/packs/reset`、`POST /api/experts/packs/export/{expert_name}`、`GET /api/experts/packs/{name}/content`、`DELETE /api/experts/packs/{name}` |
 
-- 技能包 store：`backend/data/skills/<name>/SKILL.md`（zcode/WorkBuddy 同款格式），首次启动从 `backend/seed_skills/` 播种；AI 助手设置的技能目录指向该目录即注入 Agent
+- 技能包 store：`backend/data/skills/<name>/SKILL.md`（zcode/WorkBuddy 同款格式），首次启动从 `backend/seed_skills/` 播种；AI 助手设置的「技能池目录」指向该目录即注入 Agent，**已停用的包（`_store.json` 的 disabled 列表）在注入侧过滤，停用开关对 Agent 真实生效**
 - 专家团文件：`backend/data/expert-packs/<name>.md`（frontmatter: name/label/emoji/color/description/keywords/tools/sort + 正文角色提示词），导入为 upsert（工具白名单取并集，导入不缩减），导出把数据库专家写回文件
+- `GET /api/experts/packs` 每项含 `diff`（差异简述）与 `diff_fields`（差异字段名列表，如 `["显示名","角色提示词"]`，供界面列出具体差异项）
 - 模块工具预置：模块 manifest 声明 `preset_experts`，加载时把模块工具幂等合并进指定专家白名单（如财税专员自动获得全部财务模块工具）
 
 ### 模型能力探测与厂商预设（v1.14.0）

@@ -20,6 +20,7 @@ class InvoiceBatch(Base):
     STATUS_UPLOADED = "uploaded"
     STATUS_PARSED = "parsed"
     STATUS_EXPORTED = "exported"
+    STATUS_FAILED = "failed"  # 解析流程异常终止（error 字段留痕）
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), default="")

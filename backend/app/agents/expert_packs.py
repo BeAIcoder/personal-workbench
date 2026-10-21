@@ -26,6 +26,7 @@ is_builtin/enabled/model_id/skills 保持原值。导入/导出后调用
 invalidate_team_cache()，让 team.load_team() 的 60 秒缓存立即失效。
 """
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -153,18 +154,28 @@ def parse_pack_file(path: Path | str) -> dict:
 
 
 def _unquote(value: str) -> str:
-    """去掉值外层成对的单/双引号。"""
+    """去掉值外层成对的单/双引号；双引号值按 _quote 的规则反转义。
+
+    _quote 只产生两种转义：\\" 与 \\\\；反转义须先 \\<引号> 后 \\\\（先拆引号
+    转义再拆反斜杠转义），否则 export→parse 往返会多出一层反斜杠。
+    """
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-        return value[1:-1]
+        inner = value[1:-1]
+        if value[0] == '"':
+            inner = inner.replace('\\"', '"').replace("\\\\", "\\")
+        return inner
     return value
 
 
 def _to_list(value: str) -> list[str]:
-    """把 frontmatter 的列表值转成字符串列表：支持逗号分隔字符串与 [a, b] 行内列表。"""
+    """把 frontmatter 的列表值转成字符串列表：支持逗号分隔字符串与 [a, b] 行内列表。
+
+    中英文逗号都视为分隔符（中文用户惯用全角逗号，不切分会粘成一个词）。
+    """
     text = value.strip()
     if text.startswith("[") and text.endswith("]"):
         text = text[1:-1]
-    return [item for item in (_unquote(x.strip()) for x in text.split(",")) if item]
+    return [item for item in (_unquote(x.strip()) for x in text.replace("，", ",").split(",")) if item]
 
 
 def _quote(value: str) -> str:
@@ -196,36 +207,40 @@ def render_pack(row: AgentSpecModel) -> str:
 
 # ---------------- 一致性比对 ----------------
 
-def _diff_fields(row: AgentSpecModel, data: dict) -> list[str]:
-    """比对数据库行与文件内容，返回差异项中文描述列表（空 = 完全一致）。"""
-    diffs: list[str] = []
+def _diff_fields(row: AgentSpecModel, data: dict) -> list[tuple[str, str]]:
+    """比对数据库行与文件内容，返回 [(字段名, 差异描述), ...]（空 = 完全一致）。
+
+    字段名供界面列出「差在哪」（diff_fields），描述供 diff 简述。
+    """
+    diffs: list[tuple[str, str]] = []
     if (row.display_name or "") != data["label"]:
-        diffs.append("显示名不同")
+        diffs.append(("显示名", "显示名不同"))
     if (row.role_prompt or "").strip() != data["body"]:
-        diffs.append("角色提示词不同")
+        diffs.append(("角色提示词", "角色提示词不同"))
     if list(row.keywords or []) != data["keywords"]:
-        diffs.append("关键词不同")
+        diffs.append(("关键词", "关键词不同"))
     # 工具按「文件声明的工具是否都已在白名单」比对（导入为并集语义，不比对多出部分）
     db_tools = set(row.tools or [])
     missing_in_db = [t for t in data["tools"] if t not in db_tools]
     if missing_in_db:
-        diffs.append("工具不同（文件有 " + "、".join(missing_in_db[:3]) + " 未入库）")
+        diffs.append(("工具", "工具不同（文件有 " + "、".join(missing_in_db[:3]) + " 未入库）"))
     if (row.emoji or "") != data["emoji"]:
-        diffs.append("图标不同")
+        diffs.append(("图标", "图标不同"))
     if (row.color or "") != data["color"]:
-        diffs.append("颜色不同")
+        diffs.append(("颜色", "颜色不同"))
     if (row.description or "") != data["description"]:
-        diffs.append("描述不同")
+        diffs.append(("描述", "描述不同"))
     if int(row.sort or 0) != data["sort"]:
-        diffs.append("排序不同")
+        diffs.append(("排序", "排序不同"))
     return diffs
 
 
 def list_packs(db) -> list[dict]:
     """扫描专家包目录，返回文件清单及与数据库的一致性状态。
 
-    每项：{name,label,description,file,valid,error,imported,diff}。
-    imported=是否已导入 agent_specs；diff=与数据库行的差异简述（None 表示未导入或完全一致）。
+    每项：{name,label,description,file,valid,error,imported,diff,diff_fields}。
+    imported=是否已导入 agent_specs；diff=与数据库行的差异简述（None 表示未导入或完全一致）；
+    diff_fields=差异字段名列表（如 ["显示名","角色提示词"]，供界面列出具体差异项）。
     """
     items: list[dict] = []
     for path in sorted(packs_dir().glob("*.md")):
@@ -238,6 +253,7 @@ def list_packs(db) -> list[dict]:
             "error": None,
             "imported": False,
             "diff": None,
+            "diff_fields": [],
         }
         try:
             data = parse_pack_file(path)
@@ -253,7 +269,8 @@ def list_packs(db) -> list[dict]:
         if row is not None:
             entry["imported"] = True
             diffs = _diff_fields(row, data)
-            entry["diff"] = "；".join(diffs) if diffs else None
+            entry["diff"] = "；".join(desc for _, desc in diffs) if diffs else None
+            entry["diff_fields"] = [name for name, _ in diffs]
         items.append(entry)
     return items
 
@@ -313,7 +330,7 @@ def import_pack(name: str, db) -> dict:
         "action": action,
         "is_builtin": bool(row.is_builtin),
         "file": path.name,
-        "diff": diffs,
+        "diff": [desc for _, desc in diffs],
     }
 
 
@@ -334,7 +351,9 @@ def import_all(db) -> dict:
             continue
         try:
             result = import_pack(data["name"], db)
-        except (ValueError, OSError) as exc:
+        except Exception as exc:
+            # 逐文件隔离：任何异常（含 DB 写入失败）都计入 errors，不中断整批
+            logger.warning("专家包导入失败：%s", path.name, exc_info=True)
             errors.append({"file": path.name, "error": str(exc)})
             continue
         if result["action"] == "unchanged":
@@ -355,9 +374,13 @@ def export_pack(expert_name: str, db) -> dict:
     if row is None:
         raise FileNotFoundError(f"数据库中不存在专家 {expert_name}，无法导出")
     path = packs_dir() / f"{row.name}.md"
+    # 原子写：tmp + os.replace，写入中断时已有同名文件保持原样，不留半截内容
+    tmp = path.with_name(path.name + ".tmp")
     try:
-        path.write_text(render_pack(row), encoding="utf-8")
+        tmp.write_text(render_pack(row), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError as exc:
+        tmp.unlink(missing_ok=True)
         raise ValueError(f"导出专家 {expert_name} 失败：{exc}") from exc
     invalidate_team_cache()
     logger.info("专家包导出：%s -> %s", row.name, path)

@@ -3,7 +3,8 @@
 技能包沿用 zcode / WorkBuddy 的 SKILL.md 约定：每个包一个子目录，内含
 YAML frontmatter（name/description/version）+ Markdown 正文。agentscope 的
 LocalSkillLoader 直接以目录作为技能池注入 Agent（见 agents/orchestrator.py
-的 skills_dir 配置），本模块是这套技能池的管理层。
+的 skills_dir 配置），本模块是这套技能池的管理层；已停用的包（disabled 列表）
+由 orchestrator 在注入侧过滤，停用开关对 Agent 真实生效。
 
 store 目录结构：
     data/skills/
@@ -18,8 +19,10 @@ store 目录结构：
 """
 import json
 import logging
+import os
 import re
 import shutil
+import threading
 from pathlib import Path
 
 import yaml
@@ -32,6 +35,9 @@ logger = logging.getLogger(__name__)
 STORE_FILE = "_store.json"
 # 新建技能包的名称规则：小写字母/数字/连字符，字母或数字开头，最长 50
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,49}$")
+
+# _store.json 读-改-写的进程内锁（并发启停不同包时防止丢状态）
+_STORE_LOCK = threading.Lock()
 
 # 新建技能包使用的 SKILL.md 模板
 PACK_TEMPLATE = """---
@@ -79,6 +85,7 @@ def ensure_seed_packs() -> list[str]:
     """把 seed_skills/* 整目录复制进 store（store 已有同名目录则跳过，幂等）。
 
     返回本次实际复制的包名列表；供启动播种与 /rescan 汇报使用。
+    复制失败时清理半成品目录并抛出（残缺目录会导致后续运行永久跳过该包）。
     """
     seed_dir = _seed_dir()
     root = store_dir()
@@ -93,7 +100,11 @@ def ensure_seed_packs() -> list[str]:
             shutil.copytree(src, dst)
             copied.append(src.name)
         except OSError:
-            logger.warning("种子技能包复制失败：%s", src, exc_info=True)
+            # copytree 中断会留下残缺目录，后续运行因「已存在」永久跳过：
+            # 清理半成品目录再抛出，让下次启动/重扫能重新补全
+            logger.warning("种子技能包复制失败（已清理半成品目录）：%s", src, exc_info=True)
+            shutil.rmtree(dst, ignore_errors=True)
+            raise
     if copied:
         logger.info("已复制种子技能包：%s", "、".join(copied))
     return copied
@@ -183,7 +194,11 @@ def _list_files(pack_dir: Path) -> list[str]:
 
 def _load_disabled() -> list[str]:
     """读取 _store.json 的停用列表；文件缺失或损坏时按空列表处理。"""
-    path = store_dir() / STORE_FILE
+    return _parse_disabled(store_dir() / STORE_FILE)
+
+
+def _parse_disabled(path: Path) -> list[str]:
+    """解析指定路径的停用列表文件；缺失或损坏时按空列表处理。"""
     if not path.is_file():
         return []
     try:
@@ -191,17 +206,36 @@ def _load_disabled() -> list[str]:
         disabled = data.get("disabled", [])
         return [str(n) for n in disabled] if isinstance(disabled, list) else []
     except (json.JSONDecodeError, OSError, AttributeError):
-        logger.warning("%s 解析失败，按无停用记录处理", STORE_FILE)
+        logger.warning("%s 解析失败，按无停用记录处理", path)
         return []
 
 
+def disabled_packs(directory: Path | str | None = None) -> list[str]:
+    """读取技能池停用列表（`<directory>/_store.json` 的 disabled 字段）。
+
+    directory 为空时用 store 根目录（backend/data/skills）；指定目录下没有
+    _store.json 时同样回退 store 根目录——设置里的「技能池目录」通常就是 store
+    本身，自定义目录无停用记录时按「无停用」处理，不影响注入。
+    供 orchestrator 构造 Agent 技能注入时过滤已停用的包。
+    """
+    if directory is not None:
+        path = Path(directory) / STORE_FILE
+        if path.is_file():
+            return _parse_disabled(path)
+    return _load_disabled()
+
+
 def _save_disabled(disabled: list[str]) -> None:
-    """把停用列表写回 _store.json。"""
+    """把停用列表原子写回 _store.json（tmp + os.replace：崩溃不留半截 JSON）。"""
     path = store_dir() / STORE_FILE
-    path.write_text(
-        json.dumps({"disabled": sorted(set(disabled))}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    payload = json.dumps({"disabled": sorted(set(disabled))}, ensure_ascii=False, indent=2) + "\n"
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _pack_dir(name: str) -> Path:
@@ -218,16 +252,20 @@ def _pack_dir(name: str) -> Path:
 
 
 def set_enabled(name: str, enabled: bool) -> dict:
-    """启用/停用技能包（写 _store.json）；包不存在抛 LookupError。"""
+    """启用/停用技能包（写 _store.json）；包不存在抛 LookupError。
+
+    读-改-写在进程内锁内整体执行：并发启停不同包时互不丢状态。
+    """
     pack_dir = _pack_dir(name)
     if not pack_dir.is_dir():
         raise LookupError(f"技能包不存在：{name}")
-    disabled = _load_disabled()
-    if enabled:
-        disabled = [n for n in disabled if n != name]
-    elif name not in disabled:
-        disabled.append(name)
-    _save_disabled(disabled)
+    with _STORE_LOCK:
+        disabled = _load_disabled()
+        if enabled:
+            disabled = [n for n in disabled if n != name]
+        elif name not in disabled:
+            disabled.append(name)
+        _save_disabled(disabled)
     return {"name": name, "enabled": enabled}
 
 

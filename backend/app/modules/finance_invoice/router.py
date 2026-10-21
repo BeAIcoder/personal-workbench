@@ -40,6 +40,9 @@ async def create_batch(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"发票解析引擎不可用：{exc}")
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        # 解析流程异常：批次已在 service 层置 failed+error 留痕，此处返回明确错误而非裸 500
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"批次解析失败：{exc}")
     return service.batch_detail_dict(db, batch)
 
 

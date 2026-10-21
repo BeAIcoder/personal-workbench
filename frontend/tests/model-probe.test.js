@@ -4,6 +4,7 @@ import { assistantApi, modelProbeApi, providerPresetsApi } from '../src/api'
 import SettingsDrawer, {
   THINKING_LEVEL_OPTIONS,
   contextResultMessage,
+  effectiveModelText,
   formatK,
   outputResultMessage,
   parseLevels,
@@ -11,6 +12,7 @@ import SettingsDrawer, {
   probeAtShort,
   probeResultOf,
   probeStateOf,
+  providerKeyBadge,
   reasoningResultMessage,
   thinkingBadge,
 } from '../src/components/assistant/SettingsDrawer.vue'
@@ -217,6 +219,25 @@ describe('探测时间展示', () => {
   })
 })
 
+describe('当前生效模型与供应商状态（P0-2 / P1-7）', () => {
+  it('生效模型文案：供应商激活模型标注来源，env 兜底明示', () => {
+    expect(effectiveModelText({ model: 'glm-5.2', provider_name: '智谱' })).toBe('当前生效模型：glm-5.2（来源：供应商「智谱」）')
+    expect(effectiveModelText({ model: 'Qwen/Qwen3.5', provider_name: 'env兜底' })).toBe('当前生效模型：Qwen/Qwen3.5（来源：.env 兜底）')
+  })
+
+  it('未配置时引导去添加供应商', () => {
+    expect(effectiveModelText({})).toContain('未配置')
+    expect(effectiveModelText(null)).toContain('未配置')
+  })
+
+  it('供应商 Key 徽标：停用不显示「已配置」', () => {
+    expect(providerKeyBadge({ enabled: true, api_key_set: true })).toEqual({ text: '已配置', type: 'success' })
+    expect(providerKeyBadge({ enabled: true, api_key_set: false })).toEqual({ text: '未配置 Key', type: 'info' })
+    expect(providerKeyBadge({ enabled: false, api_key_set: true })).toEqual({ text: '已停用', type: 'info' })
+    expect(providerKeyBadge(null)).toEqual({ text: '已停用', type: 'info' })
+  })
+})
+
 describe('探测交互（组件 setup 级）', () => {
   it('思考探测成功：就地更新徽章并提示结论', async () => {
     const { ctx, emit } = mountDrawer()
@@ -315,6 +336,55 @@ describe('探测交互（组件 setup 级）', () => {
     expect(m.probed_at).toBe('2026-10-12T09:30:00')
     expect(ElMessage.success).toHaveBeenCalledWith(expect.stringContaining('探测完成'))
     expect(ElMessage.success).toHaveBeenCalledWith(expect.stringContaining('ctx 131072'))
+  })
+
+  it('批量探测：只确认一次，依次对全部启用中的模型发起全量探测', async () => {
+    const { ctx, emit } = mountDrawer()
+    ElMessageBox.confirm.mockResolvedValueOnce('confirm')
+    const m1 = { id: 21, model: 'mma', enabled: true }
+    const m2 = { id: 22, model: 'mmb', enabled: true }
+    modelProbeApi.probeAll.mockResolvedValue({
+      data: {
+        model_id: 0,
+        result: { probed_at: '' },
+        probe: { supports_thinking: 0, probed_context: 1000, probed_max_output: 2000, probed_at: '2026-10-13T10:00:00' },
+      },
+    })
+    await ctx.runProbeAllModels({
+      id: 5,
+      name: '测试供应商',
+      models: [m1, m2, { id: 23, model: 'mmc', enabled: false }],
+    })
+    expect(ElMessageBox.confirm).toHaveBeenCalledOnce()
+    expect(modelProbeApi.probeAll).toHaveBeenCalledTimes(2)  // 停用模型跳过
+    expect(modelProbeApi.probeAll).toHaveBeenCalledWith(21)
+    expect(modelProbeApi.probeAll).toHaveBeenCalledWith(22)
+    expect(m1.probed_context).toBe(1000)
+    expect(m2.probed_context).toBe(1000)
+    expect(ElMessage.success).toHaveBeenCalledWith('批量探测完成：2 个模型均已更新')
+    expect(emit).toHaveBeenCalledWith('refresh')
+  })
+
+  it('批量探测：取消不发起请求；单个失败不中断其余', async () => {
+    const { ctx } = mountDrawer()
+    ElMessageBox.confirm.mockRejectedValueOnce('cancel')
+    await ctx.runProbeAllModels({ id: 5, name: 'p', models: [{ id: 21, model: 'mma' }] })
+    expect(modelProbeApi.probeAll).not.toHaveBeenCalled()
+
+    ElMessageBox.confirm.mockResolvedValueOnce('confirm')
+    modelProbeApi.probeAll
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ data: { model_id: 22, result: {}, probe: { supports_thinking: 0, probed_at: '' } } })
+    await ctx.runProbeAllModels({ id: 5, name: 'p', models: [{ id: 21, model: 'mma' }, { id: 22, model: 'mmb' }] })
+    expect(modelProbeApi.probeAll).toHaveBeenCalledTimes(2)
+    expect(ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('失败 1 个'))
+  })
+
+  it('批量探测：无启用中模型时提示且不请求', async () => {
+    const { ctx } = mountDrawer()
+    await ctx.runProbeAllModels({ id: 5, name: 'p', models: [] })
+    expect(ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('没有启用中的模型'))
+    expect(modelProbeApi.probeAll).not.toHaveBeenCalled()
   })
 })
 
