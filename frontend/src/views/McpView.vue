@@ -191,9 +191,13 @@ async function connect(row) {
 }
 
 async function disconnect(row) {
-  await api.post(`/mcp/servers/${row.id}/disconnect`)
-  ElMessage.success('已断开')
-  await load()
+  try {
+    await api.post(`/mcp/servers/${row.id}/disconnect`)
+    ElMessage.success('已断开')
+  } catch {
+    /* 拦截器已提示 */
+  }
+  await load()  // 无论成败都刷新：失败时也要拿到后端记录的真实状态
 }
 
 async function toggleEnabled(row) {
@@ -211,9 +215,13 @@ async function remove(row) {
   } catch {
     return  // 用户取消
   }
-  await api.delete(`/mcp/servers/${row.id}`)
-  ElMessage.success('已删除')
-  await load()
+  try {
+    await api.delete(`/mcp/servers/${row.id}`)
+    ElMessage.success('已删除')
+    await load()
+  } catch {
+    /* 拦截器已提示 */
+  }
 }
 
 function openTest(row) {

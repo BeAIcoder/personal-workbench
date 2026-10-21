@@ -17,6 +17,7 @@ from ..config import UPLOAD_DIR
 from ..database import SessionLocal
 from ..models import AgentSpecModel
 from ..schemas import AgentSpecCreate, AgentSpecOut, AgentSpecUpdate
+from ..utils import DbId
 
 router = APIRouter(prefix="/assistant", tags=["AI 助手"])
 
@@ -166,14 +167,14 @@ def save_provider(payload: ProviderPayload):
 
 
 @router.delete("/providers/{provider_id}", summary="删除供应商（含其模型）")
-def delete_provider(provider_id: int):
+def delete_provider(provider_id: DbId):
     config_store.delete_provider(provider_id)
     orchestrator.invalidate()
     return {"providers": config_store.list_providers()}
 
 
 @router.post("/providers/{provider_id}/models", summary="新增/更新供应商下的模型")
-def save_provider_model(provider_id: int, payload: ModelPayload):
+def save_provider_model(provider_id: DbId, payload: ModelPayload):
     data = payload.model_dump(exclude_none=True)
     data["provider_id"] = provider_id
     try:
@@ -185,14 +186,14 @@ def save_provider_model(provider_id: int, payload: ModelPayload):
 
 
 @router.delete("/providers/{provider_id}/models/{model_id}", summary="删除模型")
-def delete_provider_model(provider_id: int, model_id: int):
+def delete_provider_model(provider_id: DbId, model_id: DbId):
     config_store.delete_provider_model(model_id)
     orchestrator.invalidate()
     return {"providers": config_store.list_providers()}
 
 
 @router.post("/models/{model_id}/activate", summary="激活模型（跨供应商，立即生效）")
-def activate_model(model_id: int):
+def activate_model(model_id: DbId):
     try:
         activated = config_store.activate_model(model_id)
     except ValueError as exc:
@@ -427,6 +428,11 @@ def reset_agents():
             row.is_builtin = True
             restored.append(spec.name)
         db.commit()
+    # 静态 TEAM.tools 不含模块预置工具；恢复出厂后按已加载模块 manifest 幂等补回，
+    # 否则 finance_specialist 会丢掉财务模块工具、专家包一致性检查出现伪差异
+    from ..modules.registry import apply_loaded_presets
+
+    apply_loaded_presets()
     _invalidate_agents()
     return {"ok": True, "restored": restored}
 
@@ -445,6 +451,7 @@ def get_sessions(limit: int = Query(50, ge=1, le=200), archived: Optional[bool] 
 
 @router.post("/sessions", summary="新建会话")
 def create_session(payload: SessionRequest):
+    _check_session_id(payload.session_id)
     return orchestrator.session_create(payload.session_id, payload.title or "")
 
 
@@ -499,6 +506,7 @@ def export_session(session_id: str):
 
 @router.post("/chat", summary="与 Agent 团队对话（非流式）")
 async def chat(payload: ChatRequest):
+    _check_session_id(payload.session_id)
     atts = [a.model_dump() for a in (payload.attachments or [])]
     try:
         orchestrator.assert_vision_supported(atts, payload.agent)
@@ -519,6 +527,7 @@ async def chat(payload: ChatRequest):
 
 @router.post("/chat/stream", summary="与 Agent 团队对话（SSE 流式）")
 async def chat_stream(payload: ChatRequest):
+    _check_session_id(payload.session_id)
     atts = [a.model_dump() for a in (payload.attachments or [])]
     try:
         orchestrator.assert_vision_supported(atts, payload.agent)

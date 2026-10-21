@@ -11,3 +11,9 @@ export function formatPercent(percent) {
 export function categoryMatchesKind(category, kind) {
   return !!category && category.kind === kind
 }
+
+// 统计页「当月支出分类构成」只取支出分类：后端 by_category 同时返回收入/支出，
+// 原样渲染会把收入分类混进支出表与饼图，而 percent 的分母仍是支出，数字对不上
+export function expenseCategories(list) {
+  return (Array.isArray(list) ? list : []).filter((item) => item && item.kind === 'expense')
+}

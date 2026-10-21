@@ -12,5 +12,7 @@ pandas>=2.2,<3
 pdfplumber>=0.11,<1
 duckdb>=1.1,<2
 xlrd>=2.0,<3
+# 纳税申报表 PDF 导出（services/tax_form_generator.export_a200000_pdf）
+reportlab>=4.0,<5
 # DPAPI（API Key 静态加密）硬依赖，仅 Windows 平台；缺失时应用拒绝启动（N-1/P0-4）
 pywin32>=306; sys_platform == 'win32'

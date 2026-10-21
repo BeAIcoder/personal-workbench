@@ -25,6 +25,7 @@ display_name/role_prompt/keywords/tools/emoji/color/description/sort，
 is_builtin/enabled/model_id/skills 保持原值。导入/导出后调用
 invalidate_team_cache()，让 team.load_team() 的 60 秒缓存立即失效。
 """
+import json
 import logging
 import os
 import re
@@ -33,7 +34,7 @@ from pathlib import Path
 
 from ..config import BASE_DIR, DATA_DIR
 from ..models import AgentSpecModel
-from .team import invalidate_team_cache
+from .team import QUERY_TOOLS, invalidate_team_cache
 
 logger = logging.getLogger(__name__)
 
@@ -170,10 +171,18 @@ def _unquote(value: str) -> str:
 def _to_list(value: str) -> list[str]:
     """把 frontmatter 的列表值转成字符串列表：支持逗号分隔字符串与 [a, b] 行内列表。
 
+    行内列表优先按 JSON 解析：导出时用 JSON 序列化关键词，含逗号的词（"甲,乙"）
+    才能作为整体往返，不会被逗号拆成两个；旧版/手写的 [a, b] 仍走逗号拆分。
     中英文逗号都视为分隔符（中文用户惯用全角逗号，不切分会粘成一个词）。
     """
     text = value.strip()
     if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
         text = text[1:-1]
     return [item for item in (_unquote(x.strip()) for x in text.replace("，", ",").split(",")) if item]
 
@@ -186,7 +195,9 @@ def _quote(value: str) -> str:
 def render_pack(row: AgentSpecModel) -> str:
     """把 agent_specs 行渲染为专家包 .md 文本（frontmatter + 正文）。"""
     tools = ",".join(row.tools or [])
-    keywords = ",".join(row.keywords or [])
+    # 关键词用 JSON 数组导出：单个关键词本身含逗号时不会被解析层拆分；
+    # 解析侧兼容旧的逗号分隔字符串与手写 [a, b] 行内列表
+    keywords = json.dumps([str(k) for k in (row.keywords or [])], ensure_ascii=False)
     lines = [
         "---",
         f"name: {row.name}",
@@ -194,7 +205,7 @@ def render_pack(row: AgentSpecModel) -> str:
         f"emoji: {row.emoji or _DEFAULT_EMOJI}",
         f"color: {row.color or _DEFAULT_COLOR}",
         f"description: {_quote(row.description or '')}",
-        f"keywords: {_quote(keywords)}",
+        f"keywords: {keywords}",
         f"tools: {_quote(tools)}",
         f"sort: {int(row.sort or 0)}",
         "---",
@@ -219,8 +230,9 @@ def _diff_fields(row: AgentSpecModel, data: dict) -> list[tuple[str, str]]:
         diffs.append(("角色提示词", "角色提示词不同"))
     if list(row.keywords or []) != data["keywords"]:
         diffs.append(("关键词", "关键词不同"))
-    # 工具按「文件声明的工具是否都已在白名单」比对（导入为并集语义，不比对多出部分）
-    db_tools = set(row.tools or [])
+    # 工具按「文件声明的工具是否都已在白名单」比对（导入为并集语义，不比对多出部分）；
+    # NULL 表示默认查询工具池（见 models.AgentSpecModel），不是空集
+    db_tools = set(QUERY_TOOLS) if row.tools is None else set(row.tools)
     missing_in_db = [t for t in data["tools"] if t not in db_tools]
     if missing_in_db:
         diffs.append(("工具", "工具不同（文件有 " + "、".join(missing_in_db[:3]) + " 未入库）"))
@@ -300,7 +312,8 @@ def import_pack(name: str, db) -> dict:
             "diff": [],
         }
 
-    if row is None:
+    is_new = row is None
+    if is_new:
         row = AgentSpecModel(name=data["name"], is_builtin=False, enabled=True)
         action = "created"
     else:
@@ -314,10 +327,22 @@ def import_pack(name: str, db) -> dict:
     row.keywords = data["keywords"]
     # 工具白名单取并集：导入不缩小白名单——模块预置（preset_experts）与界面勾选
     # 授予的工具不会因导入旧文件而丢失；文件只负责「声明追加」。
-    merged = list(row.tools or [])
-    for tool in data["tools"]:
-        if tool not in merged:
-            merged.append(tool)
+    # 既有行 NULL 的语义是「默认查询工具池」（见 models.AgentSpecModel），不能
+    # `or []` 后直接写回，否则默认池专家会被导入悄悄降级成「真零工具」；
+    # 新建行没有历史白名单，按文件声明精确落库（未声明则保持 NULL 跟随默认池）。
+    if is_new:
+        merged = list(data["tools"]) or None
+    elif row.tools is None:
+        merged = None if not data["tools"] else list(QUERY_TOOLS)
+        if merged is not None:
+            for tool in data["tools"]:
+                if tool not in merged:
+                    merged.append(tool)
+    else:
+        merged = list(row.tools)
+        for tool in data["tools"]:
+            if tool not in merged:
+                merged.append(tool)
     row.tools = merged
     row.sort = data["sort"]
     db.add(row)

@@ -18,3 +18,29 @@ export function parseNotesQuery(query) {
   }
   return { q, highlight }
 }
+
+// 置顶切换计划：脏状态下禁止直接调更新接口——接口只返回服务端数据，
+// 用它覆盖 current 会静默丢掉尚未保存的标题/正文/标签。先提示保存。
+export function planPinToggle(dirty, pinned) {
+  if (dirty) {
+    return { action: 'blocked', pinned, message: '请先保存笔记，再切换置顶' }
+  }
+  return { action: 'update', pinned: !pinned, message: '' }
+}
+
+// 切换笔记是否需要弹出“放弃修改”确认。force 用于「新建」：入口已确认过一次，
+// 选中刚创建的新笔记时不得再弹第二次。
+export function needsDiscardConfirm(dirty, force = false) {
+  return Boolean(dirty) && !force
+}
+
+// 新建后若新笔记被筛选/分页隐藏（没有可定位的目标），而用户此前已确认「放弃修改并新建」，
+// 编辑器应回滚到已保存快照：否则旧草稿仍留在编辑器里，后续保存会误改原笔记。
+export function rolledBackDraft(discarded, snapshot) {
+  if (!discarded || !snapshot) return null
+  try {
+    return JSON.parse(snapshot)
+  } catch {
+    return null
+  }
+}

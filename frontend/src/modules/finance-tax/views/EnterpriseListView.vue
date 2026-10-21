@@ -69,7 +69,11 @@ async function remove(row) {
   } catch {
     return  // 用户取消
   }
-  await api.delete(`/finance/tax/enterprises/${row.id}`)
+  try {
+    await api.delete(`/finance/tax/enterprises/${row.id}`)
+  } catch {
+    return  // 拦截器已提示，删除失败不报成功、不刷新（避免把「已删除」的假象写进列表）
+  }
   ElMessage.success('已删除')
   await load()
 }

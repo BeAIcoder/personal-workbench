@@ -143,17 +143,44 @@ class NoteUpdate(BaseModel):
     tags: Optional[List[str]] = None
     pinned: Optional[bool] = None
 
+    # 四个字段在库里都是非空列：显式传 null 必须 422。
+    # 尤其 tags/pinned 在 SQLite 里没有 NOT NULL 约束，null 会被真实写入，
+    # 之后 NoteOut 校验失败会让整个笔记列表接口 500（数据被污染）。
+    @field_validator("title")
+    @classmethod
+    def _clean_title(cls, v: Optional[str]) -> str:
+        if v is None:
+            raise ValueError("标题不能为 null")
+        v = v.strip()
+        if not v:
+            raise ValueError("标题不能为空白")
+        return v
+
+    @field_validator("content")
+    @classmethod
+    def _not_null_content(cls, v: Optional[str]) -> str:
+        if v is None:
+            raise ValueError("正文不能为 null")
+        return v
+
     @field_validator("tags")
     @classmethod
-    def _clean_tags(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+    def _clean_tags(cls, v: Optional[List[str]]) -> List[str]:
         if v is None:
-            return None
+            raise ValueError("标签不能为 null")
         out: List[str] = []
         for t in v:
             t = t.strip()[:20]
             if t and t not in out:
                 out.append(t)
         return out[:10]
+
+    @field_validator("pinned")
+    @classmethod
+    def _not_null_pinned(cls, v: Optional[bool]) -> bool:
+        if v is None:
+            raise ValueError("置顶状态不能为 null")
+        return v
 
 
 class NoteOut(NoteBase):
@@ -286,7 +313,7 @@ class ScheduledJobBase(BaseModel):
     prompt: str = Field("", max_length=5000, description="到点执行的提示词（模块动作任务可空）")
     agent_name: Optional[str] = Field(None, max_length=50, description="指定专家 name；null 智能路由")
     mode: str = Field("standard", description="工作模式：standard / readonly / deep")
-    schedule_type: str = Field("interval", description="interval / daily / cron")
+    schedule_type: Literal["interval", "daily", "cron"] = Field("interval", description="interval / daily / cron")
     interval_minutes: Optional[int] = Field(None, ge=5, le=10080, description="间隔分钟（interval）")
     daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="每天执行时间 HH:MM（daily）")
     cron_expr: str = Field("", max_length=60, description="cron 五段表达式（cron）：分 时 日 月 周")
@@ -295,14 +322,18 @@ class ScheduledJobBase(BaseModel):
 
     @model_validator(mode="after")
     def _check_schedule(self):
+        # 跨类型字段归一化：只保留当前调度方式使用的字段，避免脏数据被误读
         if self.schedule_type == "daily":
             if not self.daily_at:
                 raise ValueError("daily 类型必须提供 daily_at（HH:MM）")
+            self.interval_minutes = None
         elif self.schedule_type == "cron":
             from .scheduler import validate_cron_expr  # 延迟导入，沿用 memory.recall 的先例
 
             if not validate_cron_expr(self.cron_expr or ""):
                 raise ValueError("cron 类型必须提供合法的五段 cron_expr（分 时 日 月 周；项：数字/*/a-b//n，逗号分隔）")
+            self.interval_minutes = None
+            self.daily_at = None
         else:
             if self.interval_minutes is None:
                 raise ValueError("interval 类型必须提供 interval_minutes（5-10080）")
@@ -321,7 +352,7 @@ class ScheduledJobUpdate(BaseModel):
     prompt: Optional[str] = Field(None, max_length=5000)
     agent_name: Optional[str] = Field(None, max_length=50)
     mode: Optional[str] = None
-    schedule_type: Optional[str] = None
+    schedule_type: Optional[Literal["interval", "daily", "cron"]] = None
     interval_minutes: Optional[int] = Field(None, ge=5, le=10080)
     daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     cron_expr: Optional[str] = Field(None, max_length=60)

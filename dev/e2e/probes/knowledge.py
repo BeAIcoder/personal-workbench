@@ -119,8 +119,15 @@ page = None
 
 
 def goto(route):
-    page.goto(f"{BASE}/#{route}", wait_until="networkidle", timeout=30000)
-    page.wait_for_timeout(500)
+    # hash 路由同文档导航不会重载文档；紧接 page.reload() 存在竞态：hash 尚未提交
+    # 就 reload 会重新加载旧地址（上轮 TC-KNOW-009~018 全挂的证据：失败截图停在
+    # #/notes 笔记页、server.log 在笔记接口后无任何文档请求）。在 hash 前加一次性
+    # 查询参数强制真实导航，确保组件全新挂载且地址已切到目标路由。
+    page.goto(f"{BASE}/?e2e={int(time.time() * 1000)}#{route}",
+              wait_until="networkidle", timeout=30000)
+    assert page.url.endswith(f"#{route}"), f"未导航到 {route}: {page.url}"
+    page.locator(".rag-bar").first.wait_for(state="visible", timeout=10000)
+    page.wait_for_timeout(300)
 
 
 def rag_input():
@@ -138,8 +145,13 @@ def do_rag_search(q: str, wait_ms: int = 1800):
 
 
 def open_memory_tab():
-    page.locator(".el-tabs__item", has_text="长期记忆").click()
-    page.wait_for_timeout(600)
+    page.locator(".el-tabs__item", has_text="长期记忆").first.click()
+    page.wait_for_timeout(200)
+    # 断言页签真的切过去了，避免后续 .mem-bar / tbody 因面板隐藏而 30s 超时，
+    # 把「页签未切换」与「数据未渲染」两类问题混为一谈。
+    assert page.locator(".el-tabs__item.is-active", has_text="长期记忆").count() == 1, \
+        "「长期记忆」页签点击后未激活"
+    page.locator(".mem-bar").first.wait_for(state="visible", timeout=5000)
 
 
 def mem_rows():

@@ -703,9 +703,13 @@ def run_probes():
     record("TC-FIV-113", "无 LIMIT 查询强制截断至 1000 行", tc_113_truncate_no_limit)
 
     def tc_114_limit_rewrite():
+        # 上一条用例的卡片已是「1000 行（已截断）」，同表同结果会让 _run_sql 的
+        # 「卡片文本必须变化」刷新判定失效（假失败）；先重回查询页清空卡片再执行。
+        goto(page, "/finance/vault/query")
         _run_sql("SELECT * FROM t_big LIMIT 999999", expect_ok=True)
         card = page.locator(".el-card", has_text="结果：").last
         assert "已截断" in card.inner_text(), "LIMIT 999999 应被改写并截断"
+        assert "1000 行" in card.inner_text(), f"截断行数异常：{card.inner_text()[:60]}"
     record("TC-FIV-114", "LIMIT 超上限改写截断", tc_114_limit_rewrite)
 
     def tc_115_empty_sql_noop():
@@ -737,6 +741,9 @@ def run_probes():
 
     def tc_118_corrupt_xlsx_400():
         goto(page, "/finance/vault")
+        inbox = FIN_DIR / "finance_vault" / "inbox"
+        # inbox 对成功上传留档是设计行为，只能断言「失败上传不新增留档」（前后快照对比）
+        before = {p.name for p in inbox.iterdir()} if inbox.exists() else set()
         page.locator("button", has_text="上传入仓").first.click()
         wait_visible(page, ".el-dialog:visible")
         page.locator(".el-dialog:visible .el-input input").first.fill("t_bad_zipmagic")
@@ -745,9 +752,9 @@ def run_probes():
         assert wait_toast(page, "文件解析失败"), "损坏 xlsx 未给出 400 级提示（疑 500）"
         page.wait_for_timeout(600)
         assert page.locator("tr", has_text="t_bad_zipmagic").count() == 0, "损坏文件不应入仓"
-        inbox = FIN_DIR / "finance_vault" / "inbox"
-        leftovers = list(inbox.iterdir()) if inbox.exists() else []
-        assert not leftovers, f"失败上传不应在 inbox 留档：{leftovers}"
+        after = {p.name for p in inbox.iterdir()} if inbox.exists() else set()
+        new_files = sorted(after - before)
+        assert not new_files, f"失败上传不应在 inbox 新增留档：{new_files}"
     record("TC-FIV-118", "损坏 xlsx（ZIP 魔数残缺）→ 400 而非 500", tc_118_corrupt_xlsx_400)
 
     def tc_119_append_column_mismatch_400():

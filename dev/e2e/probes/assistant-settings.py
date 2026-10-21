@@ -82,6 +82,50 @@ page_errors = []
 failed_reqs = []
 
 
+def cleanup_after_failure():
+    """失败兜底：关闭遗留的确认框/下拉/对话框，避免遮罩让后续用例级联超时。
+
+    只在用例失败后执行（成功用例按自身流程收尾），先截图保留现场再清理；
+    清理本身的异常不得覆盖原始断言失败。注意不要按 ESC：Element Plus 的
+    select/dialog/drawer 都监听 ESC，会连带把设置抽屉关掉，反而污染后续用例。
+    """
+    if page is None:
+        return
+    try:
+        # 1) 确认框（删除/探测确认）：点「取消」或右上角 X
+        box = page.locator(".el-message-box:visible").first
+        if box.count():
+            btn = box.locator("button", has_text="取消")
+            if not btn.count():
+                btn = box.locator(".el-message-box__headerbtn")
+            if btn.count():
+                btn.first.click(timeout=1500)
+                page.wait_for_timeout(250)
+        # 2) 下拉浮层：点对话框/抽屉标题（clickoutside），避免 ESC 连抽屉一起关
+        if page.locator(".el-select-dropdown:visible").count():
+            neutral = page.locator(".el-dialog:visible .el-dialog__title").last
+            if not neutral.count():
+                neutral = page.locator(".el-drawer:visible .el-drawer__title").first
+            if neutral.count():
+                neutral.click(timeout=1500)
+                page.wait_for_timeout(250)
+        # 3) 表单对话框（供应商/模型/专家）：优先「取消」，否则右上角 X
+        for _ in range(3):
+            dlgs = page.locator(".el-dialog:visible")
+            if not dlgs.count():
+                break
+            dlg = dlgs.last
+            btn = dlg.locator(".el-dialog__footer button", has_text="取消")
+            if not btn.count():
+                btn = dlg.locator(".el-dialog__headerbtn")
+            if not btn.count():
+                break
+            btn.first.click(timeout=1500)
+            page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+
 def record(tid, name, fn):
     try:
         fn()
@@ -96,6 +140,7 @@ def record(tid, name, fn):
                 page.screenshot(path=str(SHOTS / f"{tid}.png"))
         except Exception:
             pass
+        cleanup_after_failure()
 
 
 def api(method, path, payload=None, timeout=60):
@@ -147,6 +192,16 @@ def confirm_box(btn_text="确定"):
 
 def wait_toast(text, timeout=6000):
     page.locator(".el-message", has_text=text).first.wait_for(state="visible", timeout=timeout)
+
+
+def wait_class(locator, name, timeout=6000):
+    """轮询等待元素 class 出现目标类（父组件异步刷新回填场景），timeout 单位毫秒。"""
+    deadline = time.time() + timeout / 1000
+    while time.time() < deadline:
+        if name in (locator.get_attribute("class") or "").split():
+            return True
+        page.wait_for_timeout(150)
+    return False
 
 
 def open_drawer():
@@ -593,7 +648,7 @@ try:
         def tc_skills_detect_missing():
             fill_input(drawer(), "技能池目录", str(RESULTS / "no_such_dir_xyz"))
             drawer().locator("button", has_text="检测").first.click()
-            hint = drawer().locator(".cfg-hint", has_text="技能").first
+            hint = form_item(drawer(), "技能池目录").locator(".cfg-hint").first
             hint.wait_for(state="visible", timeout=10000)
             txt = hint.inner_text()
             assert "未发现技能" in txt or "目录不存在" in txt, f"检测无结论: {txt[:80]}"
@@ -602,8 +657,8 @@ try:
         def tc_skills_detect_hit():
             fill_input(drawer(), "技能池目录", str(SKILLS_POOL))
             drawer().locator("button", has_text="检测").first.click()
-            hint = drawer().locator(".cfg-hint", has_text="发现").first
-            hint.wait_for(state="visible", timeout=10000)
+            hint = form_item(drawer(), "技能池目录").locator(".cfg-hint").first
+            hint.filter(has_text="probe-skill").wait_for(state="visible", timeout=10000)
             assert "probe-skill" in hint.inner_text(), f"未发现夹具技能: {hint.inner_text()[:80]}"
         record("AS-GLOB-003", "技能池检测（含 SKILL.md）：发现技能清单", tc_skills_detect_hit)
 
@@ -627,7 +682,8 @@ try:
             switch_tab("工作参数")
             v = form_item(drawer(), "最大工具轮次").locator("input").first.input_value()
             assert v == "8", f"重开抽屉未回填已保存值: {v}"
-            assert form_item(drawer(), "启用技能").locator(".el-switch").get_attribute("aria-checked") == "true", "启用技能开关未回填"
+            skills_switch = form_item(drawer(), "启用技能").locator(".el-switch")
+            assert wait_class(skills_switch, "is-checked"), "启用技能开关未回填"
         record("AS-GLOB-005", "重开抽屉：工作参数回填已保存值", tc_globals_reload_values)
 
         def tc_plugins_detect_missing():
@@ -648,11 +704,14 @@ try:
             st, _ = api("POST", "/api/assistant/providers", {"name": "边界供应商", "base_url": UNREACHABLE})
             pid = _["provider"]["id"]
             st, body = api("POST", f"/api/assistant/providers/{pid}/models", {"model": ""})
-            assert st == 400, f"空模型名应 400，实际 {st}"
+            # 空模型名是请求体 schema 校验（min_length=1），按 API.md 错误约定为 422；
+            # 业务校验（供应商不存在 / 名称去空白后为空）才是 400。
+            assert st == 422, f"空模型名属参数校验应 422，实际 {st}"
+            assert body.get("detail"), "422 响应应包含 detail"
             st, body = api("POST", f"/api/assistant/providers/99999/models", {"model": "x"})
             assert st == 400, f"不存在供应商应 400，实际 {st}"
             api("DELETE", f"/api/assistant/providers/{pid}")
-        record("AS-API-002", "空模型名 / 不存在供应商 → 400", tc_api_model_empty_name)
+        record("AS-API-002", "空模型名 → 422（schema）/ 不存在供应商 → 400", tc_api_model_empty_name)
 
         def tc_api_reasoning_effort_normalize():
             st, _ = api("PUT", "/api/assistant/config", {"reasoning_effort": "bogus-level"})

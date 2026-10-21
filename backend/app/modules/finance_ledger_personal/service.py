@@ -390,6 +390,9 @@ def list_transactions(
     total = q.count()
     page = max(1, int(page))
     page_size = max(1, min(int(page_size), 5000))
+    if (page - 1) * page_size > total:
+        # 超大页码不应把巨大 offset 传给 SQLite（会溢出报错），直接返回空列表
+        return total, []
     rows = (
         q.order_by(PlTransaction.occurred_on.desc(), PlTransaction.id.desc())
         .offset((page - 1) * page_size)
@@ -524,10 +527,11 @@ def put_budgets(db: Session, payload) -> dict:
             if cat.kind != "expense" or cat.parent_id is not None:
                 raise ValueError("预算仅支持一级支出分类（或总预算）")
         amounts[cid] = round(float(item.amount), 2)
+    # 先算好全部待写数据，再执行删除 + 插入，保证校验失败时不留半删除状态
+    pending = [(cid, amt) for cid, amt in amounts.items() if amt > 0]
     db.query(PlBudget).filter(PlBudget.month == m).delete()
-    for cid, amt in amounts.items():
-        if amt > 0:
-            db.add(PlBudget(month=m, category_id=cid, amount=amt))
+    for cid, amt in pending:
+        db.add(PlBudget(month=m, category_id=cid, amount=amt))
     db.commit()
     return get_budgets(db, m)
 
@@ -666,7 +670,7 @@ def import_csv(db: Session, content: bytes) -> dict:
                 )
             )
             imported += 1
-        except ValueError as e:
+        except Exception as e:  # noqa: BLE001 坏行只跳过不中断整批导入
             if len(errors) < 10:
                 errors.append(f"第{line_no}行：{e}")
     db.commit()

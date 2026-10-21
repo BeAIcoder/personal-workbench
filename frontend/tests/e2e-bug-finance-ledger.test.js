@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { canConfirmImport, mappingFields } from '../src/modules/finance-ledger-bip/importForm'
-import { categoryMatchesKind, formatPercent } from '../src/modules/finance-ledger-personal/utils'
+import { categoryMatchesKind, expenseCategories, formatPercent } from '../src/modules/finance-ledger-personal/utils'
 
 // 探测发现的 bug 回归（dev/e2e/probes/finance-ledger.py 真实浏览器复现）：
 // 1) BIP 导入向导：无法识别类型的文件，人工指定类型后前端不渲染列映射下拉，
@@ -62,6 +62,20 @@ describe('e2e-bug-finance-ledger：统计占比口径', () => {
     expect(formatPercent(12.34)).toBe('12.3')
     expect(formatPercent(undefined)).toBe('0.0')
     expect(formatPercent(null)).toBe('0.0')
+  })
+})
+
+describe('e2e-bug-finance-ledger：统计页支出构成', () => {
+  it('expenseCategories 只保留支出分类，收入分类不得混入', () => {
+    const rows = [
+      { name: '餐饮', kind: 'expense', amount: 100 },
+      { name: '工资', kind: 'income', amount: 1000 },
+      { name: '交通', kind: 'expense', amount: 20 },
+    ]
+    expect(expenseCategories(rows).map((r) => r.name)).toEqual(['餐饮', '交通'])
+    expect(expenseCategories(undefined)).toEqual([])
+    expect(expenseCategories(null)).toEqual([])
+    expect(expenseCategories('bad')).toEqual([])
   })
 })
 

@@ -69,6 +69,33 @@ def test_b1_export_pdf_ok_and_rfc5987_filename(client, monkeypatch):
     assert quote("测试修复科技有限公司") in cd
 
 
+def test_b1_export_pdf_real_renderer_available(client):
+    """PDF 导出依赖回归：reportlab 必须在 requirements 中（缺失时接口 500）。"""
+    eid = _create_enterprise(client, tax_number="91110108BUGFIX0003")
+    rid = _create_return(client, eid)
+    r = client.get(f"{P}/tax-returns/{rid}/export/pdf")
+    assert r.status_code == 200, r.text
+    assert r.content.startswith(b"%PDF-")
+    assert "filename*=UTF-8''" in r.headers["content-disposition"]
+
+
+def test_b1_download_headers_strips_crlf_injection():
+    """CR/LF 是 ASCII，不会被 encode('ascii','ignore') 丢掉；进响应头即头注入。"""
+    from app.modules.finance_tax.routers.tax_returns import _download_headers
+
+    cd = _download_headers('A200000_x\r\nX-Injected: 1.xlsx')["Content-Disposition"]
+    assert "\r" not in cd and "\n" not in cd
+    assert cd.count("attachment;") == 1
+    assert 'filename="A200000_xX-Injected: 1.xlsx"' in cd
+    # 引号/反斜杠同样剔除，避免闭合 filename 引号
+    cd2 = _download_headers('a"b\\c.xlsx')["Content-Disposition"]
+    assert 'filename="abc.xlsx"' in cd2
+    # 纯中文且无扩展名：回退名必须是纯 ASCII（原实现会把中文拼回去再崩 latin-1）
+    cd3 = _download_headers("年度报表")["Content-Disposition"]
+    assert 'filename="A200000.xlsx"' in cd3
+    assert quote("年度报表") in cd3
+
+
 # ---------------- B2：创建申报记录 tax_period/quarter 无校验 500 ----------------
 
 def test_b2_create_return_invalid_tax_period_422(client):

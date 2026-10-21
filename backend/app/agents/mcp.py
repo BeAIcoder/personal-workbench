@@ -248,11 +248,12 @@ def start_all_from_db() -> dict:
 
 def stop_all() -> None:
     with _manager_lock:
-        for server in _servers.values():
+        for name, server in _servers.items():
             try:
                 server.stop()
             except Exception:  # noqa: BLE001
                 pass
+            _unregister_server_tools(name)
         _servers.clear()
 
 
@@ -260,8 +261,32 @@ def _tool_name(server: str, tool: str) -> str:
     return f"mcp_{server}__{tool}"
 
 
+def _tool_readonly(tool: dict) -> bool:
+    """只读判定：以 MCP annotations.readOnlyHint 为唯一放行依据，缺省视为可写。
+
+    名称启发式（不含 write/create/...）容易被任意命名绕过，不能作为放行依据；
+    未声明注解的工具在只读模式下保守拒绝，宁可少用不可越权。
+    """
+    annotations = tool.get("annotations")
+    if isinstance(annotations, dict):
+        hint = annotations.get("readOnlyHint")
+        if isinstance(hint, bool):
+            return hint
+    return False
+
+
+def _unregister_server_tools(server_name: str) -> None:
+    """移除某服务器注册过的全部工具（重连/改名/删除后避免 TOOL_SPECS 残留旧 schema）。"""
+    from .tools import TOOL_SPECS
+
+    prefix = _tool_name(server_name, "")
+    for name in [n for n in TOOL_SPECS if n.startswith(prefix)]:
+        TOOL_SPECS.pop(name, None)
+
+
 def _register_server_tools(server: McpStdioServer, register) -> None:
-    """把服务器工具注册进 TOOL_SPECS（只读标记按工具名启发式推断）。"""
+    """把服务器工具注册进 TOOL_SPECS（覆盖同名旧定义；只读以 annotations 为准）。"""
+    _unregister_server_tools(server.name)
     specs: dict[str, dict] = {}
     for tool in server.tools:
         name = tool.get("name")
@@ -279,13 +304,12 @@ def _register_server_tools(server: McpStdioServer, register) -> None:
             params[pname] = (ptype, str(pspec.get("description") or "")[:200], pname in (schema.get("required") or []))
             if pname in (schema.get("required") or []):
                 required.append(pname)
-        readonly = not any(k in name.lower() for k in ("write", "create", "delete", "update", "move", "rename", "send", "post"))
         specs[_tool_name(server.name, name)] = {
             "func": _make_executor(server.name, name),
             "description": f"[MCP:{server.name}] {str(tool.get('description') or name)[:200]}",
             "params": params,
             "required": required,
-            "readonly": readonly,
+            "readonly": _tool_readonly(tool),
         }
     register(specs)
 
@@ -338,6 +362,10 @@ def create_server(db: Session, name: str, command: str, args: list[str],
     name = (name or "").strip()
     if not name or not command.strip():
         raise ValueError("name 与 command 必填")
+    # 工具名按 mcp_<服务器名>__<工具名> 拼接，「断开/重连时按前缀清理旧工具」依赖
+    # 名字里没有 __ 才能唯一切分；否则删除服务器 a__b 会连带清掉 a 的 b__* 工具。
+    if "__" in name:
+        raise ValueError("服务器名不能包含连续下划线 __（会与工具前缀冲突，导致其他服务器工具被误删）")
     if db.query(McpServer).filter(McpServer.name == name).first():
         raise ValueError(f"服务器名已存在：{name}")
     row = McpServer(name=name, command=command.strip(), args=args or [],
@@ -357,6 +385,7 @@ def update_server(db: Session, server_id: int, data: dict) -> dict:
         running = _servers.pop(row.name, None)
     if running:
         running.stop()
+    _unregister_server_tools(row.name)
     for field in ("command", "args", "env", "enabled"):
         if field in data and data[field] is not None:
             setattr(row, field, data[field])
@@ -374,6 +403,7 @@ def delete_server(db: Session, server_id: int) -> None:
         server = _servers.pop(row.name, None)
     if server:
         server.stop()
+    _unregister_server_tools(row.name)
     db.delete(row)
     db.commit()
 
@@ -389,6 +419,8 @@ def connect_server(db: Session, server_id: int) -> dict:
         old = _servers.pop(row.name, None)
     if old:
         old.stop()
+    # 先清掉旧工具：连接失败时注册表里不能留下可调用的陈旧定义
+    _unregister_server_tools(row.name)
     try:
         server = _row_to_server(row)
         server.start()
@@ -416,6 +448,7 @@ def disconnect_server(db: Session, server_id: int) -> dict:
         server = _servers.pop(row.name, None)
     if server:
         server.stop()
+    _unregister_server_tools(row.name)
     row.status = "stopped"
     db.commit()
     db.refresh(row)

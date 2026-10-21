@@ -110,6 +110,15 @@ def test_provider_model_requires_valid_provider(client):
     assert resp.status_code == 400
 
 
+def test_provider_model_empty_name_is_schema_validation_422(client):
+    """空模型名命中请求体 min_length=1，按 API.md 错误约定返回 422 而非业务 400。"""
+    pid = _mk_provider(client)
+    resp = client.post(f"/api/assistant/providers/{pid}/models", json={"model": ""})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail and detail[0]["loc"][-1] == "model"
+
+
 def test_models_flat_skips_disabled(client):
     pid = _mk_provider(client)
     m1 = client.post(f"/api/assistant/providers/{pid}/models", json={"model": "mma"}).json()["model"]["id"]

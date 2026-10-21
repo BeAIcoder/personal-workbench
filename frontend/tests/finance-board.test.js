@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { getModuleMenus, getModuleRoutes } from '../src/modules'
 import manifest from '../src/modules/finance-board/manifest'
+import { shouldReloadAfterRun } from '../src/modules/finance-board/utils'
 
 describe('finance-board 模块注册', () => {
   it('manifest 基本字段（name/title/menu）', () => {
@@ -30,5 +32,23 @@ describe('finance-board 模块注册', () => {
     expect(item.group).toBe('财务')
     expect(item.icon).toBe('DataBoard')
     expect(item.order).toBe(70)
+  })
+})
+
+describe('finance-board 管线失败后的列表刷新', () => {
+  it('有 HTTP 响应（如管线 503/409）时重拉快照，网络中断则保留旧列表', () => {
+    expect(shouldReloadAfterRun({ response: { status: 503 } })).toBe(true)
+    expect(shouldReloadAfterRun({ response: { status: 409 } })).toBe(true)
+    expect(shouldReloadAfterRun(new Error('Network Error'))).toBe(false)
+    expect(shouldReloadAfterRun(undefined)).toBe(false)
+  })
+
+  it('run() 的失败分支确实调用 load()（failed 快照立即可见）', () => {
+    const src = readFileSync(
+      new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
+      'utf8',
+    )
+    const runBody = src.match(/async function run\(\) \{[\s\S]*?\n\}/)?.[0] || ''
+    expect(runBody).toContain('if (shouldReloadAfterRun(err)) await load()')
   })
 })

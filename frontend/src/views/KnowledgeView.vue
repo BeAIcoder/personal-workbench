@@ -177,8 +177,12 @@ async function removeMem(row) {
   } catch {
     return  // 用户取消
   }
-  await api.delete(`/knowledge/memories/${row.id}`)
-  await loadMemories()
+  try {
+    await api.delete(`/knowledge/memories/${row.id}`)
+    await loadMemories()
+  } catch {
+    /* 拦截器已提示 */
+  }
 }
 
 onMounted(() => {

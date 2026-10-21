@@ -1,7 +1,14 @@
 """通用工具函数。"""
+import json
 from datetime import date, datetime, time
+from typing import Annotated
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Path
+
+# SQLite 主键是 int64：路径里传超出范围的 ID 会在驱动层抛 OverflowError
+# （「Python int too large to convert to SQLite INTEGER」），穿透成 500 + 堆栈。
+# 所有 /{id} 型接口统一用这个入口约束，越界直接 422，不给客户端 500。
+DbId = Annotated[int, Path(ge=1, le=2**63 - 1, description="数据库主键（1 ~ int64 上限）")]
 
 
 def parse_dt(value: str, end_of_day: bool = False) -> datetime:
@@ -34,5 +41,11 @@ def escape_like(value: str) -> str:
 
 
 def tag_like_pattern(tag: str) -> str:
-    """笔记标签（JSON 数组形如 ["报销"]）的 LIKE 匹配模式，特殊字符已转义。"""
-    return f'%"{escape_like(tag)}"%'
+    """笔记标签（JSON 数组）的 LIKE 匹配模式。
+
+    先把标签序列化成 JSON 字符串元素（含两侧引号，引号/反斜杠按 JSON 规则转义，
+    如 a"b → "a\\"b"），再做 LIKE 元字符转义。这样含引号/反斜杠的标签也能按字面命中，
+    而不会被 JSON 编码差异误伤。
+    """
+    encoded = json.dumps(tag, ensure_ascii=False)
+    return f"%{escape_like(encoded)}%"

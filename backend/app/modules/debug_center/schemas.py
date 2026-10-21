@@ -1,5 +1,5 @@
 """debug_center 模块请求 / 响应模型（Pydantic v2）。"""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # 问题记录的枚举取值（与 service 保持一致）
 SEVERITIES = ("P0", "P1", "P2", "P3")
@@ -16,6 +16,15 @@ class IssueCreate(BaseModel):
     description: str = Field(default="", max_length=4000)
     evidence: str = Field(default="", max_length=200, description="证据（如 run_id），可空")
 
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, v: str) -> str:
+        """纯空白标题 min_length 拦不住（服务层还会 strip 成空串），这里直接 422。"""
+        v = v.strip()
+        if not v:
+            raise ValueError("标题不能为空白")
+        return v
+
 
 class IssueUpdate(BaseModel):
     """更新问题：所有字段可选，未传的保持不变。"""
@@ -27,3 +36,13 @@ class IssueUpdate(BaseModel):
     page: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=4000)
     evidence: str | None = Field(default=None, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("标题不能为空白")
+        return v

@@ -36,6 +36,10 @@ CLIENT_ERRORS_FILE = "client_errors.jsonl"
 RUNS_DIR = "runs"
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
 OPEN_STATUSES = ("open", "in_progress")
+# 前端报错文件体积护栏：单条最长约 6KB（message 2000 + stack 4000 + ua 300），
+# 保留 1000 条最坏约 6MB；阈值取 10MB，保证「裁剪一次后不会立刻再次触发裁剪」。
+CLIENT_ERRORS_KEEP_LINES = 1000
+CLIENT_ERRORS_MAX_BYTES = 10_000_000
 
 # issues.json 读-改-写锁：_atomic_write_json 只防撕裂不防丢更新，
 # create/update/delete 的 load→改→save 临界区须串行化（并发写会丢更新，
@@ -349,6 +353,30 @@ def _client_errors_path() -> Path:
     return data_dir() / CLIENT_ERRORS_FILE
 
 
+def _rotate_client_errors(path: Path) -> None:
+    """把 client_errors.jsonl 裁剪到最近 CLIENT_ERRORS_KEEP_LINES 条（原子替换）。
+
+    触发条件见 append_client_error：报错采集是「只增」的 jsonl，页面若持续抛错
+    会无上限增长，而 list/count 每次都要全文扫描，越积越慢。
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            lines = [ln.rstrip("\n") for ln in f if ln.strip()]
+    except OSError:
+        logger.warning("%s 裁剪前读取失败，跳过本次裁剪", path, exc_info=True)
+        return
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text("\n".join(lines[-CLIENT_ERRORS_KEEP_LINES:]) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def append_client_error(payload: Any) -> dict:
     """追加一条前端报错。宽容解析：任何非法输入都归一成结构化记录，绝不抛异常。"""
     if not isinstance(payload, dict):
@@ -364,6 +392,12 @@ def append_client_error(payload: Any) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    try:
+        # 体积超阈值才裁剪：常规追加保持 O(1)
+        if path.stat().st_size > CLIENT_ERRORS_MAX_BYTES:
+            _rotate_client_errors(path)
+    except OSError:
+        logger.warning("%s 裁剪失败（不影响本次上报）", path, exc_info=True)
     return entry
 
 

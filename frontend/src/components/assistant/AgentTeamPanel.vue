@@ -240,8 +240,10 @@ const form = reactive({
 })
 const nameError = ref('')
 
-function openForm(a) {
+async function openForm(a) {
   nameError.value = ''
+  // 打开表单前刷新模型下拉：供应商页刚新增的模型无需关闭/重开抽屉即可绑定
+  await loadModels()
   if (a) {
     Object.assign(form, {
       visible: true,

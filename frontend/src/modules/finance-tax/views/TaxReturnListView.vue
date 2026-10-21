@@ -78,7 +78,11 @@ async function submit(row) {
   } catch {
     return  // 用户取消
   }
-  await api.put(`/finance/tax/tax-returns/${row.id}/submit`)
+  try {
+    await api.put(`/finance/tax/tax-returns/${row.id}/submit`)
+  } catch {
+    return  // 拦截器已提示，提交失败不报成功
+  }
   ElMessage.success('已提交')
   await reload()
 }
@@ -88,8 +92,12 @@ function exportFile(id, kind) {
 }
 
 onMounted(async () => {
-  const { data } = await api.get('/finance/tax/enterprises/')
-  enterprises.value = data
+  try {
+    const { data } = await api.get('/finance/tax/enterprises/')
+    enterprises.value = data
+  } catch {
+    // 拦截器已提示；企业列表拉不到时筛选项留空，仍继续加载申报列表
+  }
   await reload()
 })
 </script>

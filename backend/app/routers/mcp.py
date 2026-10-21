@@ -14,6 +14,7 @@ from ..agents.mcp import (
     update_server,
 )
 from ..database import get_db
+from ..utils import DbId
 
 router = APIRouter(prefix="/mcp", tags=["MCP 工具"])
 
@@ -52,7 +53,7 @@ def create(payload: McpServerIn, db: Session = Depends(get_db)):
 
 
 @router.put("/servers/{server_id}", summary="更新 MCP 服务器")
-def update(server_id: int, payload: McpServerUpdate, db: Session = Depends(get_db)):
+def update(server_id: DbId, payload: McpServerUpdate, db: Session = Depends(get_db)):
     try:
         return update_server(db, server_id, payload.model_dump(exclude_unset=True))
     except LookupError as exc:
@@ -62,7 +63,7 @@ def update(server_id: int, payload: McpServerUpdate, db: Session = Depends(get_d
 
 
 @router.delete("/servers/{server_id}", summary="删除 MCP 服务器")
-def delete(server_id: int, db: Session = Depends(get_db)):
+def delete(server_id: DbId, db: Session = Depends(get_db)):
     try:
         delete_server(db, server_id)
     except LookupError as exc:
@@ -71,7 +72,7 @@ def delete(server_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/servers/{server_id}/connect", summary="连接服务器并注册其工具")
-def connect(server_id: int, db: Session = Depends(get_db)):
+def connect(server_id: DbId, db: Session = Depends(get_db)):
     try:
         return connect_server(db, server_id)
     except LookupError as exc:
@@ -81,7 +82,7 @@ def connect(server_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/servers/{server_id}/disconnect", summary="断开服务器")
-def disconnect(server_id: int, db: Session = Depends(get_db)):
+def disconnect(server_id: DbId, db: Session = Depends(get_db)):
     try:
         return disconnect_server(db, server_id)
     except LookupError as exc:
@@ -89,7 +90,7 @@ def disconnect(server_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/servers/{server_id}/test-call", summary="测试调用服务器工具")
-def call(server_id: int, payload: TestCallIn, db: Session = Depends(get_db)):
+def call(server_id: DbId, payload: TestCallIn, db: Session = Depends(get_db)):
     from ..models import McpServer
 
     row = db.get(McpServer, server_id)

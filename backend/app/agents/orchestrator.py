@@ -152,7 +152,8 @@ def _readonly_tool_names() -> set[str]:
     readonly 标记由模块 manifest（modules/spec.py 契约）与 MCP 工具注册（mcp.py）
     写入 TOOL_SPECS；构建时实时汇总，模块/MCP 注册变化即时生效。
     """
-    return set(QUERY_TOOLS) | {name for name, spec in TOOL_SPECS.items() if spec.get("readonly")}
+    # 快照迭代：MCP 连接/断开会在请求线程里增删 TOOL_SPECS
+    return set(QUERY_TOOLS) | {name for name, spec in list(TOOL_SPECS.items()) if spec.get("readonly")}
 
 
 async def _build_agent(spec: AgentSpec, mode: str = "standard"):
@@ -352,6 +353,10 @@ def _touch_session(session_id: str, first_message: str | None = None) -> None:
                 title = (first_message or "新会话").strip().replace("\n", " ")[:30]
                 db.add(AgentSession(session_id=session_id, title=title))
             else:
+                # 界面「新建」先建了一个空会话（标题「新会话」），首条消息到达时补标题；
+                # 用户手动改名后的标题不再覆盖
+                if first_message and (row.title or "").strip() in ("", "新会话"):
+                    row.title = first_message.strip().replace("\n", " ")[:30] or row.title
                 row.updated_at = datetime.now()
             db.commit()
     except OperationalError:

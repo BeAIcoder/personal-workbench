@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Schedule
 from ..schemas import Page, ScheduleCreate, ScheduleOut, ScheduleUpdate
-from ..utils import parse_dt
+from ..utils import DbId, parse_dt
 
 router = APIRouter(prefix="/schedules", tags=["日程管理"])
 
@@ -64,12 +64,12 @@ def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{schedule_id}", response_model=ScheduleOut, summary="日程详情")
-def get_schedule(schedule_id: int, db: Session = Depends(get_db)):
+def get_schedule(schedule_id: DbId, db: Session = Depends(get_db)):
     return _get_or_404(db, schedule_id)
 
 
 @router.put("/{schedule_id}", response_model=ScheduleOut, summary="更新日程（仅传需要修改的字段）")
-def update_schedule(schedule_id: int, payload: ScheduleUpdate, db: Session = Depends(get_db)):
+def update_schedule(schedule_id: DbId, payload: ScheduleUpdate, db: Session = Depends(get_db)):
     schedule = _get_or_404(db, schedule_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(schedule, field, value)
@@ -83,7 +83,7 @@ def update_schedule(schedule_id: int, payload: ScheduleUpdate, db: Session = Dep
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除日程")
-def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
+def delete_schedule(schedule_id: DbId, db: Session = Depends(get_db)):
     schedule = _get_or_404(db, schedule_id)
     db.delete(schedule)
     db.commit()

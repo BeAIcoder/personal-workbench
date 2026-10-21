@@ -151,12 +151,29 @@ def active_page():
     return page.locator(".el-pager li.is-active").inner_text()
 
 
+def _select_text(index):
+    """读取 el-select 的实际展示文案（Element Plus 2.x 把选中项也渲染在 .el-select__placeholder 内）。
+
+    旧实现拿「整个控件文本 == placeholder 文本」判断空值，选中后两者仍相等，
+    会恒返回空串（TASKS-UI-013/024 误报）。这里直接读展示 span，并黑名单掉
+    未选中时的占位文案。
+    """
+    sel = page.locator(".filters .el-select").nth(index)
+    span = sel.locator(".el-select__placeholder span")
+    if span.count():
+        text = span.first.inner_text().strip()
+    else:
+        ph = sel.locator(".el-select__placeholder")
+        text = ph.first.inner_text().strip() if ph.count() else ""
+    return "" if text in ("", "状态", "优先级", "全部状态", "全部优先级") else text
+
+
 def sort_select_value():
-    return page.locator(".filters .el-select").nth(2).locator("input").input_value()
+    return _select_text(2)
 
 
 def status_select_value():
-    return page.locator(".filters .el-select").nth(0).locator("input").input_value()
+    return _select_text(0)
 
 
 try:
@@ -735,12 +752,14 @@ try:
             row("AI分析-目标任务").locator("button").first.click()
             page.wait_for_timeout(900)
             url = page.url
-            assert "/#/assistant" in url and "auto=" in url, f"AI 分析未跳转助手: {url}"
-            import urllib.parse
-            qs = urllib.parse.parse_qs(url.split("?", 1)[1])
-            prompt = qs.get("auto", [""])[0]
+            assert "/#/assistant" in url, f"AI 分析未跳转助手: {url}"
+            # auto 参数由 AssistantView 消费后按设计清理（progress.md：发送后清除 URL 参数），
+            # 原断言在 900ms 后再查 URL 必然拿不到参数；改为校验指令确实送达对话区。
+            bubble = page.locator(".user-bubble", has_text="AI分析-目标任务")
+            bubble.first.wait_for(state="visible", timeout=5000)
+            prompt = bubble.first.inner_text()
             assert "AI分析-目标任务" in prompt, f"跳转 prompt 未携带任务标题: {prompt[:80]}"
-            return "AI 分析携带任务信息跳转助手页"
+            return "AI 分析携带任务信息跳转助手页并自动发送"
         record("TASKS-UI-026", "AI 分析跳转", probe_ui_ai_analyze)
 
         def probe_ui_xss_title():

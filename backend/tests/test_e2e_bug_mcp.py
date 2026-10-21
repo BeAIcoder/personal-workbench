@@ -13,7 +13,8 @@ import textwrap
 import pytest
 
 from app.agents import mcp as mcp_agent
-from app.agents.mcp import McpError, connect_server, create_server, delete_server, update_server
+from app.agents.mcp import McpError, connect_server, create_server, delete_server, disconnect_server, update_server
+from app.agents.tools import TOOL_SPECS
 from app.database import SessionLocal
 
 P = "/api/mcp"
@@ -115,12 +116,46 @@ def test_update_stops_running_instance(db, fake_server):
         assert out["status"] == "connected"
         assert name in mcp_agent._servers
         assert mcp_agent._servers[name].is_alive()
+        tool_name = f"mcp_{name}__echo"
+        assert tool_name in TOOL_SPECS
         update_server(db, sid, {"command": sys.executable})
         assert name not in mcp_agent._servers, "旧实例未停"
+        assert tool_name not in TOOL_SPECS, "旧工具未从注册表移除（重连后可能残留旧 schema）"
         row = db.query(mcp_agent.McpServer).filter(mcp_agent.McpServer.name == name).first()
         assert row.status == "stopped"
     finally:
         _cleanup(name)
+
+
+def test_disconnect_and_delete_unregister_tools(db, fake_server):
+    """断开/删除后注册表不得残留 mcp_<name>__ 前缀工具。"""
+    name = "guardunreg"
+    _cleanup(name)
+    try:
+        create_server(db, name, sys.executable, [str(fake_server)], {}, True)
+        sid = db.query(mcp_agent.McpServer).filter(mcp_agent.McpServer.name == name).first().id
+        tool_name = f"mcp_{name}__echo"
+        connect_server(db, sid)
+        assert tool_name in TOOL_SPECS
+        disconnect_server(db, sid)
+        assert tool_name not in TOOL_SPECS, "断开后工具残留"
+        connect_server(db, sid)
+        assert tool_name in TOOL_SPECS
+        delete_server(db, sid)
+        assert tool_name not in TOOL_SPECS, "删除后工具残留"
+    finally:
+        _cleanup(name)
+
+
+def test_mcp_readonly_annotations_are_authoritative():
+    """只读以 annotations.readOnlyHint 为准；无注解默认视为可写（default-deny）。"""
+    assert mcp_agent._tool_readonly({"name": "search", "annotations": {"readOnlyHint": True}}) is True
+    assert mcp_agent._tool_readonly({"name": "search"}) is False, "无注解不得按名称放行"
+    assert mcp_agent._tool_readonly({"name": "no_hint", "annotations": {}}) is False
+    # 注解优先于名称：写了 readOnlyHint=False 的查询类工具也不放行
+    assert mcp_agent._tool_readonly({"name": "query", "annotations": {"readOnlyHint": False}}) is False
+    # 名称带危险词但服务器显式声明只读：以服务器声明为准
+    assert mcp_agent._tool_readonly({"name": "delete_preview", "annotations": {"readOnlyHint": True}}) is True
 
 
 def test_test_call_requires_connection(db, fake_server):

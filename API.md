@@ -3,7 +3,7 @@
 - Base URL：`http://127.0.0.1:8000/api`
 - 数据格式：JSON（UTF-8）；时间一律 ISO 8601（如 `2026-09-08T09:30:00`，也接受 `2026-09-08` 日期形式）
 - 在线调试：启动后访问 <http://127.0.0.1:8000/docs>（Swagger UI）
-- 错误约定：参数校验失败返回 `422`（body 含 `detail`；**日期查询参数格式错误也返回 422**，不穿透成 500）；资源不存在返回 `404`（`{"detail": "..."}`）；删除成功返回 `204` 无内容（例外：AI 助手的 sessions/agents、知识与记忆的 memories、MCP 的 servers 删除返回 200 + JSON，如 `{"ok": true}`）
+- 错误约定：参数校验失败返回 `422`（body 含 `detail`；**日期查询参数格式错误也返回 422**，不穿透成 500）；**路径 `{id}` 超过 SQLite int64 范围同样返回 422**（`utils.DbId` 入口拦截 + 全局 `OverflowError` 兜底，不出 500 堆栈）；资源不存在返回 `404`（`{"detail": "..."}`）；删除成功返回 `204` 无内容（例外：AI 助手的 sessions/agents、知识与记忆的 memories、MCP 的 servers 删除返回 200 + JSON，如 `{"ok": true}`）
 - 分页约定：列表接口统一返回 `{"items": [...], "total": 总数, "page": 页码, "page_size": 每页条数}`
 
 ## 系统
@@ -488,7 +488,7 @@ run_id 形如 `20261013-153000_recon`；有错误的页面/失败用例自动建
 | 端点 | 说明 |
 |------|------|
 | `GET /api/debug/client-errors?limit=200` | 尾部读取最近 limit 条（1-1000），返回 `{total, items}`（按写入顺序） |
-| `POST /api/debug/client-errors` | 追加一条（返回 201）；**宽容解析**——非 JSON body/数组/字符串/缺字段一律归一记录为 `{ts, page, message, stack, ua}`，绝不 500。前端 `main.js` 全局 errorHandler/error/unhandledrejection 自动上报（裸 axios、同消息 5 秒去重） |
+| `POST /api/debug/client-errors` | 追加一条（返回 201）；**宽容解析**——非 JSON body/数组/字符串/缺字段一律归一记录为 `{ts, page, message, stack, ua}`，绝不 500。文件**有界**：超过 10MB 自动裁剪为仅保留最近 1000 条（逐行仍是合法 JSON）。前端 `main.js` 全局 errorHandler/error/unhandledrejection 自动上报（裸 axios、同消息 5 秒去重） |
 | `DELETE /api/debug/client-errors` | 清空，返回 `{"ok": true}` |
 
 ### GET /api/debug/summary

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Note, ScheduledJob
 from ..schemas import NoteCreate, NoteOut, NoteUpdate, Page
-from ..utils import tag_like_pattern
+from ..utils import DbId, tag_like_pattern
 
 router = APIRouter(prefix="/notes", tags=["笔记管理"])
 
@@ -73,12 +73,12 @@ def create_note(payload: NoteCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{note_id}", response_model=NoteOut, summary="笔记详情")
-def get_note(note_id: int, db: Session = Depends(get_db)):
+def get_note(note_id: DbId, db: Session = Depends(get_db)):
     return _get_or_404(db, note_id)
 
 
 @router.put("/{note_id}", response_model=NoteOut, summary="更新笔记（仅传需要修改的字段）")
-def update_note(note_id: int, payload: NoteUpdate, db: Session = Depends(get_db)):
+def update_note(note_id: DbId, payload: NoteUpdate, db: Session = Depends(get_db)):
     note = _get_or_404(db, note_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(note, field, value)
@@ -88,7 +88,7 @@ def update_note(note_id: int, payload: NoteUpdate, db: Session = Depends(get_db)
 
 
 @router.delete("/{note_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除笔记")
-def delete_note(note_id: int, db: Session = Depends(get_db)):
+def delete_note(note_id: DbId, db: Session = Depends(get_db)):
     note = _get_or_404(db, note_id)
     # 清理定时任务对该笔记的悬挂引用
     db.query(ScheduledJob).filter(ScheduledJob.last_note_id == note_id).update(

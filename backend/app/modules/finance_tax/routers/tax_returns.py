@@ -644,10 +644,18 @@ def _export_filename(enterprise: Enterprise, tax_return: TaxReturn, suffix: str)
 
 
 def _download_headers(filename: str) -> dict:
-    """Content-Disposition：ASCII 回退文件名 + RFC5987 UTF-8 编码（中文文件名直接拼接会触发 latin-1 编码崩溃）。"""
-    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").replace('"', "").strip()
+    """Content-Disposition：ASCII 回退文件名 + RFC5987 UTF-8 编码（中文文件名直接拼接会触发 latin-1 编码崩溃）。
+
+    回退名只保留可打印 ASCII（32–126）并剔除引号/反斜杠：CR/LF 等控制字符本身是
+    ASCII 不会被 encode("ascii", "ignore") 丢弃，直接进响应头会造成头注入。
+    """
+    ascii_fallback = "".join(
+        ch for ch in filename if 32 <= ord(ch) <= 126 and ch not in '"\\'
+    ).strip()
     if not ascii_fallback:
-        ascii_fallback = f"A200000.{filename.rsplit('.', 1)[-1]}"
+        suffix = filename.rsplit(".", 1)[-1]
+        suffix = "".join(ch for ch in suffix if 32 <= ord(ch) <= 126 and ch.isalnum()) or "xlsx"
+        ascii_fallback = f"A200000.{suffix}"
     return {
         "Content-Disposition": f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
     }

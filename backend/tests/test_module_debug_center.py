@@ -125,6 +125,19 @@ def test_issue_crud_and_filters(debug_dir, client):
     assert client.put(f"{P}/issues/{issue['id']}", json={"status": "done"}).status_code == 404
 
 
+def test_issue_blank_title_rejected(debug_dir, client):
+    """空白标题（min_length 之外的纯空格）创建/更新均应 422，不能落库成空标题。"""
+    assert client.post(f"{P}/issues", json={"title": "   "}).status_code == 422
+    created = client.post(f"{P}/issues", json={"title": "正常标题"})
+    assert created.status_code == 201
+    iid = created.json()["id"]
+    assert client.put(f"{P}/issues/{iid}", json={"title": " \t "}).status_code == 422
+    # 原始标题不受影响
+    row = next(i for i in client.get(f"{P}/issues").json()["items"] if i["id"] == iid)
+    assert row["title"] == "正常标题"
+    client.delete(f"{P}/issues/{iid}")
+
+
 # ---------- run 归档 ----------
 
 
@@ -216,6 +229,33 @@ def test_client_errors_garbage_input_never_500(debug_dir, client):
     assert lst["total"] == 4
     assert lst["items"][2]["message"] == "just a string"
     assert lst["items"][3]["message"] == "12345"  # 非字符串归一为 str
+
+
+def test_client_errors_rotation_bounds_file(debug_dir, client, monkeypatch):
+    """体积护栏：超过 CLIENT_ERRORS_MAX_BYTES 即裁剪为最近若干条，防无上限增长。
+
+    jsonl 只增不减，而 list/summary 每次都要全文扫描；页面持续抛错时文件会无限膨胀。
+    阈值调小后连写 120 条，触发裁剪：最旧的被丢弃、最新的保留、行数受控且每行仍是合法 JSON。
+    """
+    monkeypatch.setattr(svc, "CLIENT_ERRORS_MAX_BYTES", 4000)
+    monkeypatch.setattr(svc, "CLIENT_ERRORS_KEEP_LINES", 20)
+    for i in range(120):
+        service_entry = {"message": f"err-{i:03d}", "stack": "x" * 60, "page": "/tasks"}
+        assert svc.append_client_error(service_entry)["message"] == f"err-{i:03d}"
+
+    path = debug_dir / svc.CLIENT_ERRORS_FILE
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    msgs = [json.loads(ln)["message"] for ln in lines]  # 每行必须仍是完整 JSON
+    assert len(lines) < 120, "未触发裁剪"
+    assert len(lines) <= svc.CLIENT_ERRORS_KEEP_LINES + 30, f"裁剪后仍过多：{len(lines)}"
+    assert msgs[-1] == "err-119", "裁剪把最新的记录删了"
+    assert "err-000" not in msgs, "最旧的记录未被裁掉"
+    assert path.stat().st_size <= svc.CLIENT_ERRORS_MAX_BYTES * 2, "裁剪后的体积仍贴着阈值抖动"
+
+    # 裁剪后的文件接口读取正常（未出现半行/撕裂）
+    data = client.get(f"{P}/client-errors", params={"limit": 1000}).json()
+    assert data["total"] == len(lines)
+    assert data["items"][-1]["message"] == "err-119"
 
 
 # ---------- summary ----------

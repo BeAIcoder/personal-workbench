@@ -669,28 +669,30 @@ function editProvider(p) {
   presetFillInfo.value = null
 }
 
-function applyPreset(name) {
-  const p = props.presets.find((x) => x.name === name)
-  if (!p) return
+// 快速预设与「从预设填充」共用：填 base_url/协议，并带出候选模型多选
+function fillProviderFromPreset(p) {
   if (p.base_url) provDialog.base_url = p.base_url
   provDialog.protocol = p.protocol || 'openai'
   if (!provDialog.name) provDialog.name = p.label
+  presetCandidateModels.value = [...(p.models || [])]
+  provDialog.presetModels = [...(p.models || [])]
+}
+
+function applyPreset(name) {
+  const p = props.presets.find((x) => x.name === name) || presetOptions.value.find((x) => x.name === name)
+  if (p) fillProviderFromPreset(p)
 }
 
 // 「从预设填充」：填 base_url/协议，并带出候选模型多选
 function applyPresetFill(name) {
-  const p = presetOptions.value.find((x) => x.name === name)
+  const p = presetOptions.value.find((x) => x.name === name) || props.presets.find((x) => x.name === name)
   if (!p) {
     presetCandidateModels.value = []
     presetFillInfo.value = null
     provDialog.presetModels = []
     return
   }
-  if (p.base_url) provDialog.base_url = p.base_url
-  provDialog.protocol = p.protocol || 'openai'
-  if (!provDialog.name) provDialog.name = p.label
-  presetCandidateModels.value = p.models || []
-  provDialog.presetModels = [...(p.models || [])]
+  fillProviderFromPreset(p)
   presetFillInfo.value = { note: p.note || '', docs_url: p.docs_url || '' }
 }
 
@@ -746,9 +748,13 @@ async function deleteProvider(p) {
   } catch {
     return  // 用户取消
   }
-  await assistantApi.providers.remove(p.id)
-  emit('refresh')
-  ElMessage.success('已删除')
+  try {
+    await assistantApi.providers.remove(p.id)
+    emit('refresh')
+    ElMessage.success('已删除')
+  } catch {
+    /* 拦截器已提示 */
+  }
 }
 
 async function activateModel(m) {
@@ -829,8 +835,12 @@ async function saveModel() {
 }
 
 async function removeModel(p, m) {
-  await assistantApi.providers.removeModel(p.id, m.id)
-  emit('refresh')
+  try {
+    await assistantApi.providers.removeModel(p.id, m.id)
+  } catch {
+    /* 拦截器已提示 */
+  }
+  emit('refresh')  // 失败也要刷新，拿到后端真实的模型列表
 }
 
 async function testProvider(p, kind) {

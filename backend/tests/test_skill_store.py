@@ -128,7 +128,7 @@ def test_create_and_delete_pack(store):
     pack = skill_store.create_pack("tax-check", "税负核对", "自定义正文")
     assert pack["valid"] is True and pack["name"] == "tax-check" and pack["version"] == "1.0.0"
     text = (store / "tax-check" / "SKILL.md").read_text(encoding="utf-8")
-    assert "name: tax-check" in text and "description: 税负核对" in text and "自定义正文" in text
+    assert "name: tax-check" in text and 'description: "税负核对"' in text and "自定义正文" in text
     # 正文留空用内置骨架
     skill_store.create_pack("empty-body", "描述")
     assert "使用场景" in (store / "empty-body" / "SKILL.md").read_text(encoding="utf-8")
@@ -142,6 +142,12 @@ def test_create_and_delete_pack(store):
     # 空描述拒绝
     with pytest.raises(ValueError):
         skill_store.create_pack("no-desc", "  ")
+    # 描述是自由文本：含「: 」/ # / 换行 / 引号 / 反斜杠时 frontmatter 仍必须合法，
+    # 且扫描结果里的描述与输入逐字一致（YAML 双引号标量序列化回归）
+    tricky = '报销审核: 需核对抬头 #1\n第二行 "引号" 与 C:\\temp'
+    pack = skill_store.create_pack("tricky-desc", tricky, "正文")
+    assert pack["valid"] is True, pack.get("error")
+    assert pack["description"] == tricky
     # 删除：目录与停用记录一并清理
     skill_store.set_enabled("tax-check", False)
     skill_store.delete_pack("tax-check")

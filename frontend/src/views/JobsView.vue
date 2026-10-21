@@ -195,6 +195,8 @@ async function load() {
     const { data } = await jobApi.list()
     if (seq !== loadSeq) return  // 已有更新的请求发出，丢弃旧结果
     rows.value = data
+  } catch {
+    // 拦截器已提示；吞掉 rejection，保留上一次列表数据（与任务页异常态口径一致）
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -257,30 +259,32 @@ function openEdit(row) {
 }
 
 async function save() {
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
-  if (form.schedule_type === 'cron' && !/^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s*$/.test(form.cron_expr)) {
-    ElMessage.warning('Cron 表达式需为五段：分 时 日 月 周')
-    return
-  }
-  if (!form.action && !form.prompt.trim()) {
-    ElMessage.warning('请填写提示词，或选择模块动作')
-    return
-  }
-  const payload = {
-    name: form.name.trim(),
-    prompt: form.prompt.trim(),
-    agent_name: form.agent_name || null,
-    mode: form.mode,
-    schedule_type: form.schedule_type,
-    interval_minutes: form.schedule_type === 'interval' ? form.interval_minutes : null,
-    daily_at: form.schedule_type === 'daily' ? form.daily_at : null,
-    cron_expr: form.schedule_type === 'cron' ? form.cron_expr.trim() : '',
-    action: form.action || '',
-    enabled: form.enabled,
-  }
+  // 与任务/日程页同一处竞态：锁必须在 await validate() 之前上，否则连点两次都过校验、建两条任务
+  if (dialog.saving) return
   dialog.saving = true
   try {
+    const valid = await formRef.value.validate().catch(() => false)
+    if (!valid) return
+    if (form.schedule_type === 'cron' && !/^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s*$/.test(form.cron_expr)) {
+      ElMessage.warning('Cron 表达式需为五段：分 时 日 月 周')
+      return
+    }
+    if (!form.action && !form.prompt.trim()) {
+      ElMessage.warning('请填写提示词，或选择模块动作')
+      return
+    }
+    const payload = {
+      name: form.name.trim(),
+      prompt: form.prompt.trim(),
+      agent_name: form.agent_name || null,
+      mode: form.mode,
+      schedule_type: form.schedule_type,
+      interval_minutes: form.schedule_type === 'interval' ? form.interval_minutes : null,
+      daily_at: form.schedule_type === 'daily' ? form.daily_at : null,
+      cron_expr: form.schedule_type === 'cron' ? form.cron_expr.trim() : '',
+      action: form.action || '',
+      enabled: form.enabled,
+    }
     if (dialog.id) {
       await jobApi.update(dialog.id, payload)
       ElMessage.success('任务已保存')
@@ -290,6 +294,8 @@ async function save() {
     }
     dialog.visible = false
     load()
+  } catch {
+    // 拦截器已提示；吞掉 rejection 避免未捕获异常，对话框保留供重试
   } finally {
     dialog.saving = false
   }
@@ -306,6 +312,7 @@ async function toggleEnabled(row, val) {
 }
 
 async function runNow(row) {
+  if (runningId.value) return  // 上一次执行还在跑（该接口最长 120s），连点会重复触发同一个任务
   runningId.value = row.id
   try {
     const { data } = await jobApi.runNow(row.id)
@@ -313,6 +320,8 @@ async function runNow(row) {
     else if (data.status === 'skipped') ElMessage.warning(data.summary || '已跳过本次执行')
     else ElMessage.error(data.summary || '执行失败')
     load()
+  } catch {
+    // 拦截器已提示（超时/网络异常）；吞掉 rejection 避免未捕获异常
   } finally {
     runningId.value = null
   }
@@ -324,7 +333,11 @@ async function remove(row) {
   } catch {
     return  // 用户取消
   }
-  await jobApi.remove(row.id)
+  try {
+    await jobApi.remove(row.id)
+  } catch {
+    return  // 删除失败：任务仍在列表（拦截器已提示）
+  }
   ElMessage.success('已删除')
   load()
 }

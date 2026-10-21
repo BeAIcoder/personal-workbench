@@ -17,7 +17,7 @@
 
     <el-card shadow="never" style="margin-top: 16px">
       <template #header><span>当月支出分类构成（{{ stats.month }}）</span></template>
-      <el-table :data="stats.by_category" size="small" empty-text="当月无支出">
+      <el-table :data="expenseStats" size="small" empty-text="当月无支出">
         <el-table-column prop="name" label="分类" min-width="140" />
         <el-table-column label="金额" width="140" align="right">
           <template #default="{ row }">{{ row.amount.toFixed(2) }}</template>
@@ -41,15 +41,17 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import * as echarts from 'echarts'
 import api from '../../../api'
 import { localMonth } from '../../_shared/dates'
-import { formatPercent } from '../utils'
+import { expenseCategories, formatPercent } from '../utils'
 
 const loading = ref(false)
 const months = ref(6)
 const stats = reactive({ month: '', income: 0, expense: 0, balance: 0, by_category: [] })
+// 支出构成表/饼图只含支出分类（后端同时返回收入分类）
+const expenseStats = computed(() => expenseCategories(stats.by_category))
 const trendChart = ref(null)
 const pieChart = ref(null)
 let trendInst = null
@@ -91,7 +93,7 @@ function renderCharts(trend) {
         type: 'pie',
         radius: ['40%', '70%'],
         label: { formatter: '{b}\n{d}%' },
-        data: stats.by_category.map((c) => ({ name: c.name, value: c.amount })),
+        data: expenseStats.value.map((c) => ({ name: c.name, value: c.amount })),
       },
     ],
   })

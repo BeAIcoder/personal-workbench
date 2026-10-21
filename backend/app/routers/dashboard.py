@@ -50,7 +50,8 @@ def summary(db: Session = Depends(get_db)):
     # ---- 日程统计 ----
     today_schedules = (
         db.query(Schedule)
-        .filter(Schedule.start_time < tomorrow, Schedule.end_time >= day_start)
+        # end_time == day_start 表示日程在今天 00:00 整结束，与今天无交集，不应计入「今日日程」
+        .filter(Schedule.start_time < tomorrow, Schedule.end_time > day_start)
         .order_by(Schedule.start_time.asc())
         .all()
     )
@@ -72,19 +73,22 @@ def summary(db: Session = Depends(get_db)):
     recent_notes = db.query(Note).order_by(Note.updated_at.desc()).limit(5).all()
 
     # ---- 近 7 天完成任务趋势 ----
-    trend = []
-    for i in range(6, -1, -1):
-        d = today - timedelta(days=i)
-        start = datetime.combine(d, datetime.min.time())
-        end = start + timedelta(days=1)
-        count = (
-            db.query(func.count())
-            .select_from(Task)
-            .filter(Task.completed_at >= start, Task.completed_at < end)
-            .scalar()
-            or 0
-        )
-        trend.append({"date": d.isoformat(), "count": count})
+    # 一次范围查询取回 7 天窗口内的完成时间，再在 Python 侧按天计数。
+    # 原先是 for 循环里 7 次 count(*)（7 次全表扫描 + 7 次 SQL 往返），概览页每次刷新都要付
+    # 这个代价；合并后只剩 1 次走 completed_at 索引的范围扫描。
+    week_start = day_start - timedelta(days=6)
+    per_day: dict = {}
+    for (completed_at,) in db.query(Task.completed_at).filter(
+        Task.completed_at >= week_start, Task.completed_at < tomorrow
+    ).all():
+        if completed_at is None:
+            continue
+        key = completed_at.date()
+        per_day[key] = per_day.get(key, 0) + 1
+    trend = [
+        {"date": day.isoformat(), "count": per_day.get(day, 0)}
+        for day in ((week_start + timedelta(days=i)).date() for i in range(7))
+    ]
 
     return {
         "task": {

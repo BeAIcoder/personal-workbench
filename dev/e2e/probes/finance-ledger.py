@@ -613,6 +613,15 @@ def main():
 
         record("TC-FL-PL-011", "统计页渲染 + 占比口径", tc_pl_stats_page)
 
+        def tc_pl_stats_expense_only():
+            reset_to("/finance/ledger-personal/stats")
+            page.wait_for_timeout(3000)
+            table = page.locator(".el-table__body").first.inner_text()
+            assert "餐饮" in table, f"支出分类缺失: {table[:200]}"
+            assert "工资" not in table, f"收入分类混入支出构成: {table[:200]}"
+
+        record("TC-FL-PL-015", "支出构成不混入收入分类", tc_pl_stats_expense_only)
+
         def tc_pl_export_csv():
             reset_to("/finance/ledger-personal/transactions")
             page.wait_for_timeout(1800)

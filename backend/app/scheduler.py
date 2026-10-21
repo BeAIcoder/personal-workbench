@@ -159,10 +159,15 @@ def job_due(job: ScheduledJob, now: datetime | None = None) -> bool:
         if cron_matches(expr, now):
             # 同一自然分钟内不重复触发
             return job.last_run_at is None or job.last_run_at.replace(second=0, microsecond=0) != now.replace(second=0, microsecond=0)
-        # 错过补偿：在 (last_run_at, now] 内找最近一次匹配分钟（上限回溯 24h），找到即 due
+        # 错过补偿：在 (lower, now) 内找最近一次匹配分钟（上限回溯 24h），找到即 due。
+        # 下界同时受创建时间约束：新建任务不得补跑创建之前的匹配点（例如 10:30:40
+        # 创建 * * * * *，10:31 检查时不能把 10:30 当作「错过」再跑一次）。
         lower = now - timedelta(hours=24)
         if job.last_run_at is not None:
             lower = max(lower, job.last_run_at.replace(second=0, microsecond=0))
+        created_at = getattr(job, "created_at", None)
+        if created_at is not None:
+            lower = max(lower, created_at)
         cursor = now.replace(second=0, microsecond=0)
         while True:
             cursor -= timedelta(minutes=1)

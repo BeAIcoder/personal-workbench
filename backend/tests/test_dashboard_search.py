@@ -87,3 +87,49 @@ def test_search_empty_result(client):
     body = client.get("/api/search", params={"q": "完全不存在的内容xyz"}).json()
     assert body["total"] == 0
     assert body["tasks"] == [] and body["schedules"] == [] and body["notes"] == []
+
+
+def test_search_blank_keyword_rejected(client):
+    """仅空白的关键词不能退化为「匹配所有含空格的记录」，应与空 q 一致返回 422。"""
+    for blank in (" ", "   ", "\t", "\n"):
+        resp = client.get("/api/search", params={"q": blank})
+        assert resp.status_code == 422, f"q={blank!r} 应 422，实际 {resp.status_code}"
+
+
+def test_search_trims_surrounding_spaces(client):
+    client.post("/api/tasks", json={"title": "增值税申报准备"})
+    body = client.get("/api/search", params={"q": "  增值税  "}).json()
+    assert body["total"] == 1
+    assert body["tasks"][0]["title"] == "增值税申报准备"
+
+
+def test_dashboard_schedule_ending_at_midnight_not_today(client):
+    """今天 00:00 整结束的日程与今天无交集，不得计入今日日程（count 与列表保持一致）。"""
+    from datetime import datetime, timedelta
+
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+    client.post(
+        "/api/schedules",
+        json={
+            "title": "午夜整结束",
+            "start_time": f"{yesterday.isoformat()}T23:00:00",
+            "end_time": f"{today.isoformat()}T00:00:00",
+        },
+    )
+    body = client.get("/api/dashboard/summary").json()
+    assert body["today_schedules"] == []
+    assert body["schedule"]["today_count"] == 0
+
+    # 边界另一侧：今天 00:00:01 结束仍与今天有交集，必须保留
+    client.post(
+        "/api/schedules",
+        json={
+            "title": "午夜后结束",
+            "start_time": f"{yesterday.isoformat()}T23:00:00",
+            "end_time": f"{today.isoformat()}T00:00:01",
+        },
+    )
+    body = client.get("/api/dashboard/summary").json()
+    assert [s["title"] for s in body["today_schedules"]] == ["午夜后结束"]
+    assert body["schedule"]["today_count"] == 1

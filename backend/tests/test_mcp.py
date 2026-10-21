@@ -38,6 +38,7 @@ FAKE_SERVER = textwrap.dedent('''
         elif method == "tools/list":
             send({"jsonrpc": "2.0", "id": mid, "result": {"tools": [{
                 "name": "echo", "description": "回声工具",
+                "annotations": {"readOnlyHint": True},
                 "inputSchema": {"type": "object",
                                 "properties": {"text": {"type": "string", "description": "文本"}},
                                 "required": ["text"]}}]}})
@@ -123,7 +124,7 @@ def test_mcp_full_flow(client, tmp_path, fake_server):
     tool_name = "mcp_faketest__echo"
     assert tool_name in TOOL_SPECS
     spec = TOOL_SPECS[tool_name]
-    assert spec["readonly"] is True  # echo 不含写类关键词
+    assert spec["readonly"] is True  # 服务器显式声明 annotations.readOnlyHint
     assert "text" in spec["params"]
 
     # 测试调用
@@ -165,6 +166,32 @@ def test_mcp_duplicate_name_rejected(client, tmp_path, fake_server):
     # 清理
     for item in client.get(f"{P}/servers").json()["items"]:
         client.delete(f"{P}/servers/{item['id']}")
+
+
+def test_mcp_name_with_double_underscore_rejected(client, tmp_path, fake_server):
+    """名字含 __ 会让「按前缀清理旧工具」切分不清：删 a__b 会连带清掉 a 的 b__* 工具。"""
+    r = client.post(f"{P}/servers", json={
+        "name": "bad__name", "command": sys.executable, "args": [str(fake_server)],
+    })
+    assert r.status_code == 400, r.text
+    assert "连续下划线" in r.json()["detail"]
+
+
+def test_mcp_disconnect_unregisters_tools(client, tmp_path, fake_server):
+    """断开/删除必须把工具从注册表摘掉，重连后又能恢复——否则 Agent 还能调到已停的服务器。"""
+    created = _create(client, tmp_path, fake_server, name="unreg")
+    tool_name = "mcp_unreg__echo"
+    assert client.post(f"{P}/servers/{created['id']}/connect").status_code == 200
+    assert tool_name in TOOL_SPECS
+
+    client.post(f"{P}/servers/{created['id']}/disconnect")
+    assert tool_name not in TOOL_SPECS, "断开后工具仍留在 TOOL_SPECS（陈旧定义可被调用）"
+
+    assert client.post(f"{P}/servers/{created['id']}/connect").status_code == 200
+    assert tool_name in TOOL_SPECS, "重连后未重新注册（清理逻辑把下次注册也吃掉了）"
+
+    client.delete(f"{P}/servers/{created['id']}")
+    assert tool_name not in TOOL_SPECS, "删除服务器后工具仍留在 TOOL_SPECS"
 
 
 def test_mcp_module_tools_not_in_loaded_modules():

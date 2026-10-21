@@ -107,7 +107,11 @@ function detachCurrentSession() {
 }
 
 async function archiveSession(s) {
-  await assistantApi.sessions.archive(s.session_id)
+  try {
+    await assistantApi.sessions.archive(s.session_id)
+  } catch {
+    return  // 拦截器已提示；失败时保持列表与当前会话不变
+  }
   if (s.session_id === currentSessionId.value) {
     detachCurrentSession()
     ElMessage.success('会话已归档，并已从当前视图中移除')
@@ -118,7 +122,11 @@ async function archiveSession(s) {
 }
 
 async function restoreSession(s) {
-  await assistantApi.sessions.unarchive(s.session_id)
+  try {
+    await assistantApi.sessions.unarchive(s.session_id)
+  } catch {
+    return  // 拦截器已提示
+  }
   ElMessage.success(`会话「${s.title}」已恢复到进行中`)
   await loadSessions()
 }
@@ -161,7 +169,11 @@ async function renameSession(s) {
     return  // 用户取消
   }
   if (!value || !value.trim()) return
-  await assistantApi.sessions.rename(s.session_id, value.trim())
+  try {
+    await assistantApi.sessions.rename(s.session_id, value.trim())
+  } catch {
+    return  // 拦截器已提示；失败时不改动本地标题
+  }
   s.title = value.trim()
   ElMessage.success('已重命名')
 }
@@ -172,12 +184,19 @@ async function deleteSession(s) {
   } catch {
     return  // 用户取消
   }
-  if (s.session_id === currentSessionId.value) {
-    chatRef.value?.abortStream()  // 删除正在流式回复的会话前先打断流
+  const deletingCurrent = s.session_id === currentSessionId.value
+  if (deletingCurrent) {
+    chatRef.value?.abortStream()  // 删除正在流式回复的会话前先打断流，避免残留写入
+  }
+  try {
+    await assistantApi.sessions.remove(s.session_id)
+  } catch {
+    return  // 拦截器已提示；删除失败时保留当前会话、聊天记录与选中状态
+  }
+  if (deletingCurrent) {
     currentSessionId.value = ''
     chatRef.value?.clearMessages()
   }
-  await assistantApi.sessions.remove(s.session_id)
   await loadSessions()
   ElMessage.success('已删除')
 }
@@ -191,9 +210,13 @@ function applyModelState(data) {
 }
 
 async function refreshConfig() {
-  const { data } = await assistantApi.config.get()
-  applyModelState(data)
-  teamConfig.value = data.config
+  try {
+    const { data } = await assistantApi.config.get()
+    applyModelState(data)
+    teamConfig.value = data.config
+  } catch {
+    /* 拦截器已提示；本函数由 @refresh 事件触发，无人 await，不 catch 就是未捕获 rejection */
+  }
 }
 
 // 专家团队变化后刷新左侧团队列表（路由行为后端即时生效）
