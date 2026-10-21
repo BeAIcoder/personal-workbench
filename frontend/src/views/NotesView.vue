@@ -101,7 +101,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { noteApi } from '../api'
 import { fmtDT, snippet } from '../utils/format'
-import { parseNotesQuery, pickAfterCreate } from '../utils/notes'
+import { needsDiscardConfirm, parseNotesQuery, pickAfterCreate, planPinToggle, rolledBackDraft } from '../utils/notes'
 
 const route = useRoute()
 const router = useRouter()
@@ -134,34 +134,49 @@ async function load(targetPage) {
     if (seq !== loadSeq) return  // 已有更新的请求发出，丢弃旧结果
     rows.value = data.items
     total.value = data.total
+  } catch {
+    // 错误提示由 axios 拦截器统一弹出；吞掉 rejection，避免定时器/挂载时产生未捕获异常
   } finally {
     if (seq === loadSeq) loading.value = false
   }
 }
 
 async function loadTags() {
-  const { data } = await noteApi.tags()
-  tagOptions.value = data.tags
+  try {
+    const { data } = await noteApi.tags()
+    tagOptions.value = data.tags
+  } catch {
+    // 标签加载失败不阻塞编辑（拦截器已提示）
+  }
 }
 
-function select(note) {
-  if (dirty.value && !window.confirm('当前笔记有未保存的修改，放弃修改并切换？')) return
+function select(note, force = false) {
+  if (needsDiscardConfirm(dirty.value, force) && !window.confirm('当前笔记有未保存的修改，放弃修改并切换？')) return
   current.value = JSON.parse(JSON.stringify(note))
   snapshot.value = JSON.stringify(current.value)
 }
 
 async function createNew() {
-  if (dirty.value && !window.confirm('当前笔记有未保存的修改，放弃修改并新建？')) return
-  const { data } = await noteApi.create({ title: '未命名笔记', content: '', tags: [] })
-  ElMessage.success('已创建，请编辑内容后保存')
-  await load()
-  loadTags()
-  const target = pickAfterCreate(rows.value, data.id)
-  if (target) {
-    select(target)
-  } else {
-    // 筛选/翻页状态下新笔记不在当前列表中：保持原选中，绝不乱选第一条
-    ElMessage.warning('新笔记不在当前筛选/分页结果中，请清空筛选后到列表中查找')
+  const discarded = dirty.value
+  if (discarded && !window.confirm('当前笔记有未保存的修改，放弃修改并新建？')) return
+  try {
+    const { data } = await noteApi.create({ title: '未命名笔记', content: '', tags: [] })
+    ElMessage.success('已创建，请编辑内容后保存')
+    await load()
+    loadTags()
+    const target = pickAfterCreate(rows.value, data.id)
+    if (target) {
+      // 新建前的未保存确认已在 createNew 入口完成，这里强制选中新笔记，避免二次确认
+      select(target, true)
+    } else {
+      // 筛选/翻页状态下新笔记不在当前列表中：保持原选中，绝不乱选第一条；
+      // 已确认放弃的草稿要回滚，避免它继续留在编辑器里被误保存
+      const restored = rolledBackDraft(discarded, snapshot.value)
+      if (restored) current.value = restored
+      ElMessage.warning('新笔记不在当前筛选/分页结果中，请清空筛选后到列表中查找')
+    }
+  } catch {
+    // 创建失败由拦截器提示；不改变当前选中，避免误以为已新建
   }
 }
 
@@ -180,6 +195,8 @@ async function save() {
     ElMessage.success('已保存')
     load()
     loadTags()
+  } catch {
+    // 保存失败：保留 current/dirty 供用户修正或重试（拦截器已提示）
   } finally {
     saving.value = false
   }
@@ -198,11 +215,20 @@ function aiDigest() {
 }
 
 async function togglePin() {
-  const { data } = await noteApi.update(current.value.id, { pinned: !current.value.pinned })
-  snapshot.value = JSON.stringify(data)
-  current.value = data
-  ElMessage.success(data.pinned ? '已置顶' : '已取消置顶')
-  load()
+  const plan = planPinToggle(dirty.value, current.value.pinned)
+  if (plan.action === 'blocked') {
+    ElMessage.warning(plan.message)
+    return
+  }
+  try {
+    const { data } = await noteApi.update(current.value.id, { pinned: plan.pinned })
+    snapshot.value = JSON.stringify(data)
+    current.value = data
+    ElMessage.success(data.pinned ? '已置顶' : '已取消置顶')
+    load()
+  } catch {
+    // 失败保持原状态，拦截器已提示
+  }
 }
 
 async function remove() {
@@ -211,7 +237,11 @@ async function remove() {
   } catch {
     return  // 用户取消
   }
-  await noteApi.remove(current.value.id)
+  try {
+    await noteApi.remove(current.value.id)
+  } catch {
+    return  // 删除失败：保留当前笔记与编辑器（拦截器已提示）
+  }
   ElMessage.success('已删除')
   current.value = null
   load()

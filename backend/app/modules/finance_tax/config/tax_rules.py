@@ -210,7 +210,12 @@ def calculate_entertainment_expense_limit(
     """
     limit_by_60_percent = expense_amount * 0.6
     limit_by_revenue = revenue * 0.005  # 收入的5‰
-    allowed_deduction = min(limit_by_60_percent, limit_by_revenue)
+    # 收入为 0 时不存在 5‰ 约束（收入为 0 不是"全额不得扣除"），
+    # 仅受 60% 限额约束；负收入同样视为无 5‰ 约束。
+    if revenue <= 0:
+        allowed_deduction = limit_by_60_percent
+    else:
+        allowed_deduction = min(limit_by_60_percent, limit_by_revenue)
     tax_adjustment = expense_amount - allowed_deduction
 
     return {

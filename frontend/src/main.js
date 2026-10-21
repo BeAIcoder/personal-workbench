@@ -49,6 +49,9 @@ function reportClientError(message, stack = '') {
 }
 
 app.config.errorHandler = (err, _instance, info) => {
+  // 自定义 errorHandler 会连带取消 Vue 默认的控制台输出：开发态补回一份，
+  // 否则 devtools 里看不到渲染错误，E2E 探针的 console_errors 也采不到（生产构建 DEV=false，不打印）。
+  if (import.meta.env.DEV) console.error('[vue:error]', info, err)
   reportClientError(err?.message || 'Vue 渲染错误', err?.stack || info || '')
 }
 window.addEventListener('error', (e) => {

@@ -53,6 +53,7 @@ async function load() {
     total.value = data.total ?? items.value.length
   } catch {
     items.value = []
+    total.value = 0  // 计数随列表一起归零，避免表头残留上一次的条数
   } finally {
     loading.value = false
   }

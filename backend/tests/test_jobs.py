@@ -153,6 +153,41 @@ def test_job_due_cron():
     assert job_due(job, now) is True
 
 
+def test_job_due_cron_does_not_backfill_before_creation():
+    """新建 cron 任务不补跑创建之前的匹配点（否则 10:30 新建会立刻把 10:15 跑一遍）。"""
+    job = ScheduledJob(
+        schedule_type="cron", cron_expr="15 * * * *", last_run_at=None,
+        created_at=datetime(2026, 10, 12, 10, 30, 40),
+    )
+    # 10:35 检查：窗口内唯一匹配 10:15 早于创建时间 → 不 due
+    assert job_due(job, datetime(2026, 10, 12, 10, 35, 0)) is False
+    # 创建后错过 12:15：14:00 检查仍补跑
+    assert job_due(job, datetime(2026, 10, 12, 14, 0, 0)) is True
+
+
+def test_create_job_rejects_unknown_schedule_type(client):
+    """未知 schedule_type 必须 422；否则运行时会落进 interval 兜底分支被误执行。"""
+    resp = client.post("/api/jobs", json={"name": "未知类型", "prompt": "x", "schedule_type": "weekly"})
+    assert resp.status_code == 422, resp.text
+
+
+def test_create_job_normalizes_cross_type_fields(client):
+    """创建时与更新一致地清理跨类型残留字段（daily/cron 不保留 interval_minutes）。"""
+    daily = client.post("/api/jobs", json={
+        "name": "每日归一化", "prompt": "x", "schedule_type": "daily",
+        "daily_at": "08:30", "interval_minutes": 60,
+    })
+    assert daily.status_code == 201, daily.text
+    assert daily.json()["interval_minutes"] is None
+    cron = client.post("/api/jobs", json={
+        "name": "Cron归一化", "prompt": "x", "schedule_type": "cron",
+        "cron_expr": "0 9 1 1 *", "interval_minutes": 60, "daily_at": "08:30",
+    })
+    assert cron.status_code == 201, cron.text
+    assert cron.json()["interval_minutes"] is None
+    assert cron.json()["daily_at"] is None
+
+
 def test_action_registry_and_actions_endpoint(client):
     # 模块加载时 finance_board 已注册其动作
     assert "finance_board.run" in JOB_ACTIONS

@@ -1,6 +1,22 @@
 # 数据与上传
 backend/data/
+# pytest 临时产物（旧版 conftest 曾因 TEMP=/tmp 落到 backend/）
+backend/workbench_debug_*/
+backend/workbench_test_*.db
+backend/workbench_test_*.db-journal
+backend/.pytest_tmp/
+backend/.review_tmp/
 backend/uploads/
+# 本机 TEMP 指向的目录不可写时，Python tempfile.mkdtemp() 会退回「当前工作目录」建临时库，
+# 探针/排查脚本跑完就在仓库根或 backend/ 留下 tmpXXXXXXXX 散件（含 sqlite 库文件）。
+# 已实测复现两次，这里按前缀兜底忽略，避免污染 git status。
+tmp*/
+# 上一条只匹配目录；文件形态的散件同样来自 tempfile 退化到 CWD：
+# pytest 的 capture（_pytest/capture.py FDCapture → NamedTemporaryFile）在 conftest 之前
+# 就创建，实测在 backend/ 留下 0 字节 tmpXXXXXXXX（conftest 已把 tempfile.tempdir 钉到
+# 系统临时目录，这里兜住 conftest 生效前的那两个）。
+backend/tmp*
+/tmp*
 *.db
 *.sqlite
 *.sqlite3
@@ -60,5 +76,13 @@ dev/sanitize-map.local.json
 dev/e2e/probe_results/
 dev/e2e/finance_data_edge/
 dev/e2e/shots/
+dev/e2e/staging/**/data/
+dev/e2e/staging/**/shots/
+dev/e2e/staging/**/__pycache__/
+dev/e2e/staging/**/*.db
+dev/e2e/staging/**/*.log
+dev/e2e/staging/**/result.json
 dev/dev/
+# 深挖轮中间产物（scratch，保留现场可查但不入库）
+dev/e2e/staging/deep2-20261020/
 *.duckdb

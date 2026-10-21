@@ -1,5 +1,5 @@
 """全局搜索接口：/api/search"""
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,11 @@ def _snippet(text: str | None, keyword: str, limit: int = 60) -> str:
 
 @router.get("", response_model=SearchResult, summary="全局搜索（任务 / 日程 / 笔记）")
 def search(q: str = Query(..., min_length=1, max_length=100, description="搜索关键词"), db: Session = Depends(get_db)):
+    # 仅空白的关键词等价于空搜索：直接 422，避免 contains(" ") 把含空格的记录全部命中。
+    # 前后空白一并裁剪，与前端 GlobalSearch 的 trim 行为保持一致。
+    q = q.strip()
+    if not q:
+        raise HTTPException(status_code=422, detail="搜索关键词不能为空")
     tasks = (
         db.query(Task)
         .filter(or_(Task.title.contains(q, autoescape=True), Task.description.contains(q, autoescape=True)))

@@ -124,9 +124,13 @@ async function importOne(row) {
       return  // 用户取消
     }
   }
-  const { data } = await api.post(`/experts/packs/import/${encodeURIComponent(row.name)}`)
-  ElMessage.success(`已导入「${data.name}」（${ACTION_TEXT[data.action] || data.action}）`)
-  await loadAll()
+  try {
+    const { data } = await api.post(`/experts/packs/import/${encodeURIComponent(row.name)}`)
+    ElMessage.success(`已导入「${data.name}」（${ACTION_TEXT[data.action] || data.action}）`)
+    await loadAll()
+  } catch {
+    /* 拦截器已提示；不 catch 会留下未捕获 rejection，被全局采集记成前端报错 */
+  }
 }
 
 async function importAll() {
@@ -142,12 +146,16 @@ async function importAll() {
       return  // 用户取消
     }
   }
-  const { data } = await api.post('/experts/packs/import-all')
-  ElMessage.success(`导入 ${data.imported.length} 位，跳过 ${data.skipped.length} 位，失败 ${data.errors.length} 位`)
-  if (data.errors.length) {
-    ElMessage.error(data.errors.map((e) => `${e.file}：${e.error}`).join('；'))
+  try {
+    const { data } = await api.post('/experts/packs/import-all')
+    ElMessage.success(`导入 ${data.imported.length} 位，跳过 ${data.skipped.length} 位，失败 ${data.errors.length} 位`)
+    if (data.errors.length) {
+      ElMessage.error(data.errors.map((e) => `${e.file}：${e.error}`).join('；'))
+    }
+    await loadAll()
+  } catch {
+    /* 拦截器已提示 */
   }
-  await loadAll()
 }
 
 async function resetFromSeed() {
@@ -160,13 +168,22 @@ async function resetFromSeed() {
   } catch {
     return  // 用户取消
   }
-  const { data } = await api.post('/experts/packs/reset')
-  ElMessage.success(`已重置 ${data.reset.length} 个种子文件；文件已重置，需再点「全部导入」才会生效到数据库`)
-  await loadAll()
+  try {
+    const { data } = await api.post('/experts/packs/reset')
+    ElMessage.success(`已重置 ${data.reset.length} 个种子文件；文件已重置，需再点「全部导入」才会生效到数据库`)
+    await loadAll()
+  } catch {
+    /* 拦截器已提示 */
+  }
 }
 
 async function viewPack(row) {
-  const { data } = await api.get(`/experts/packs/${encodeURIComponent(row.name)}/content`)
+  let data
+  try {
+    data = (await api.get(`/experts/packs/${encodeURIComponent(row.name)}/content`)).data
+  } catch {
+    return  // 拦截器已提示；读不到内容就不打开空弹窗
+  }
   viewDialog.name = data.name
   viewDialog.content = data.content
   viewDialog.visible = true
@@ -182,9 +199,13 @@ async function removePack(row) {
   } catch {
     return  // 用户取消
   }
-  const { data } = await api.delete(`/experts/packs/${encodeURIComponent(row.name)}`)
-  ElMessage.success(`已删除 ${data.deleted}`)
-  await loadAll()
+  try {
+    const { data } = await api.delete(`/experts/packs/${encodeURIComponent(row.name)}`)
+    ElMessage.success(`已删除 ${data.deleted}`)
+    await loadAll()
+  } catch {
+    /* 拦截器已提示 */
+  }
 }
 
 async function exportExpert(row) {
@@ -201,9 +222,13 @@ async function exportExpert(row) {
       return  // 用户取消
     }
   }
-  const { data } = await api.post(`/experts/packs/export/${encodeURIComponent(row.name)}`)
-  ElMessage.success(`已导出为 ${data.file}`)
-  await loadAll()
+  try {
+    const { data } = await api.post(`/experts/packs/export/${encodeURIComponent(row.name)}`)
+    ElMessage.success(`已导出为 ${data.file}`)
+    await loadAll()
+  } catch {
+    /* 拦截器已提示 */
+  }
 }
 
 onMounted(loadAll)

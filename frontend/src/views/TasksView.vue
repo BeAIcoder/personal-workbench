@@ -150,6 +150,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { taskApi } from '../api'
 import { fmtDT, isOverdue, priorityLabel, priorityTag, statusLabel, statusTag } from '../utils/format'
+import { buildTaskAnalysisRoute, buildTaskListParams, mergeTaskFilters, needsInitialLoad } from '../utils/tasks'
 
 const route = useRoute()
 const router = useRouter()
@@ -158,20 +159,12 @@ const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-const filters = reactive({ status: null, priority: null, q: '', sort: 'created_desc' })
+const filters = reactive({ status: null, priority: null, q: '', sort: 'created_desc', overdue: null })
 
 const formRef = ref(null)
 const dialog = reactive({ visible: false, id: null, saving: false })
 const form = reactive({ title: '', description: '', status: 'todo', priority: 'medium', due_date: null, category: '' })
 const rules = { title: [{ required: true, message: '请输入任务标题', trigger: 'blur' }] }
-
-function cleanFilters() {
-  const out = {}
-  for (const [k, v] of Object.entries(filters)) {
-    if (v !== null && v !== undefined && v !== '') out[k] = v
-  }
-  return out
-}
 
 // 请求序号：快速翻页/筛选时丢弃过期响应
 let loadSeq = 0
@@ -181,10 +174,12 @@ async function load(targetPage) {
   const seq = ++loadSeq
   loading.value = true
   try {
-    const { data } = await taskApi.list({ ...cleanFilters(), page: page.value, page_size: pageSize.value })
+    const { data } = await taskApi.list(buildTaskListParams(filters, page.value, pageSize.value))
     if (seq !== loadSeq) return  // 已有更新的请求发出，丢弃旧结果
     rows.value = data.items
     total.value = data.total
+  } catch {
+    // 错误提示由 axios 拦截器统一弹出；这里吞掉 rejection，避免 onMounted/watch 产生未捕获异常
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -210,10 +205,13 @@ function openEdit(row) {
 }
 
 async function save() {
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
+  // 先上锁再校验：validate() 是 async，锁放在 await 之后等于给双击留了窗口——
+  // 两次都通过校验就会创建两条重复任务，且 :loading 按钮此刻还没禁用。
+  if (dialog.saving) return
   dialog.saving = true
   try {
+    const valid = await formRef.value.validate().catch(() => false)
+    if (!valid) return
     if (dialog.id) {
       await taskApi.update(dialog.id, { ...form })
       ElMessage.success('任务已保存')
@@ -223,15 +221,28 @@ async function save() {
     }
     dialog.visible = false
     load()
+  } catch {
+    // 拦截器已弹出错误提示；这里吞掉 rejection（否则产生未捕获异常），并保留对话框让用户改完重发
   } finally {
     dialog.saving = false
   }
 }
 
+// 行内操作（完成 / 删除）共用一个在途标记：连点「完成」会发两次 PUT 并弹两次成功提示
+let rowBusy = false
+
 async function complete(row) {
-  await taskApi.update(row.id, { status: 'done' })
-  ElMessage.success('任务已完成 🎉')
-  load()
+  if (rowBusy) return
+  rowBusy = true
+  try {
+    await taskApi.update(row.id, { status: 'done' })
+    ElMessage.success('任务已完成 🎉')
+    load()
+  } catch {
+    // 失败时列表保持原样（拦截器已提示），用户可直接重试
+  } finally {
+    rowBusy = false
+  }
 }
 
 async function remove(row) {
@@ -240,45 +251,38 @@ async function remove(row) {
   } catch {
     return  // 用户取消
   }
-  await taskApi.remove(row.id)
+  if (rowBusy) return
+  rowBusy = true
+  try {
+    await taskApi.remove(row.id)
+  } catch {
+    return  // 删除失败：行仍在列表里（拦截器已提示）
+  } finally {
+    rowBusy = false
+  }
   ElMessage.success('已删除')
   load()
 }
 
 function aiAnalyze(row) {
-  const due = row.due_date ? '，截止 ' + fmtDT(row.due_date) : '（无截止时间）'
-  const prompt =
-    `请分析这个任务并给出执行建议，把分析要点存为一条笔记（标签用「AI分析」），` +
-    `如需跟进请一并创建后续任务：「${row.title}」（状态 ${statusLabel[row.status]}，优先级 ${priorityLabel[row.priority]}${due}，分类 ${row.category || '无'}）。` +
-    (row.description ? `任务描述：${row.description}` : '')
-  router.push({ path: '/assistant', query: { auto: prompt } })
+  router.push(buildTaskAnalysisRoute(row))
 }
 
 function applyRoute() {
-  if (route.path !== '/tasks') return
-  let needLoad = false
-  if (route.query.q !== undefined && route.query.q !== filters.q) {
-    filters.q = String(route.query.q || '')
-    needLoad = true
-  }
-  if (route.query.status !== undefined && route.query.status !== filters.status) {
-    filters.status = route.query.status || null
-    needLoad = true
-  }
-  if (route.query.overdue !== undefined) {
-    // 逾期卡片跳转：改为按截止时间排序，用户可直观看到最前面的逾期项
-    filters.sort = 'due_asc'
-    needLoad = true
-  }
-  if (needLoad) load(1)
+  if (route.path !== '/tasks') return false
+  // 同文档 hash 跳转不重建组件，query 里缺失的筛选键要清掉，避免上一次路由的筛选残留
+  const { filters: next, changed } = mergeTaskFilters(filters, route.query)
+  if (!changed) return false
+  Object.assign(filters, next)
+  load(1)
+  return true
 }
 
 onMounted(() => {
-  if (route.path === '/tasks' && Object.keys(route.query).length > 0) {
-    applyRoute()
-  } else {
-    load(1)
-  }
+  // query 存在但未改变任何筛选（未知参数 / overdue=false / 非法 sort）时，
+  // applyRoute() 不会发请求，必须回落 load(1)，否则首屏一直是空列表。
+  const applied = applyRoute()
+  if (needsInitialLoad(route.path, route.query, applied)) load(1)
 })
 watch(() => route.query, applyRoute)
 </script>

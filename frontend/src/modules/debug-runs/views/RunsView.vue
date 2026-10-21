@@ -160,6 +160,7 @@ async function load() {
     total.value = data.total ?? items.value.length
   } catch {
     items.value = []
+    total.value = 0  // 与列表同步归零，避免「测试运行（2）」配空表
   } finally {
     loading.value = false
   }
@@ -228,16 +229,22 @@ onMounted(load)
   padding: 4px 16px;
 }
 
-.err-block {
+/* ErrList 是函数式组件：它渲染的 div/pre 不是本 SFC 模板里的节点，拿不到 scoped 的
+   data-v 属性，父作用域选择器必须经 :deep() 穿透才命中。
+   实测（探针 TC-DC-RUN-003）：不穿透时 .err-pre[data-v-x] 整体失效——
+   长堆栈失去 max-height/overflow，展开行被撑到几百 px 高。
+   .err-pre 同时用于本组件模板（用例失败详情），故并列保留普通选择器。 */
+.err-lists :deep(.err-block) {
   margin-bottom: 8px;
 }
 
-.err-title {
+.err-lists :deep(.err-title) {
   font-size: 12px;
   color: #909399;
   margin-bottom: 4px;
 }
 
+.err-lists :deep(.err-pre),
 .err-pre {
   background: #fef0f0;
   color: #f56c6c;

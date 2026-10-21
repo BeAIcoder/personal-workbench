@@ -149,6 +149,9 @@ def test_reset_restores_builtin(client):
     agents = client.get("/api/assistant/agents").json()["agents"]
     leasing = next(a for a in agents if a["name"] == "leasing")
     assert "免租" in leasing["keywords"] and leasing["enabled"] is True
+    # 恢复出厂必须保留模块预置工具（静态 TEAM.tools 不含财务模块工具）
+    finance = next(a for a in agents if a["name"] == "finance_specialist")
+    assert {"pl_monthly_summary", "invoice_batch_stats", "vault_query"} <= set(finance["tools"])
     # reset 幂等：再次执行不新增行
     client.post("/api/assistant/agents/reset")
     assert len(client.get("/api/assistant/agents").json()["agents"]) == 8

@@ -70,6 +70,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { encodePackFilePath, encodePackName } from '../utils/skillPack'
 
 const loading = ref(false)
 const items = ref([])
@@ -101,7 +102,7 @@ async function rescan() {
 
 async function toggleEnabled(row) {
   try {
-    await api.put(`/skills/packs/${row.dir}/enabled`, { enabled: row.enabled })
+    await api.put(`/skills/packs/${encodePackName(row.dir)}/enabled`, { enabled: row.enabled })
     ElMessage.success(row.enabled ? '已启用' : '已停用')
   } catch {
     row.enabled = !row.enabled
@@ -159,7 +160,7 @@ async function loadFileContent() {
   if (!fileDialog.current) return
   fileDialog.loading = true
   try {
-    const { data } = await api.get(`/skills/packs/${fileDialog.dir}/files/${fileDialog.current}`)
+    const { data } = await api.get(`/skills/packs/${encodePackName(fileDialog.dir)}/files/${encodePackFilePath(fileDialog.current)}`)
     fileDialog.content = data.content || ''
   } catch {
     fileDialog.content = '（读取失败）'
@@ -175,7 +176,7 @@ async function remove(row) {
     return  // 用户取消
   }
   try {
-    await api.delete(`/skills/packs/${row.dir}`)
+    await api.delete(`/skills/packs/${encodePackName(row.dir)}`)
     ElMessage.success('已删除')
     await load()
   } catch {

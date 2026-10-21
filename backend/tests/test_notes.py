@@ -43,6 +43,32 @@ def test_tag_filter_escapes_like_wildcards(client):
     assert client.get("/api/notes", params={"tag": "a_b"}).json()["items"][0]["title"] == "下划线"
 
 
+def test_tag_filter_escapes_json_quotes_and_backslash(client):
+    """标签含 JSON 转义字符（" 与 \\）时仍能按字面过滤。"""
+    client.post("/api/notes", json=_payload(title="引号标签", tags=['a"b']))
+    client.post("/api/notes", json=_payload(title="反斜杠标签", tags=["a\\b"]))
+    assert client.get("/api/notes", params={"tag": 'a"b'}).json()["items"][0]["title"] == "引号标签"
+    assert client.get("/api/notes", params={"tag": "a\\b"}).json()["items"][0]["title"] == "反斜杠标签"
+
+
+def test_update_rejects_null_non_nullable_fields(client):
+    """显式 null 不能被写入非空列：tags/pinned 的 null 会污染列表接口。"""
+    note_id = client.post("/api/notes", json=_payload()).json()["id"]
+    for field in ("title", "content", "tags", "pinned"):
+        assert client.put(f"/api/notes/{note_id}", json={field: None}).status_code == 422, field
+    body = client.get(f"/api/notes/{note_id}").json()
+    assert body["title"] == "报销审核要点" and body["tags"] == ["报销", "发票"]
+    assert client.get("/api/notes").json()["total"] == 1
+
+
+def test_update_blank_title_rejected(client):
+    """更新纯空格标题与创建同口径拒绝，不能落库后触发响应校验 500。"""
+    note_id = client.post("/api/notes", json=_payload()).json()["id"]
+    assert client.put(f"/api/notes/{note_id}", json={"title": "   "}).status_code == 422
+    assert client.get(f"/api/notes/{note_id}").json()["title"] == "报销审核要点"
+
+
+
 def test_pinned_filter(client):
     client.post("/api/notes", json=_payload(title="普通", pinned=False))
     client.post("/api/notes", json=_payload(title="置顶", pinned=True))

@@ -25,14 +25,26 @@
     <el-card class="day-card" shadow="never">
       <template #header>
         <div class="day-header">
-          <span class="day-title">{{ selectedDayText }} · {{ dayEvents.length }} 项日程</span>
+          <div class="day-heading">
+            <span class="day-title">{{ selectedDayText }} · {{ dayEvents.length }} 项日程</span>
+            <el-tag
+              v-if="searchKeyword"
+              class="search-hint"
+              type="info"
+              closable
+              size="small"
+              @close="clearSearch"
+            >
+              搜索：{{ searchKeyword }}（本月命中 {{ visibleEvents.length }}）
+            </el-tag>
+          </div>
           <el-button type="primary" size="small" @click="openCreate">
             <el-icon><Plus /></el-icon>&nbsp;新建日程
           </el-button>
         </div>
       </template>
 
-      <el-empty v-if="!dayEvents.length" description="这一天暂无日程，点击右上角新建" :image-size="80" />
+      <el-empty v-if="!dayEvents.length" :description="emptyDayText" :image-size="80" />
       <div v-else class="event-list">
         <div v-for="ev in dayEvents" :key="ev.id" class="event-item" @click="openEdit(ev)">
           <span class="event-bar" :style="{ background: ev.color }"></span>
@@ -99,14 +111,19 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { scheduleApi } from '../api'
 import { fmtDT } from '../utils/format'
 import { monthRange } from '../utils/daterange'
+import { matchesScheduleQuery, parseSearchDate } from '../utils/search'
 
+const route = useRoute()
 const router = useRouter()
-const currentDate = ref(new Date())
+// 全局搜索跳转（?q=关键词&date=YYYY-MM-DD）：定位到命中日程所在日期并按关键词过滤
+const initialSearchDate = parseSearchDate(route.query.date)
+const currentDate = ref(initialSearchDate ? dayjs(initialSearchDate).toDate() : new Date())
+const searchKeyword = ref(String(route.query.q || '').trim())
 const monthEvents = ref([])
 const loading = ref(false)
 
@@ -131,9 +148,15 @@ const predefine = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#9C27B0', '#00BF
 const selectedDayKey = computed(() => dayjs(currentDate.value).format('YYYY-MM-DD'))
 const selectedDayText = computed(() => dayjs(currentDate.value).format('YYYY年MM月DD日 dddd'))
 
+// 搜索态下只展示命中关键词的日程（标题 / 地点 / 备注，与 /api/search 一致）
+const visibleEvents = computed(() => {
+  if (!searchKeyword.value) return monthEvents.value
+  return monthEvents.value.filter((ev) => matchesScheduleQuery(ev, searchKeyword.value))
+})
+
 const eventsByDay = computed(() => {
   const map = {}
-  for (const ev of monthEvents.value) {
+  for (const ev of visibleEvents.value) {
     const key = dayjs(ev.start_time).format('YYYY-MM-DD')
     if (!map[key]) map[key] = []
     map[key].push(ev)
@@ -142,6 +165,12 @@ const eventsByDay = computed(() => {
 })
 
 const dayEvents = computed(() => eventsByDay.value[selectedDayKey.value] || [])
+
+const emptyDayText = computed(() =>
+  searchKeyword.value
+    ? `未找到与「${searchKeyword.value}」匹配的日程`
+    : '这一天暂无日程，点击右上角新建',
+)
 
 // 单次拉取上限 200 条：达到上限说明本月日程可能未完整加载
 const monthLimitHit = computed(() => monthEvents.value.length >= 200)
@@ -157,6 +186,10 @@ async function loadMonth() {
     const { data } = await scheduleApi.list({ ...range, page_size: 200 })
     if (seq !== loadSeq) return  // 已有更新的请求发出，丢弃旧结果
     monthEvents.value = data.items
+  } catch {
+    // 拦截器已提示；吞掉 rejection，避免 onMounted/watch 产生未捕获异常。
+    // 失败要清空月份数据：日历标题已经是新月份，却还挂着上个月的日程，比空白更容易误导。
+    if (seq === loadSeq) monthEvents.value = []
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -195,20 +228,23 @@ function openEdit(ev) {
 }
 
 async function save() {
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
-  const payload = { ...form }
-  if (form.all_day) {
-    const d = (form.start_time || '').slice(0, 10)
-    if (!d) {
-      ElMessage.warning('请选择日期')
-      return
-    }
-    payload.start_time = `${d}T00:00:00`
-    payload.end_time = `${d}T23:59:59`
-  }
+  // 先上锁再校验：validate() 是 async，锁放在 await 之后就给双击留了窗口，
+  // 两次都通过校验会创建两条重复日程（:loading 此刻也还没禁用）
+  if (dialog.saving) return
   dialog.saving = true
   try {
+    const valid = await formRef.value.validate().catch(() => false)
+    if (!valid) return
+    const payload = { ...form }
+    if (form.all_day) {
+      const d = (form.start_time || '').slice(0, 10)
+      if (!d) {
+        ElMessage.warning('请选择日期')
+        return
+      }
+      payload.start_time = `${d}T00:00:00`
+      payload.end_time = `${d}T23:59:59`
+    }
     if (dialog.id) {
       await scheduleApi.update(dialog.id, payload)
       ElMessage.success('日程已保存')
@@ -218,6 +254,8 @@ async function save() {
     }
     dialog.visible = false
     loadMonth()
+  } catch {
+    // 拦截器已提示；吞掉 rejection 避免未捕获异常，对话框保留让用户改完重发
   } finally {
     dialog.saving = false
   }
@@ -229,7 +267,11 @@ async function remove(ev) {
   } catch {
     return  // 用户取消
   }
-  await scheduleApi.remove(ev.id)
+  try {
+    await scheduleApi.remove(ev.id)
+  } catch {
+    return  // 删除失败：日程仍在月历上（拦截器已提示）
+  }
   ElMessage.success('已删除')
   loadMonth()
 }
@@ -247,7 +289,26 @@ function timeOnly(value) {
   return value ? dayjs(value).format('HH:mm') : ''
 }
 
-onMounted(loadMonth)
+function applyRouteQuery() {
+  searchKeyword.value = String(route.query.q || '').trim()
+  const date = parseSearchDate(route.query.date)
+  if (date) {
+    const next = dayjs(date).toDate()
+    // 同一天不重设，避免无意义的月份 watcher 触发
+    if (!dayjs(next).isSame(currentDate.value, 'day')) currentDate.value = next
+  }
+}
+
+function clearSearch() {
+  router.replace({ path: '/schedules' })
+}
+
+onMounted(() => {
+  applyRouteQuery()
+  loadMonth()
+})
+// 离开 /schedules?q=… 的查询参数时（菜单跳转 / 关闭搜索标签）恢复完整月历
+watch(() => route.query, applyRouteQuery)
 // 只在月份变化时才整月重拉，同月内点选日期不触发请求
 watch(currentDate, (nv, ov) => {
   if (dayjs(nv).isSame(ov, 'month')) return
@@ -319,6 +380,20 @@ watch(currentDate, (nv, ov) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.day-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.search-hint {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .day-title {

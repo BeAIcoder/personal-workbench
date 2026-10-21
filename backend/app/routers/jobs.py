@@ -6,6 +6,7 @@ from ..database import get_db
 from ..models import ScheduledJob
 from ..schemas import ScheduledJobCreate, ScheduledJobOut, ScheduledJobUpdate
 from .. import scheduler
+from ..utils import DbId
 
 router = APIRouter(prefix="/jobs", tags=["定时任务"])
 
@@ -32,7 +33,7 @@ def create_job(payload: ScheduledJobCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{job_id}", response_model=ScheduledJobOut, summary="更新定时任务（仅传需要修改的字段）")
-def update_job(job_id: int, payload: ScheduledJobUpdate, db: Session = Depends(get_db)):
+def update_job(job_id: DbId, payload: ScheduledJobUpdate, db: Session = Depends(get_db)):
     job = _get_or_404(db, job_id)
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
@@ -57,14 +58,14 @@ def update_job(job_id: int, payload: ScheduledJobUpdate, db: Session = Depends(g
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除定时任务")
-def delete_job(job_id: int, db: Session = Depends(get_db)):
+def delete_job(job_id: DbId, db: Session = Depends(get_db)):
     job = _get_or_404(db, job_id)
     db.delete(job)
     db.commit()
 
 
 @router.post("/{job_id}/run", summary="立即执行一次（不影响下次到点触发）")
-async def run_job_now(job_id: int, db: Session = Depends(get_db)):
+async def run_job_now(job_id: DbId, db: Session = Depends(get_db)):
     _get_or_404(db, job_id)
     result = await scheduler.run_job(job_id, manual=True)
     return result

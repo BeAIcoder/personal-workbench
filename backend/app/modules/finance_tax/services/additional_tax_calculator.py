@@ -4,6 +4,7 @@
 以及六税两费减半政策的支持。
 """
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Any, Optional, List
 from enum import Enum
 import math
@@ -168,8 +169,19 @@ class FullAdditionalTaxResult:
 # ============================================================
 
 def _round_tax(amount: float) -> float:
-    """税费四舍五入到分（2位小数）"""
-    return round(amount, 2)
+    """税费四舍五入到分（2位小数）
+
+    税务口径为 ROUND_HALF_UP（四舍五入），而 Python 内置 round() 采用
+    银行家舍入（ROUND_HALF_EVEN），且受二进制浮点表示误差影响
+    （round(2.675, 2) == 2.67），会导致税费金额差 1 分并跨行放大。
+    因此统一走 Decimal 十进制舍入。
+    """
+    if amount is None:
+        return 0.0
+    quantized = Decimal(str(float(amount))).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    return float(quantized)
 
 
 def _check_half_policy_eligible(
@@ -249,6 +261,50 @@ def calculate_local_education_surcharge(tax_base: float) -> float:
     return _round_tax(tax_base * LOCAL_EDUCATION_SURCHARGE_RATE)
 
 
+def _split_half_amounts(
+    original_items: List[float],
+    half_discount: float,
+) -> List[float]:
+    """把「减半后实收总额」按原占比分摊到各分项，并保证分项之和 == 合计。
+
+    税务口径：合计减半一次舍入为准（half_discount 已按合计算出），
+    分项明细必须能加回该合计，否则前端明细与总数对账不平。
+    做法：先按比例分摊，再用「最大余额法」把末位分差补到最后一项上。
+    """
+    n = len(original_items)
+    if n == 0:
+        return []
+    if n == 1:
+        return [_round_tax(original_items[0] - half_discount)]
+
+    target_total = _round_tax(sum(original_items) - half_discount)
+    base = sum(original_items)
+    if base <= 0:
+        return [0.0 for _ in original_items]
+
+    # 1) 按占比分摊（每项四舍五入到分）
+    shares: List[float] = []
+    remainders: List[float] = []
+    for value in original_items:
+        share = _round_tax((value / base) * target_total)
+        shares.append(share)
+        remainders.append((value / base) * target_total - share)
+
+    # 2) 最大余额法补差：把舍入差额按原始余数从大到小补给分项
+    diff = _round_tax(target_total - sum(shares))
+    if diff != 0.0:
+        step = 0.01 if diff > 0 else -0.01
+        remaining = int(round(abs(diff) / 0.01))
+        order = sorted(range(n), key=lambda i: remainders[i], reverse=(diff > 0))
+        idx = 0
+        while remaining > 0 and order:
+            i = order[idx % len(order)]
+            shares[i] = _round_tax(shares[i] + step)
+            remaining -= 1
+            idx += 1
+    return shares
+
+
 def calculate_surcharges(
     vat_paid: float = 0.0,
     consumption_tax_paid: float = 0.0,
@@ -283,7 +339,7 @@ def calculate_surcharges(
     edu_surcharge = calculate_education_surcharge(tax_base)
     local_edu_surcharge = calculate_local_education_surcharge(tax_base)
 
-    original_total = city_tax + edu_surcharge + local_edu_surcharge
+    original_total = _round_tax(city_tax + edu_surcharge + local_edu_surcharge)
 
     # 检查六税两费减半政策
     eligible, eligible_types = _check_half_policy_eligible(
@@ -292,15 +348,27 @@ def calculate_surcharges(
 
     half_discount = 0.0
     final_total = original_total
+    final_city_tax = city_tax
+    final_edu_surcharge = edu_surcharge
+    final_local_edu_surcharge = local_edu_surcharge
 
     if eligible:
+        # 合计口径优先：先按合计算一次减半额（一次舍入）
         half_discount = _round_tax(original_total * 0.5)
         final_total = _round_tax(original_total - half_discount)
+        # 分项按合计占比分摊，保证 分项之和 == additional_tax_total
+        (
+            final_city_tax,
+            final_edu_surcharge,
+            final_local_edu_surcharge,
+        ) = _split_half_amounts(
+            [city_tax, edu_surcharge, local_edu_surcharge], half_discount
+        )
 
     return AdditionalTaxResult(
-        city_maintenance_tax=city_tax if not eligible else _round_tax(city_tax * 0.5),
-        education_surcharge=edu_surcharge if not eligible else _round_tax(edu_surcharge * 0.5),
-        local_education_surcharge=local_edu_surcharge if not eligible else _round_tax(local_edu_surcharge * 0.5),
+        city_maintenance_tax=final_city_tax,
+        education_surcharge=final_edu_surcharge,
+        local_education_surcharge=final_local_edu_surcharge,
         additional_tax_total=final_total,
         tax_base=tax_base,
         city_tier=city_tier,
@@ -388,13 +456,14 @@ def calculate_stamp_duty(
     if eligible:
         half_discount = _round_tax(original_total * 0.5)
         final_total = _round_tax(original_total - half_discount)
-        # 按比例分摊减半金额到每个项目
+        # 减半金额按合计口径分摊到各项目，保证分项之和 == stamp_duty_total
         if original_total > 0:
-            for item_result in item_results:
-                ratio = item_result["tax_amount"] / original_total
-                item_result["tax_amount"] = _round_tax(
-                    item_result["tax_amount"] * 0.5
-                )
+            shares = _split_half_amounts(
+                [item_result["tax_amount"] for item_result in item_results],
+                half_discount,
+            )
+            for item_result, share in zip(item_results, shares):
+                item_result["tax_amount"] = share
 
     return StampDutyResult(
         items=item_results,
@@ -467,10 +536,17 @@ def calculate_all_additional_taxes(
         is_individual_business=is_individual_business,
     )
 
-    # 汇总
-    original_total = surcharge_result.original_total + stamp_result.original_total
-    final_total = surcharge_result.additional_tax_total + stamp_result.stamp_duty_total
-    half_discount = surcharge_result.half_discount_amount + stamp_result.half_discount_amount
+    # 汇总（二次舍入，避免 0.10000000000000009 类浮点长尾直接透出到展示层）
+    original_total = _round_tax(
+        surcharge_result.original_total + stamp_result.original_total
+    )
+    final_total = _round_tax(
+        surcharge_result.additional_tax_total + stamp_result.stamp_duty_total
+    )
+    half_discount = _round_tax(
+        surcharge_result.half_discount_amount + stamp_result.half_discount_amount
+    )
+    tax_base = _round_tax(vat_paid + consumption_tax_paid)
 
     # 合并减半政策类型（去重）
     all_half_types = list(set(surcharge_result.half_policy_types + stamp_result.half_policy_types))

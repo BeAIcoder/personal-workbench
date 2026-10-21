@@ -18,7 +18,7 @@
               <el-tag :type="lastRunOk ? 'success' : 'danger'" size="small">
                 {{ lastRunOk ? '通过' : '有失败' }}
               </el-tag>
-              {{ summary.last_run.kind }}
+              {{ kindLabel(summary.last_run.kind) }}
             </template>
             <span v-else class="sum-none">暂无运行</span>
           </div>
@@ -146,6 +146,11 @@ const lastRunOk = computed(() => {
   return r ? r.bad_pages === 0 && r.failed_tests === 0 : true
 })
 
+// 与运行列表页一致的中文类型名
+function kindLabel(kind) {
+  return { recon: '页面侦察', interactions: '交互测试', edge: '边界测试' }[kind] || kind
+}
+
 // P0 红 / P1 橙 / P2 黄 / P3 灰
 function sevTagStyle(sev) {
   if (sev === 'P0') return { background: '#f56c6c', borderColor: '#f56c6c', color: '#fff' }
@@ -178,6 +183,7 @@ async function loadIssues() {
     total.value = data.total ?? items.value.length
   } catch {
     items.value = []
+    total.value = 0  // 列表清空时计数同步归零，否则表头停在旧数字（「问题记录（11）」配空表）
   } finally {
     loading.value = false
   }
@@ -219,7 +225,8 @@ async function changeStatus(row, status) {
     await debugApi.issues.update(row.id, { status })
     row.status = status
     ElMessage.success('状态已更新')
-    loadSummary()
+    // 状态筛选生效时，改状态后该行可能不再属于当前筛选，必须重新拉取列表
+    await Promise.all([loadIssues(), loadSummary()])
   } catch {
     /* 拦截器已提示 */
   }

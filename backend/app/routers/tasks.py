@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Task
 from ..schemas import Page, TaskCreate, TaskOut, TaskUpdate
-from ..utils import parse_dt
+from ..utils import DbId, parse_dt
 
 router = APIRouter(prefix="/tasks", tags=["任务管理"])
 
@@ -98,14 +98,40 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{task_id}", response_model=TaskOut, summary="任务详情")
-def get_task(task_id: int, db: Session = Depends(get_db)):
+def get_task(task_id: DbId, db: Session = Depends(get_db)):
     return _get_or_404(db, task_id)
 
 
+# TaskUpdate 的可选字段允许显式 null，但这些列在库里是 NOT NULL：
+# 直接落库会 IntegrityError 500；title 更特殊——空白串能通过 TaskUpdate（无清洗器），
+# commit 后由 TaskOut 响应校验抛 ResponseValidationError，脏行会让详情/列表持续 500。
+# 因此在写库前统一校验，返回可读的 422。due_date 是唯一允许置空的字段。
+_REQUIRED_UPDATE_FIELDS = {
+    "title": "标题",
+    "description": "描述",
+    "status": "状态",
+    "priority": "优先级",
+    "category": "分类",
+}
+
+
+def _clean_update(payload: TaskUpdate) -> dict:
+    data = payload.model_dump(exclude_unset=True)
+    for field, label in _REQUIRED_UPDATE_FIELDS.items():
+        if field in data and data[field] is None:
+            raise HTTPException(status_code=422, detail=f"{label}不能为空")
+    if "title" in data:
+        # 与 TaskCreate 的标题清洗语义保持一致：trim 后再落库
+        data["title"] = data["title"].strip()
+        if not data["title"]:
+            raise HTTPException(status_code=422, detail="标题不能为空白")
+    return data
+
+
 @router.put("/{task_id}", response_model=TaskOut, summary="更新任务（仅传需要修改的字段）")
-def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)):
+def update_task(task_id: DbId, payload: TaskUpdate, db: Session = Depends(get_db)):
     task = _get_or_404(db, task_id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    for field, value in _clean_update(payload).items():
         setattr(task, field, value)
     if task.status == "done":
         if task.completed_at is None:
@@ -118,7 +144,7 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
 
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除任务")
-def delete_task(task_id: int, db: Session = Depends(get_db)):
+def delete_task(task_id: DbId, db: Session = Depends(get_db)):
     task = _get_or_404(db, task_id)
     db.delete(task)
     db.commit()

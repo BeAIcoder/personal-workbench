@@ -248,7 +248,9 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
     analysis 种子问题（`ensure_seed_issues()` 幂等，挂 lifespan + 接口首用双保险）。
   - `runs/<run_id>/result.json` + `runs/<run_id>/shots/*.png`：测试运行归档，
     run_id 形如 `20261013-153000_recon`。
-  - `client_errors.jsonl`：前端报错，每行一条 `{ts, page, message, stack, ua}`。
+  - `client_errors.jsonl`：前端报错，每行一条 `{ts, page, message, stack, ua}`；
+    **有界存储**——文件超过 10MB 时按行裁剪，只保留最近 1000 条（裁剪阈值 × 保留量已错开，
+    一次裁剪不会立即再触发；裁剪失败只告警，不影响本次上报）。
 - **端点**：`/issues` CRUD（PUT 部分更新、自动刷 updated_at）；
   `/runs` 列表/详情/截图（FileResponse，`is_relative_to` 防穿越）/删除（整目录）；
   `/client-errors` 追加（**宽容解析，垃圾输入绝不 500**）/尾部读取/清空；
@@ -559,7 +561,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 ## 13. 测试与验证
 
-- **后端 pytest**：`backend/tests/` 共 **415 例全绿**（2026-10-19 实测，约 2 分 30 秒）。conftest 临时库隔离、
+- **后端 pytest**：`backend/tests/` 共 **505 例全绿**（2026-10-20 实测，约 3 分 30 秒）。conftest 临时库隔离、
   引擎对拍、monkeypatch 探测/LLM，全部离线可重复。
   覆盖业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/
   连通性测试 + 定时任务 + QwenPaw 导入静态校验 + RAG/记忆/MCP/技能包/专家团文件 +
@@ -570,14 +572,37 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
   + 2026-10-19 审计修复回归（`test_bugfix_*.py` 五件 67 例：只读 readonly 放行/技能启停失效缓存/
   转义闭环/供应商级联删除/cron 更新校验与错过补偿/手动运行不吞定时/RAG 中文混合词/MCP 更新停旧进程/
   debug 并发锁/发票 failed 态/税务导出与校验/企业字段/记账账户警告/上传大小写与上限/aware 日期/
-  引擎线程池/管线 409 等）。
-- **前端 vitest**：`frontend/tests/` 共 **150 例全绿**（21 个文件）：注册断言 + 纯逻辑 + setup 级组件测试
+  引擎线程池/管线 409 等）
+  + 2026-10-20 E2E 探测回归（MCP readonly 注解唯一依据与工具注销/cron 补偿不早于创建时间/
+  专家包 NULL 工具池语义/导出文件名 CRLF 清洗/schedule_type 枚举与跨字段归一/调试中心空白标题 422）
+  + 2026-10-20 五区补探回归（搜索空白关键词 422/今日日程 00:00 边界/笔记 null 与空白标题校验/
+  标签 JSON 转义匹配/删除笔记清理定时任务悬挂引用/会话 session_id 校验与首条消息补标题/
+  技能包描述 YAML 安全序列化/关键词逗号导出往返/恢复出厂重放模块预置工具）
+  + 2026-10-20 加固轮回归（超 int64 路径 ID 入口拦截 `utils.DbId` 与全局
+  `OverflowError`→422 兜底、调试中心 `client_errors.jsonl` 按大小裁剪有界且逐行仍可解析、
+  ID 越界不泄露堆栈、深翻页 `PRAGMA temp_store=2`、conftest 钉 `tempfile.tempdir` 防临时件落进仓库）。
+- **前端 vitest**：`frontend/tests/` 共 **352 例全绿**（34 个文件）：注册断言 + 纯逻辑 + setup 级组件测试
   （格式化/日历范围/Agent 工具函数/定时任务展示/模型探测交互/各财务模块/调试中心三模块）
   + 审计修复回归（`bugfix-frontend-*.test.js` 两件 36 例：笔记新建定位/记忆表单重置/highlight 参数/
   MCP env 保护/附件-only 发送/会话切换不破图/全部导入确认/拦截器去重/本地时区日期/月份下拉/
-  筛选复位页码/file input 重置）。
+  筛选复位页码/file input 重置）
+  + E2E 探测回归（任务筛选同步与逾期排序/助手预设填充与专家模型下拉刷新/MCP 编辑保护/
+  搜索建议竞态与占位项/日程搜索跳转定位/笔记草稿保护与失败反馈/删除会话失败保留状态/
+  技能包目录名 URL 编码/看板失败快照刷新/记账支出分类口径）
+  + 未捕获 rejection 守卫（`no-unhandled-request.test.js`：**扫描 `src` 全部 86 个 .vue/.js**，
+  函数顶层直接发请求的 `await` 必须同行带 `.catch`，新增页面自动纳管）
+  + 提交竞态回归（`interaction-submit-race.test.js`：连点单次提交、失败后锁复位）。
+- **E2E 区域探针**：`dev/e2e/probes/*.py` **17 区 656/656**（各区独立端口 + 独立库/数据目录隔离，
+  结果归档 `dev/e2e/probe_results/`）；其中 `interaction-ux` 为**自动化交互走查**，
+  不等同于真人可用性测试（不含访谈、原话与主观评分）。
+- **性能基线**：`dev/e2e/perf_probe.py`（播种 tasks 5000 / notes 2000 / schedules 1000 /
+  sessions 200 / messages 4000 / transactions 20000，预热 5 次取 30 次）——18 接口 p95 最慢 67.0ms
+  （`stats/trend?months=24`），预算 health 20 / list 120 / aggregate 250；真实浏览器首屏
+  DOMContentLoaded 201ms、资源 2.70MB、0 page error；唯一越线为 `/api/health` p95 21.67ms
+  （静态字典端点，两次实测 19.25/21.67ms 落在阈值噪声带，记录不掩盖）。
 - **冒烟**：uvicorn 真实端点 + 冒烟数据清理。
-- **构建**：`npm run build` 通过（各视图独立 chunk；AG Grid 为大头）。
+- **构建**：`npm run build` 通过（8.56s；各视图独立 chunk，两个 index chunk 1.28MB + 1.03MB 为
+  Element Plus / ECharts 全量引入的大头，分包留作专项）。
 - **手动验收**：十个静态页 + 设置抽屉 + 专家团队 tab + 技能包/专家团文件页 + 知识与记忆页 + MCP 页
   + 财务分组菜单 + SSE 对话流 + 路由测试工具 + 会话归档/导出 + 聊天传图。
 

@@ -496,6 +496,8 @@ async function onFilePicked(uploadFile) {
     if (isImageFile(raw) || isImageAttachment(att)) att.previewUrl = createPreviewUrl(raw)
     attachments.value.push(att)
     if (data.note) ElMessage.success(data.note)
+  } catch {
+    /* 拦截器已提示；吞掉拒绝，避免异步事件处理器产生未捕获异常 */
   } finally {
     uploading.value = false
   }

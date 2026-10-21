@@ -174,6 +174,44 @@ def test_import_creates_expert(client, tmp_path):
     assert "legal_advisor" in team_mod.load_team()
 
 
+def test_import_without_tools_keeps_null_default_pool(client, tmp_path):
+    """tools 缺省/空 = 跟随默认技能池（NULL）；导入不得写成 []（真零工具）。"""
+    text = "---\nname: default_pool\nlabel: 默认池专家\ntools: \"\"\n---\n默认池提示词。\n"
+    _write(tmp_path, "default_pool.md", text)
+    with SessionLocal() as db:
+        assert expert_packs.import_pack("default_pool", db)["action"] == "created"
+    with SessionLocal() as db:
+        row = db.query(AgentSpecModel).filter(AgentSpecModel.name == "default_pool").one()
+        assert row.tools is None, "空 tools 被落成 []，专家会失去默认查询工具池"
+    # 再次导入（内容一致）走 unchanged 短路，仍保持 NULL
+    with SessionLocal() as db:
+        assert expert_packs.import_pack("default_pool", db)["action"] == "unchanged"
+    with SessionLocal() as db:
+        row = db.query(AgentSpecModel).filter(AgentSpecModel.name == "default_pool").one()
+        assert row.tools is None
+
+
+def test_import_tools_on_null_row_includes_default_pool(client, tmp_path):
+    """NULL 行（默认池专家）导入声明工具：白名单 = 默认查询池 ∪ 文件工具，不缩减。"""
+    from app.agents.team import QUERY_TOOLS
+
+    text = "---\nname: default_plus\nlabel: 默认池加工具\ntools: \"\"\n---\n提示词。\n"
+    _write(tmp_path, "default_plus.md", text)
+    with SessionLocal() as db:
+        expert_packs.import_pack("default_plus", db)
+    with SessionLocal() as db:
+        assert db.query(AgentSpecModel).filter(AgentSpecModel.name == "default_plus").one().tools is None
+    # 文件补声明一个写工具后再次导入：默认池必须保留
+    text2 = "---\nname: default_plus\nlabel: 默认池加工具\ntools: \"create_task\"\n---\n提示词。\n"
+    _write(tmp_path, "default_plus.md", text2)
+    with SessionLocal() as db:
+        assert expert_packs.import_pack("default_plus", db)["action"] == "updated"
+    with SessionLocal() as db:
+        row = db.query(AgentSpecModel).filter(AgentSpecModel.name == "default_plus").one()
+        assert set(QUERY_TOOLS) <= set(row.tools or []), "默认查询池被导入覆盖掉了"
+        assert "create_task" in row.tools
+
+
 def test_import_updates_builtin_and_keeps_is_builtin(client, tmp_path):
     from app.agents.team import TEAM as _TEAM
 
@@ -302,6 +340,22 @@ def test_export_roundtrip(client, tmp_path):
         assert row.description == expected["description"]
         assert row.sort == expected["sort"]
         assert row.is_builtin is False
+
+
+def test_export_keywords_with_comma_roundtrip(client, tmp_path):
+    """关键词本身含英文逗号时，导出→解析必须整体保留，不能被拆成两个词。"""
+    with SessionLocal() as db:
+        row = db.query(AgentSpecModel).filter(AgentSpecModel.name == "leasing").one()
+        row.keywords = ["招商,租约", "免租期", "a,b,c"]
+        db.commit()
+    with SessionLocal() as db:
+        expert_packs.export_pack("leasing", db)
+    parsed = expert_packs.parse_pack_file(tmp_path / "leasing.md")
+    assert parsed["keywords"] == ["招商,租约", "免租期", "a,b,c"]
+    # 手写/旧版行内列表（无引号）仍按逗号拆分
+    legacy = tmp_path / "legacy.md"
+    legacy.write_text("---\nname: legacy\nkeywords: [财务, 税]\n---\n\n正文。\n", encoding="utf-8")
+    assert expert_packs.parse_pack_file(legacy)["keywords"] == ["财务", "税"]
 
 
 def test_export_unknown_expert_raises(client, tmp_path):

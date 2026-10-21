@@ -1,7 +1,7 @@
 """ORM 数据模型：任务、日程、笔记。"""
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -30,7 +30,10 @@ class Task(TimestampMixin, Base):
     priority: Mapped[str] = mapped_column(String(20), default="medium", index=True)
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     category: Mapped[str] = mapped_column(String(50), default="", index=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # completed_at：概览页「近 7 天完成趋势」按完成时间范围统计
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    # created_at：任务列表默认排序列，缺索引时 SQLite 走全表扫描 + 临时 B 树排序
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
 
 
 class Schedule(TimestampMixin, Base):
@@ -59,6 +62,9 @@ class Note(TimestampMixin, Base):
     # 标签列表，如 ["税务", "报销"]
     tags: Mapped[list] = mapped_column(JSON, default=list)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    # 列表默认 order_by(pinned desc, updated_at desc)：单列 pinned 索引选择性太差（几乎全是 0），
+    # 复合索引让排序直接走索引，省掉全表扫描 + 临时 B 树排序（大库上这是列表 p95 的主要开销）
+    __table_args__ = (Index("ix_notes_pinned_updated", "pinned", "updated_at"),)
 
 
 class ChatMessage(TimestampMixin, Base):
@@ -88,7 +94,8 @@ class AgentSession(Base):
     # 归档：归档后不出现在默认会话列表（archived=true 过滤可见）
     archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+    # updated_at：会话列表 order_by(updated_at desc) 的排序列，缺索引时全表扫描 + 临时 B 树
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, index=True)
 
 
 class ModelProvider(Base):

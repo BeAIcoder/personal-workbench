@@ -65,6 +65,25 @@ def apply_pending_presets() -> int:
     return applied
 
 
+def apply_loaded_presets() -> int:
+    """把当前已加载模块的 preset_experts 工具重新并入专家白名单。
+
+    供「恢复出厂」调用：reset_agents 按 TEAM 静态定义覆盖 tools 后会丢掉模块
+    预置工具（如 finance_specialist 的财务模块工具），这里按运行时权威来源
+    （各 manifest）幂等补回。返回处理过的模块数。
+    """
+    applied = 0
+    for manifest in _loaded:
+        if not (manifest.preset_experts and manifest.agent_tools):
+            continue
+        try:
+            _preset_expert_tools(manifest)
+            applied += 1
+        except Exception:
+            logger.exception("模块 %s 工具预置重放失败，已跳过", manifest.name)
+    return applied
+
+
 def discover_module_names() -> list[str]:
     """扫描模块目录名：含 manifest.py 且目录名不以 _ 开头。"""
     names: list[str] = []

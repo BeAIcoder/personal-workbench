@@ -44,6 +44,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { shouldReloadAfterRun } from '../utils'
 
 const loading = ref(false)
 const running = ref(false)
@@ -75,8 +76,9 @@ async function run() {
     ElMessage.success(`运行完成（${data.elapsed_sec}s），已归档快照 ${data.stamp}`)
     await load()
     selected.value = data.id
-  } catch {
-    /* 拦截器已统一提示 */
+  } catch (err) {
+    // 拦截器已统一提示；管线失败仍会归档 failed 快照，需重拉列表让其可见
+    if (shouldReloadAfterRun(err)) await load()
   } finally {
     running.value = false
   }

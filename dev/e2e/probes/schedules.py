@@ -81,6 +81,7 @@ def cal_title_of(d: date) -> str:
 results = []   # (id, name, passed, detail)
 pages_report = []
 page_errors_all = []
+console_errors_all = []
 
 
 def record(tid, name, fn):
@@ -560,7 +561,11 @@ def main():
             try:
                 event_row("探测-定时日程").locator("button[title='AI 备会']").click()
                 page.wait_for_timeout(600)
-                n_dialog = page.evaluate("document.querySelectorAll('.el-dialog').length")
+                # Element Plus 关闭后的对话框仍留在 DOM（display:none），只数可见的
+                n_dialog = page.evaluate(
+                    "Array.from(document.querySelectorAll('.el-dialog'))"
+                    ".filter(d => d.offsetParent !== null).length"
+                )
             finally:
                 page.unroute("**/*.js")
                 # 被中止的动态 import 在同文档内重试仍会失败（浏览器模块缓存行为），

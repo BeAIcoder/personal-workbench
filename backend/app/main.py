@@ -11,6 +11,7 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agents import expert_packs
@@ -46,6 +47,7 @@ async def lifespan(_: FastAPI):
     # 启动时建表；数据库为空且允许时写入示例数据
     Base.metadata.create_all(bind=engine)
     _ensure_sqlite_columns()
+    _ensure_sqlite_indexes()
     # 专家团队定义：仅表为空时灌入一次（属于配置数据，不受 seed_on_startup 控制）
     with SessionLocal() as db:
         seed_agent_specs(db)
@@ -149,6 +151,36 @@ def _ensure_sqlite_columns() -> None:
         logger.warning("SQLite 轻量迁移跳过（非 SQLite 或已迁移过）", exc_info=True)
 
 
+def _ensure_sqlite_indexes() -> None:
+    """轻量迁移：为历史库补齐后加的索引。
+
+    create_all 只会建新表，不会给「已存在的表」补索引；所以模型里后加的 index=True / Index()
+    在老库上永远不生效——排序仍走全表扫描 + 临时 B 树。本函数按元数据逐条建缺失索引
+    （checkfirst=True，等价于 CREATE INDEX IF NOT EXISTS），对新库/老库都幂等。
+    """
+    if not settings.database_url.startswith("sqlite"):
+        return
+    from sqlalchemy import inspect as sa_inspect
+
+    inspector = sa_inspect(engine)
+    created = []
+    for table in Base.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        existing = {i["name"] for i in inspector.get_indexes(table.name)}
+        for index in table.indexes:
+            if index.name in existing:
+                continue
+            try:
+                # 逐条 try：某张表建失败只跳过它，不能连带丢掉后面的索引
+                index.create(bind=engine, checkfirst=True)
+                created.append(f"{table.name}.{index.name}")
+            except Exception:
+                logger.warning("索引 %s 补齐失败（不影响启动）", index.name, exc_info=True)
+    if created:
+        logger.info("SQLite 索引补齐：新建 %d 个（历史库升级后首次启动）：%s", len(created), ", ".join(created))
+
+
 app = FastAPI(title=settings.app_name, version=settings.version, lifespan=lifespan)
 
 app.add_middleware(
@@ -160,9 +192,23 @@ app.add_middleware(
 )
 
 
-@app.get("/api/health", tags=["系统"], summary="健康检查")
+@app.api_route("/api/health", methods=["GET", "HEAD"], tags=["系统"], summary="健康检查")
 def health():
+    # HEAD 供容器/负载均衡探活（无响应体），GET 返回完整状态
     return {"status": "ok", "app": settings.app_name, "version": settings.version}
+
+
+@app.exception_handler(OverflowError)
+def _overflow_error_as_422(request, exc):
+    """超 int64 的 ID 统一收口为 422，而不是 500 + 堆栈外泄。
+
+    SQLite 主键是 int64，把 9223372036854775808 这类值绑进查询会在驱动层抛
+    OverflowError（「Python int too large to convert to SQLite INTEGER」）。核心
+    CRUD 路由已在入口用 utils.DbId 拦下；财务/调试等模块路由由各自 manifest 挂载、
+    数量多，这里做全局兜底，保证任何一条 /{id} 路径都不会因为越界 ID 而 500。
+    """
+    logger.warning("参数超出整数范围：%s %s", request.method, request.url.path)
+    return JSONResponse(status_code=422, content={"detail": "ID 超出可接受范围"})
 
 
 app.include_router(tasks.router, prefix="/api")

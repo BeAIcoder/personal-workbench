@@ -300,10 +300,12 @@ def create_pack(name: str, description: str, body: str = "") -> dict:
     if pack_dir.exists():
         raise ValueError(f"技能包已存在：{name}")
     pack_dir.mkdir(parents=True)
+    # 描述是自由文本，可能含「: 」/换行/#/引号：必须序列化成 YAML 双引号标量
+    # （JSON 字符串即合法的 YAML double-quoted scalar），否则 frontmatter 会解析失败
     content = PACK_TEMPLATE.format(
         name=name,
         title=name,
-        description=description,
+        description=json.dumps(description, ensure_ascii=False),
         body=(body or "").strip() or DEFAULT_BODY,
     )
     (pack_dir / "SKILL.md").write_text(content, encoding="utf-8")
