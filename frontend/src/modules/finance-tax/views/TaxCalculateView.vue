@@ -132,7 +132,7 @@ async function loadEnterprise() {
     form.is_restricted_industry = !!data.is_restricted_industry
     if (data.industry_type) form.industry = data.industry_type
   } catch {
-    ElMessage.error('企业不存在')
+    /* 拦截器已统一提示 */
   } finally {
     loading.value = false
   }
@@ -147,8 +147,8 @@ async function calculate() {
       ...form,
     })
     result.value = data
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '计算失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     calculating.value = false
   }
@@ -169,8 +169,8 @@ async function saveReturn() {
     })
     ElMessage.success('已保存为申报记录')
     router.push({ name: 'finance-tax-returns' })
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     saving.value = false
   }

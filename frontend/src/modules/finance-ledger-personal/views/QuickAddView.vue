@@ -41,8 +41,8 @@
     </el-card>
 
     <el-card shadow="never" style="margin-top: 16px">
-      <template #header><span>今日流水（{{ today }}）</span></template>
-      <el-table :data="todayItems" size="small" empty-text="今天还没有记账">
+      <template #header><span>本月流水（{{ month }}）</span></template>
+      <el-table :data="todayItems" size="small" empty-text="本月还没有记账">
         <el-table-column label="类型" width="80">
           <template #default="{ row }">
             <el-tag :type="row.kind === 'income' ? 'success' : 'danger'" size="small">
@@ -91,9 +91,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { localMonth, localToday } from '../../_shared/dates'
+import { categoryMatchesKind } from '../utils'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -104,7 +106,8 @@ const manageVisible = ref(false)
 const newAccount = ref('')
 const newCategory = reactive({ kind: 'expense', name: '' })
 
-const today = new Date().toISOString().slice(0, 10)
+const today = localToday()
+const month = localMonth()
 const form = reactive({
   kind: 'expense',
   amount: undefined,
@@ -116,20 +119,29 @@ const form = reactive({
 
 const filteredCategories = computed(() => categories.value.filter((c) => c.kind === form.kind))
 
+// 切换 收入/支出 时清理残留的旧分类：否则旧分类与交易类型不一致，提交会被后端 400 拒绝
+watch(
+  () => form.kind,
+  () => {
+    const cat = categories.value.find((c) => c.id === form.category_id)
+    if (form.category_id && !categoryMatchesKind(cat, form.kind)) form.category_id = null
+  }
+)
+
 async function load() {
   loading.value = true
   try {
     const [acc, cat, tx] = await Promise.all([
       api.get('/finance/ledger/personal/accounts'),
       api.get('/finance/ledger/personal/categories'),
-      api.get('/finance/ledger/personal/transactions', { params: { month: today.slice(0, 7), page_size: 100 } }),
+      api.get('/finance/ledger/personal/transactions', { params: { month, page_size: 100 } }),
     ])
     accounts.value = acc.data
     categories.value = cat.data
     todayItems.value = tx.data.items
     if (!form.account_id && acc.data.length) form.account_id = acc.data[0].id
   } catch {
-    ElMessage.error('加载失败，请确认后端已启动')
+    /* 拦截器已统一提示 */
   } finally {
     loading.value = false
   }
@@ -154,8 +166,8 @@ async function submit() {
     form.amount = undefined
     form.note = ''
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '记账失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     submitting.value = false
   }
@@ -168,8 +180,8 @@ async function addAccount() {
     await api.post('/finance/ledger/personal/accounts', { name })
     newAccount.value = ''
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '添加失败')
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 
@@ -177,8 +189,8 @@ async function deleteAccount(a) {
   try {
     await api.delete(`/finance/ledger/personal/accounts/${a.id}`)
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '删除失败（可能仍有交易引用）')
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 
@@ -189,8 +201,8 @@ async function addCategory() {
     await api.post('/finance/ledger/personal/categories', { kind: newCategory.kind, name })
     newCategory.name = ''
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '添加失败')
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 
@@ -198,8 +210,8 @@ async function deleteCategory(c) {
   try {
     await api.delete(`/finance/ledger/personal/categories/${c.id}`)
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '删除失败（可能仍有交易引用）')
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 

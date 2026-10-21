@@ -240,7 +240,8 @@ def _spec_from_row(row) -> AgentSpec:
         color=row.color or "#409EFF",
         description=row.description or "",
         system_prompt=row.role_prompt or "",
-        tools=list(row.tools) if row.tools else list(QUERY_TOOLS),
+        # tools 语义：NULL = 默认查询工具池；空数组 = 真零工具（见 models.AgentSpecModel 注释）
+        tools=list(QUERY_TOOLS) if row.tools is None else list(row.tools),
         keywords=list(row.keywords or []),
         model_id=row.model_id,
         skills=list(row.skills) if row.skills is not None else None,
@@ -251,8 +252,12 @@ def _spec_from_row(row) -> AgentSpec:
     )
 
 
-def _load_team_from_db() -> dict[str, AgentSpec]:
-    """从 agent_specs 读取启用中的专家（按 sort 排序）；异常/空表返回空 dict。"""
+def _load_team_from_db() -> dict[str, AgentSpec] | None:
+    """从 agent_specs 读取启用中的专家（按 sort 排序）。
+
+    返回 None 表示「无数据可用」（表为空/数据库暂不可用），调用方回退内置 TEAM；
+    返回空 dict 表示「表中有行但全部停用」——这是有效的用户配置，不回退。
+    """
     from sqlalchemy.exc import OperationalError
 
     from ..database import SessionLocal
@@ -262,23 +267,30 @@ def _load_team_from_db() -> dict[str, AgentSpec]:
         with SessionLocal() as db:
             rows = (
                 db.query(AgentSpecModel)
-                .filter(AgentSpecModel.enabled == True)  # noqa: E712
                 .order_by(AgentSpecModel.sort.asc(), AgentSpecModel.id.asc())
                 .all()
             )
     except OperationalError:
         logger.warning("专家团队读取失败（数据库暂不可用），回退内置定义", exc_info=True)
-        return {}
-    return {r.name: _spec_from_row(r) for r in rows}
+        return None
+    if not rows:
+        return None  # 表为空：无数据，回退内置 TEAM
+    return {r.name: _spec_from_row(r) for r in rows if r.enabled}
 
 
 def load_team(force: bool = False) -> dict[str, AgentSpec]:
-    """加载启用中的专家团队（60 秒 TTL 缓存）；表为空或库不可用回退内置 TEAM。"""
+    """加载启用中的专家团队（60 秒 TTL 缓存）。
+
+    表为空或库不可用（无数据）时回退内置 TEAM；表中有行但全部停用时返回空团队
+    （用户显式配置，聊天路径据此给出明确错误而不是静默回退）。
+    """
     global _team_cache
     now = time.monotonic()
     if not force and _team_cache is not None and now - _team_cache[0] < _CACHE_TTL:
         return _team_cache[1]
-    team = _load_team_from_db() or TEAM
+    team = _load_team_from_db()
+    if team is None:
+        team = TEAM
     _team_cache = (now, team)
     return team
 

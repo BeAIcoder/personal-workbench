@@ -14,6 +14,19 @@
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.title }}</span>
         </el-menu-item>
+        <el-sub-menu v-for="group in staticMenuGroups" :key="group.name" :index="`group-${group.name}`">
+          <template #title>
+            <el-icon><component :is="group.icon" /></el-icon>
+            <span>{{ group.name }}</span>
+          </template>
+          <el-menu-item v-for="m in group.items" :key="m.path" :index="m.path">
+            <span>{{ m.title }}</span>
+          </el-menu-item>
+        </el-sub-menu>
+        <el-menu-item v-for="item in tailMenus" :key="item.path" :index="item.path">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.title }}</span>
+        </el-menu-item>
         <el-sub-menu v-for="group in menuGroups" :key="group.name" :index="`group-${group.name}`">
           <template #title>
             <el-icon><component :is="group.icon" /></el-icon>
@@ -41,19 +54,33 @@
 </template>
 
 <script>
-// 静态菜单：原有 6 项，文案/图标/顺序保持不变（导出供测试断言不丢失）
+// 静态菜单：一级菜单项（文案/图标/顺序导出供测试断言不丢失）。
+// 「AI 配置」相关页面收进 STATIC_MENU_GROUPS 的子菜单（仅侧栏聚合，不改路由）；
+// tailMenus（定时任务）保持一级菜单原位，渲染在静态分组之后。
 export const STATIC_MENUS = [
   { path: '/', title: '工作台概览', icon: 'Odometer' },
   { path: '/tasks', title: '任务管理', icon: 'Finished' },
   { path: '/schedules', title: '日程管理', icon: 'Calendar' },
   { path: '/notes', title: '笔记管理', icon: 'Notebook' },
   { path: '/assistant', title: 'AI 助手', icon: 'ChatDotRound' },
-  { path: '/knowledge', title: '知识与记忆', icon: 'Reading' },
-  { path: '/mcp', title: 'MCP 工具', icon: 'Connection' },
-  { path: '/skill-packs', title: '技能包', icon: 'Collection' },
-  { path: '/expert-packs', title: '专家团文件', icon: 'UserFilled' },
-  { path: '/jobs', title: '定时任务', icon: 'Timer' },
 ]
+
+// 静态菜单分组：「AI 配置」el-sub-menu（知识与记忆/MCP 工具/技能包/专家团文件）
+export const STATIC_MENU_GROUPS = [
+  {
+    name: 'AI 配置',
+    icon: 'Setting',
+    items: [
+      { path: '/knowledge', title: '知识与记忆', icon: 'Reading' },
+      { path: '/mcp', title: 'MCP 工具', icon: 'Connection' },
+      { path: '/skill-packs', title: '技能包管理', icon: 'Collection' },
+      { path: '/expert-packs', title: '专家团文件', icon: 'UserFilled' },
+    ],
+  },
+]
+
+// 渲染在静态分组之后的尾部一级菜单（定时任务保持原位）
+export const TAIL_MENUS = [{ path: '/jobs', title: '定时任务', icon: 'Timer' }]
 </script>
 
 <script setup>
@@ -70,6 +97,8 @@ const activeMenu = computed(() => route.path)
 const todayText = dayjs().format('YYYY年MM月DD日 dddd')
 const version = ref('')
 const staticMenus = STATIC_MENUS
+const staticMenuGroups = STATIC_MENU_GROUPS
+const tailMenus = TAIL_MENUS
 
 // 模块菜单按 group 分组渲染（如「财务」组）；组图标取组内首项图标
 const menuGroups = computed(() => {

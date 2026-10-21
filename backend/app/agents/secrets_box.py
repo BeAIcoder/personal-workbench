@@ -47,11 +47,13 @@ def ensure_dpapi_available() -> None:
 
 
 def seal(plain: str) -> str:
-    """加密明文 Key 为可落盘格式；DPAPI 不可用时 fail-fast（抛错，绝不降级明文）。"""
+    """加密明文 Key 为可落盘格式；DPAPI 不可用时 fail-fast（抛错，绝不降级明文）。
+
+    一律加密：即使明文恰好以 "dpapi:" 开头也照常加密，否则该值会被当作密文
+    原样落盘，unseal 解密失败后静默返回空串（密钥凭空丢失）。
+    """
     if not plain:
         return ""
-    if plain.startswith(_PREFIX):  # 幂等：已密封不重复加密
-        return plain
     ensure_dpapi_available()
     blob = win32crypt.CryptProtectData(plain.encode("utf-8"), "workbench-llm-key")
     return _PREFIX + base64.b64encode(blob).decode("ascii")

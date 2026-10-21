@@ -157,7 +157,7 @@ class AgentSpecModel(TimestampMixin, Base):
     role_prompt: Mapped[str] = mapped_column(Text, default="")
     # 关键词路由表（命中数最多者胜出）
     keywords: Mapped[list] = mapped_column(JSON, default=list)
-    # 工具白名单；NULL 表示用默认技能池（查询工具 + 常用写入工具）
+    # 工具白名单；NULL 表示用默认查询工具池；空数组表示不使用任何工具
     tools: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # 绑定模型（逻辑引用 provider_models.id；NULL = 跟随全局激活模型）
     model_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -22,7 +22,15 @@ manifest = ModuleManifest(
     ],
     menu={"group": "财务", "icon": "OfficeBuilding", "order": 60},
     agent_tools=[],
-    column_patches={},
+    column_patches={
+        # 老库补列：Enterprise 后加的 4 个字段（create_all 不改已有表，宿主 _ensure_sqlite_columns 合并执行）
+        "mod_tax_enterprise": {
+            "legal_person": "VARCHAR(100)",
+            "contact_phone": "VARCHAR(50)",
+            "address": "VARCHAR(300)",
+            "tax_type": "VARCHAR(50)",
+        },
+    },
     requires=[],
     enabled=True,
 )

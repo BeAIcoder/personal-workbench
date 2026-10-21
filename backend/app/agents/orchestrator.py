@@ -35,7 +35,7 @@ from .team import (
     load_team,
     roster_text,
 )
-from .tools import build_tools, tool_trace
+from .tools import TOOL_SPECS, build_tools, tool_trace
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,8 @@ def _agent_cache_put(key: tuple[str, str, str, int], agent: object) -> None:
     _agents[key] = agent
     _agents.move_to_end(key)
     while len(_agents) > _AGENT_CACHE_MAX:
-        _agents.popitem(last=False)
+        evicted, _ = _agents.popitem(last=False)
+        _agent_locks.pop(evicted, None)  # 构建锁随淘汰一并清理，避免 _agent_locks 无限增长
 
 # Agent 工作模式
 WORK_MODES = {
@@ -104,6 +105,56 @@ def _resolve_mode(mode: str | None) -> str:
     return mode if mode in WORK_MODES else "standard"
 
 
+async def _resolve_skill_loaders(cfg: dict, spec: AgentSpec):
+    """构造注入 Agent 的技能 loader 列表（None = 不注入技能池）。
+
+    全局未启用技能池或未配置技能池目录时不注入；专家级 skills 为空列表时
+    显式关闭（None 跟随全局），非空列表为专家白名单——只注入名单内的技能包。
+    已停用的技能包（_store.json 的 disabled 列表）与专家白名单由过滤 loader
+    在注入侧统一剔除——LocalSkillLoader 本身不做过滤，停用与白名单由此对
+    Agent 注入真实生效。
+    """
+    if not (cfg.get("enable_skills") and cfg.get("skills_dir")):
+        return None
+    if spec.skills is not None and not spec.skills:
+        return None  # 专家配置显式关闭技能池
+    skills_dir = Path(cfg["skills_dir"])
+    if not skills_dir.is_dir():
+        return None
+    try:
+        from agentscope.skill import LocalSkillLoader
+
+        from . import skill_store
+
+        disabled = set(skill_store.disabled_packs(skills_dir))
+        whitelist = set(spec.skills) if spec.skills else None  # 专家级非空白名单
+
+        class _EnabledSkillLoader(LocalSkillLoader):
+            """只注入启用中（且在专家白名单内）技能包的 loader。"""
+
+            async def list_skills(self):
+                skills = await super().list_skills()
+                if disabled:
+                    skills = [s for s in skills if Path(s.dir).name not in disabled and s.name not in disabled]
+                if whitelist is not None:
+                    skills = [s for s in skills if s.name in whitelist or Path(s.dir).name in whitelist]
+                return skills
+
+        return [_EnabledSkillLoader(directory=str(skills_dir), scan_subdir=True)]
+    except Exception:
+        logger.warning("技能池加载失败，本次不注入技能：%s", skills_dir, exc_info=True)
+        return None
+
+
+def _readonly_tool_names() -> set[str]:
+    """只读模式放行的工具名：内置查询工具 + 注册表中带 readonly=True 标记的工具。
+
+    readonly 标记由模块 manifest（modules/spec.py 契约）与 MCP 工具注册（mcp.py）
+    写入 TOOL_SPECS；构建时实时汇总，模块/MCP 注册变化即时生效。
+    """
+    return set(QUERY_TOOLS) | {name for name, spec in TOOL_SPECS.items() if spec.get("readonly")}
+
+
 async def _build_agent(spec: AgentSpec, mode: str = "standard"):
     from pathlib import Path
 
@@ -115,23 +166,13 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
     cfg = config_store.load()
     tool_names = list(spec.tools)
     if mode == "readonly":
-        tool_names = [t for t in tool_names if t in QUERY_TOOLS]
+        # 只读模式：内置查询工具 + 注册表 readonly=True 标记的工具（模块/MCP 只读工具同样放行）
+        readonly_names = _readonly_tool_names()
+        tool_names = [t for t in tool_names if t in readonly_names]
 
-    # 本地技能池（SKILL.md 格式，如 QwenPaw skill_pool）：经 LocalSkillLoader 注入
-    # 专家级 skills 为空列表时显式关闭；None 跟随全局配置
-    skills_or_loaders = None
-    if cfg.get("enable_skills") and cfg.get("skills_dir") and spec.skills is not None and not spec.skills:
-        pass  # 专家配置显式关闭技能池
-    elif cfg.get("enable_skills") and cfg.get("skills_dir"):
-        skills_dir = Path(cfg["skills_dir"])
-        if skills_dir.is_dir():
-            try:
-                from agentscope.skill import LocalSkillLoader
-
-                skills_or_loaders = [LocalSkillLoader(directory=str(skills_dir), scan_subdir=True)]
-            except Exception:
-                logger.warning("技能池加载失败，本次不注入技能：%s", skills_dir, exc_info=True)
-                skills_or_loaders = None
+    # 本地技能池（SKILL.md 格式，如 QwenPaw skill_pool）：经 LocalSkillLoader 注入，
+    # 已停用的技能包在 loader 侧过滤（见 _resolve_skill_loaders）
+    skills_or_loaders = await _resolve_skill_loaders(cfg, spec)
 
     toolkit = Toolkit(skills_or_loaders=skills_or_loaders)
     tools = build_tools(tool_names)
@@ -227,6 +268,8 @@ async def _ensure_agent(session_id: str, spec: AgentSpec, mode: str):
 
 
 def _load_history_msgs(session_id: str, limit: int | None = None) -> list:
+    if session_id in _INTERNAL_SESSION_IDS:
+        return []  # 记忆抽取等固定 id 内部会话：不注入历史，避免上下文反复膨胀
     cfg = config_store.load()
     if not cfg.get("enable_memory", True):
         return []
@@ -333,6 +376,9 @@ _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # 当前模型未开启视觉能力时带图聊天的报错（用户可见，中文）
 VISION_UNSUPPORTED_MESSAGE = "当前模型不支持图片理解，请在设置中为该模型开启视觉能力或切换视觉模型"
 
+# 专家团队为空（全部停用）时的对话报错（用户可见，中文）
+EMPTY_TEAM_MESSAGE = "专家团队为空：所有专家均已停用，请在 AI 助手「专家」页面启用至少一位专家后再对话"
+
 
 def _is_image_attachment(att) -> bool:
     """判断聊天附件是否为图片（按路径后缀，回退文件名后缀）。"""
@@ -341,30 +387,32 @@ def _is_image_attachment(att) -> bool:
     return suffix in _IMAGE_ATTACH_SUFFIXES
 
 
-def _vision_cfg(agent_name: str | None = None) -> dict:
-    """当前生效模型配置：指定专家且绑定了模型时用其配置，否则用全局激活模型。"""
-    if agent_name:
+def _vision_cfg(agent_name: str | None = None, spec: AgentSpec | None = None) -> dict:
+    """当前生效模型配置：优先专家绑定模型（直接给 spec 或按名查找），否则用全局激活模型。"""
+    if spec is None and agent_name:
         try:
             spec = load_team().get(agent_name)
         except Exception:
             spec = None
-        if spec is not None and spec.model_id:
-            cfg = config_store.model_cfg_by_id(spec.model_id)
-            if cfg:
-                return cfg
+    if spec is not None and spec.model_id:
+        cfg = config_store.model_cfg_by_id(spec.model_id)
+        if cfg:
+            return cfg
     return config_store.load()
 
 
-def assert_vision_supported(attachments, agent_name: str | None = None) -> None:
+def assert_vision_supported(attachments, agent_name: str | None = None, spec: AgentSpec | None = None) -> None:
     """带图聊天前置校验：附件含图片而当前模型未开启视觉能力时抛 ValueError（路由层转 400）。
 
     模型整体未配置时不做拦截（走既有的 need_llm_config 引导）。
+    自动路由（agent_name=None）时本校验只看全局模型，不代表实际生效模型——
+    编排层在路由定到专家后会以该专家的 spec 再校验一次（见 chat/chat_stream）。
     """
     if not attachments or not any(_is_image_attachment(a) for a in attachments):
         return
     if not llm_status()["configured"]:
         return
-    if not _vision_cfg(agent_name).get("supports_vision"):
+    if not _vision_cfg(agent_name, spec).get("supports_vision"):
         raise ValueError(VISION_UNSUPPORTED_MESSAGE)
 
 
@@ -403,6 +451,19 @@ def _image_blocks(attachments) -> list:
     return blocks, notes
 
 
+def _read_text_attachment(path: Path) -> str:
+    """读取文本附件：严格 UTF-8 优先，失败回退 GBK（中文 Windows 常见编码），再不行替换非法字节。"""
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode("gbk")
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
+
 def _attachments_block(attachments) -> str:
     """把聊天附件拼成可注入消息的文本块（安全：仅允许上传目录内的文件）。"""
     from ..config import UPLOAD_DIR
@@ -422,7 +483,7 @@ def _attachments_block(attachments) -> str:
             continue
         size = path.stat().st_size
         if path.suffix.lower() in _TEXT_SUFFIXES and size <= 300_000:
-            content = path.read_text(encoding="utf-8", errors="replace")[:80000]
+            content = _read_text_attachment(path)[:80000]
             parts.append(
                 f"【附件文件：{name}（{size} 字节）内容如下】\n\n```\n{content}\n```\n\n"
                 f"（完整路径：{path}。如需更深入的统计、透视或处理，可使用 Bash 工具读取该文件。）"
@@ -459,8 +520,13 @@ def _thinking_of(msg) -> str:
 
 
 async def _resolve_spec(question: str, agent_name: str | None):
-    """路由：返回 (spec, routed_by)。专家团队读库（启用中），兜底内置定义。"""
+    """路由：返回 (spec, routed_by)。专家团队读库（启用中），兜底内置定义。
+
+    专家团队为空（全部停用）时返回 None，由调用方给出明确错误（见 EMPTY_TEAM_MESSAGE）。
+    """
     team = load_team()
+    if not team:
+        return None
     if agent_name in team:
         return team[agent_name], "指定"
     hit = keyword_hit(question, team)
@@ -489,11 +555,12 @@ def _with_memory_context(message: str) -> str:
         return message
 
 
-def _user_content_blocks(message: str, attachments, agent_name: str | None) -> list:
+def _user_content_blocks(message: str, attachments, spec: AgentSpec | None = None) -> list:
     """构造发给 LLM 的 user 消息内容块。
 
-    文本部分 = 记忆上下文 + 文本类附件说明；当前模型开启视觉能力时，
-    图片附件以 base64 DataBlock 追加（OpenAI 协议转 image_url，Anthropic 转原生图片块）。
+    文本部分 = 记忆上下文 + 文本类附件说明；当前生效模型（路由后专家的绑定模型优先，
+    见 _vision_cfg）开启视觉能力时，图片附件以 base64 DataBlock 追加
+    （OpenAI 协议转 image_url，Anthropic 转原生图片块）。
     """
     from agentscope.message import TextBlock
 
@@ -506,7 +573,7 @@ def _user_content_blocks(message: str, attachments, agent_name: str | None) -> l
     image_blocks: list = []
     notes: list[str] = []
     if any(_is_image_attachment(a) for a in (attachments or [])):
-        if _vision_cfg(agent_name).get("supports_vision"):
+        if _vision_cfg(spec=spec).get("supports_vision"):
             image_blocks, notes = _image_blocks(attachments)
         else:
             notes.append(f"【图片附件】{VISION_UNSUPPORTED_MESSAGE}")
@@ -531,7 +598,12 @@ async def chat(
         }
 
     mode = _resolve_mode(mode)
-    spec, routed_by = await _resolve_spec(message, agent_name)
+    resolved = await _resolve_spec(message, agent_name)
+    if resolved is None:
+        return {"ok": False, "message": EMPTY_TEAM_MESSAGE}
+    spec, routed_by = resolved
+    # 路由定到专家后按其绑定模型复核视觉能力（自动路由时路由层前置校验只看了全局模型）
+    assert_vision_supported(attachments, spec=spec)
     agent = await _ensure_agent(session_id, spec, mode)
 
     from agentscope.message import Msg
@@ -539,7 +611,7 @@ async def chat(
     token = tool_trace.set([])
     try:
         reply = await agent.reply(
-            Msg(name="用户", role="user", content=_user_content_blocks(message, attachments, agent_name))
+            Msg(name="用户", role="user", content=_user_content_blocks(message, attachments, spec))
         )
         text = (reply.get_text_content() or "").strip() or "（模型未返回内容）"
         text, inline_think = _split_inline_think(text)
@@ -581,7 +653,17 @@ async def chat_stream(
         return
 
     mode = _resolve_mode(mode)
-    spec, routed_by = await _resolve_spec(message, agent_name)
+    resolved = await _resolve_spec(message, agent_name)
+    if resolved is None:
+        yield {"type": "error", "message": EMPTY_TEAM_MESSAGE}
+        return
+    spec, routed_by = resolved
+    try:
+        # 路由定到专家后按其绑定模型复核视觉能力（自动路由时路由层前置校验只看了全局模型）
+        assert_vision_supported(attachments, spec=spec)
+    except ValueError as exc:
+        yield {"type": "error", "message": str(exc)}
+        return
     yield {"type": "meta", "agent": {"name": spec.name, "label": spec.label, "emoji": spec.emoji, "color": spec.color}, "routed_by": routed_by, "mode": mode}
 
     agent = await _ensure_agent(session_id, spec, mode)
@@ -600,7 +682,7 @@ async def chat_stream(
     try:
         final_msg = None
         async for ev in agent.reply_stream(
-            Msg(name="用户", role="user", content=_user_content_blocks(message, attachments, agent_name)),
+            Msg(name="用户", role="user", content=_user_content_blocks(message, attachments, spec)),
             yield_final_msg=True,
         ):
             if isinstance(ev, TextBlockDeltaEvent):
@@ -647,14 +729,26 @@ async def chat_stream(
 
 # ---------------- 会话管理 ----------------
 
+# 内部会话标识：定时任务执行会话（scheduler.SESSION_PREFIX，job-N 每次运行复用同一 id）
+# 与记忆抽取固定会话（memory.py 的 "memory-extract"）——不进会话列表；
+# memory-extract 不注入历史（固定 id 反复注入会导致上下文膨胀）
+_INTERNAL_SESSION_PREFIXES = ("job-",)
+_INTERNAL_SESSION_IDS = ("memory-extract",)
+
+
 def sessions_list(limit: int = 50, archived: bool | None = None) -> list[dict]:
     """会话列表（按更新时间倒序）。
 
     archived=None 返回全部（含归档）；True/False 时按归档状态过滤。
+    内部会话（定时任务 job-*、记忆抽取 memory-extract）始终不出现在列表中。
     """
     try:
         with SessionLocal() as db:
             query = db.query(AgentSession)
+            for prefix in _INTERNAL_SESSION_PREFIXES:
+                query = query.filter(~AgentSession.session_id.like(f"{prefix}%"))
+            for sid in _INTERNAL_SESSION_IDS:
+                query = query.filter(AgentSession.session_id != sid)
             if archived is not None:
                 query = query.filter(AgentSession.archived == bool(archived))
             rows = query.order_by(AgentSession.updated_at.desc()).limit(max(1, min(limit, 200))).all()
@@ -699,9 +793,11 @@ def session_delete(session_id: str) -> None:
         for msg in db.query(ChatMessage).filter(ChatMessage.session_id == session_id).all():
             db.delete(msg)
         db.commit()
-    # 清理该会话的进程内 Agent 缓存
+    # 清理该会话的进程内 Agent 缓存与构建锁
     for key in [k for k in list(_agents) if k[0] == session_id]:
         _agents.pop(key, None)
+    for key in [k for k in list(_agent_locks) if k[0] == session_id]:
+        _agent_locks.pop(key, None)
 
 
 def session_set_archived(session_id: str, archived: bool) -> dict:

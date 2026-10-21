@@ -34,6 +34,10 @@ class EnterpriseResponse(BaseModel):
     name: str
     tax_number: str
     industry_type: str | None
+    legal_person: str | None = None
+    contact_phone: str | None = None
+    address: str | None = None
+    tax_type: str | None = None
     employee_count: int | None
     total_assets: float | None
     is_restricted_industry: bool
@@ -71,6 +75,10 @@ async def create_enterprise(enterprise: EnterpriseCreate, db: Session = Depends(
         name=enterprise_data["name"],
         tax_number=enterprise_data["tax_number"],
         industry_type=enterprise_data.get("industry"),
+        legal_person=enterprise_data.get("legal_person"),
+        contact_phone=enterprise_data.get("contact_phone"),
+        address=enterprise_data.get("address"),
+        tax_type=enterprise_data.get("tax_type"),
     )
     db.add(db_enterprise)
     db.commit()

@@ -33,6 +33,7 @@
         :paginationPageSize="20"
         :paginationPageSizeSelector="[20, 50, 100]"
         :localeText="localeText"
+        :modules="gridModules"
         :getRowId="getRowId"
       />
     </el-card>
@@ -42,8 +43,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { AgGridVue } from 'ag-grid-vue3'
-import { ElMessage } from 'element-plus'
+import { LocaleModule, PaginationModule } from 'ag-grid-community'
 import api from '../../../api'
+import { buildMonthOptions } from '../../_shared/dates'
 
 const loading = ref(false)
 const items = ref([])
@@ -52,14 +54,10 @@ const accounts = ref([])
 const categories = ref([])
 const filters = reactive({ month: '', account_id: null, category_id: null, keyword: '' })
 
-const monthOptions = computed(() => {
-  const out = []
-  const d = new Date()
-  for (let i = 0; i < 12; i++) {
-    out.push(new Date(d.getFullYear(), d.getMonth() - i, 1).toISOString().slice(0, 7))
-  }
-  return out
-})
+// ag-grid 36 不再默认注册功能模块：localeText / 分页需显式提供，否则中文空态不生效且控制台报 error #200
+const gridModules = [LocaleModule, PaginationModule]
+
+const monthOptions = computed(() => buildMonthOptions())
 
 const columnDefs = [
   { field: 'occurred_on', headerName: '日期', width: 120 },
@@ -105,7 +103,7 @@ async function reload(page = 1) {
     items.value = data.items
     total.value = data.total
   } catch {
-    ElMessage.error('加载失败')
+    /* 拦截器已统一提示 */
   } finally {
     loading.value = false
   }

@@ -64,7 +64,7 @@ async function load() {
     const { data } = await api.get(`/finance/tax/enterprises/${route.params.id}`)
     Object.assign(form, data)
   } catch {
-    ElMessage.error('加载失败')
+    /* 拦截器已统一提示 */
   } finally {
     loading.value = false
   }
@@ -82,8 +82,8 @@ async function submit() {
     }
     ElMessage.success('已保存')
     router.push({ name: 'finance-tax' })
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     submitting.value = false
   }

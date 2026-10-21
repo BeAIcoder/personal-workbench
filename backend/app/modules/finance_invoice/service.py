@@ -472,6 +472,7 @@ def create_batch(db: Session, uploads: list[tuple[str, bytes]], name: str = "") 
         return batch
     except Exception as exc:
         logger.exception("批次 %s 解析流程异常", batch.id)
+        batch.status = InvoiceBatch.STATUS_FAILED
         batch.error = f"{type(exc).__name__}: {exc}"[:500]
         db.commit()
         raise

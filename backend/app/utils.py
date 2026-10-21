@@ -9,6 +9,8 @@ def parse_dt(value: str, end_of_day: bool = False) -> datetime:
 
     支持 "2026-09-07" 与 "2026-09-07T09:30:00" 两种格式；
     仅传日期时，end_of_day=True 表示取当天最后一刻（用于闭区间过滤）。
+    带时区的输入（如 "2026-09-07T09:30:00+08:00"）统一转 naive 本地时间——
+    入库列是 naive DateTime，aware 值直接绑定会让 SQLite 字符串比较口径错乱（漏数据）。
     非法格式抛 422，避免穿透成 500。
     """
     v = value.strip()
@@ -18,7 +20,10 @@ def parse_dt(value: str, end_of_day: bool = False) -> datetime:
             if end_of_day:
                 return datetime.combine(d, time(23, 59, 59, 999999))
             return datetime.combine(d, time.min)
-        return datetime.fromisoformat(v)
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
     except ValueError:
         raise HTTPException(status_code=422, detail="日期格式错误，应为 YYYY-MM-DD")
 

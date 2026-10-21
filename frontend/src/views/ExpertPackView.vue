@@ -24,7 +24,7 @@
             </el-table-column>
             <el-table-column label="状态" width="86">
               <template #default="{ row }">
-                <el-tooltip v-if="row.valid && row.imported && row.diff" :content="row.diff" placement="top">
+                <el-tooltip v-if="row.valid && row.imported && row.diff" :content="diffTip(row)" placement="top">
                   <el-tag type="warning" size="small">有差异</el-tag>
                 </el-tooltip>
                 <el-tag v-else-if="row.valid && row.imported" type="success" size="small">已导入</el-tag>
@@ -77,6 +77,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { importAllNeedsConfirm } from '../utils/expertPack'
 
 const loading = ref(false)
 const packs = ref([])
@@ -84,6 +85,13 @@ const experts = ref([])
 const viewDialog = reactive({ visible: false, name: '', content: '' })
 
 const ACTION_TEXT = { created: '新建', updated: '更新', unchanged: '无变化' }
+
+// 「有差异」徽标悬浮提示：列出具体差异字段名（diff_fields），附完整差异简述
+function diffTip(row) {
+  const fields = row.diff_fields || []
+  const head = fields.length ? `差异字段：${fields.join('、')}` : '文件与数据库存在差异'
+  return row.diff ? `${head}（${row.diff}）` : head
+}
 
 async function loadAll() {
   loading.value = true
@@ -103,12 +111,37 @@ async function loadAll() {
 }
 
 async function importOne(row) {
+  // 有差异或右侧数据库专家为内置时，导入会用文件内容覆盖界面修改，先确认
+  const dbExpert = experts.value.find((e) => e.name === row.name)
+  if (row.diff || dbExpert?.is_builtin) {
+    try {
+      await ElMessageBox.confirm(
+        `将用文件「${row.file}」的内容覆盖数据库专家「${row.name}」的显示名/提示词/描述（工具为并集只增不减；启用状态与绑定模型保留），确定导入？`,
+        '导入确认',
+        { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '取消' },
+      )
+    } catch {
+      return  // 用户取消
+    }
+  }
   const { data } = await api.post(`/experts/packs/import/${encodeURIComponent(row.name)}`)
   ElMessage.success(`已导入「${data.name}」（${ACTION_TEXT[data.action] || data.action}）`)
   await loadAll()
 }
 
 async function importAll() {
+  // 存在「有差异或内置」专家时先确认：全部导入会用文件内容覆盖界面修改（与单条导入的保护对齐）
+  if (importAllNeedsConfirm(packs.value, experts.value)) {
+    try {
+      await ElMessageBox.confirm(
+        '存在与数据库有差异或为内置的专家：全部导入将用文件内容覆盖这些专家的显示名/提示词/描述（工具为并集只增不减；启用状态与绑定模型保留），确定继续？',
+        '全部导入确认',
+        { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '取消' },
+      )
+    } catch {
+      return  // 用户取消
+    }
+  }
   const { data } = await api.post('/experts/packs/import-all')
   ElMessage.success(`导入 ${data.imported.length} 位，跳过 ${data.skipped.length} 位，失败 ${data.errors.length} 位`)
   if (data.errors.length) {
@@ -120,7 +153,7 @@ async function importAll() {
 async function resetFromSeed() {
   try {
     await ElMessageBox.confirm(
-      '将用内置种子（backend/seed_experts）覆盖专家包目录中的同名文件，确定继续？',
+      '将用内置种子（backend/seed_experts）覆盖专家包目录中的同名文件。注意：仅重置文件，需再点「全部导入」才会生效到数据库。确定继续？',
       '从种子重置',
       { type: 'warning' },
     )
@@ -128,7 +161,7 @@ async function resetFromSeed() {
     return  // 用户取消
   }
   const { data } = await api.post('/experts/packs/reset')
-  ElMessage.success(`已重置 ${data.reset.length} 个种子文件`)
+  ElMessage.success(`已重置 ${data.reset.length} 个种子文件；文件已重置，需再点「全部导入」才会生效到数据库`)
   await loadAll()
 }
 
@@ -155,6 +188,19 @@ async function removePack(row) {
 }
 
 async function exportExpert(row) {
+  // 左侧存在同名且「有差异」的文件时，导出会用数据库内容覆盖它，先确认
+  const samePack = packs.value.find((p) => p.name === row.name)
+  if (samePack?.diff) {
+    try {
+      await ElMessageBox.confirm(
+        `将覆盖已修改的文件 ${samePack.file}（用数据库专家「${row.display_name || row.name}」的当前内容写回该文件），确定导出？`,
+        '覆盖确认',
+        { type: 'warning', confirmButtonText: '覆盖导出', cancelButtonText: '取消' },
+      )
+    } catch {
+      return  // 用户取消
+    }
+  }
   const { data } = await api.post(`/experts/packs/export/${encodeURIComponent(row.name)}`)
   ElMessage.success(`已导出为 ${data.file}`)
   await loadAll()

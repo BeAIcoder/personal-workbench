@@ -22,7 +22,7 @@
         <el-tab-pane label="长期记忆" name="memory">
           <div class="mem-bar">
             <el-input v-model="memKeyword" placeholder="关键词过滤" style="width: 220px" clearable @input="debouncedLoadMemories" />
-            <el-button type="primary" @click="memDialog.visible = true">新建记忆</el-button>
+            <el-button type="primary" @click="onCreateMem">新建记忆</el-button>
           </div>
           <el-table :data="memories" size="small" empty-text="暂无记忆">
             <el-table-column label="置顶" width="60" align="center">
@@ -61,6 +61,7 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { openCreateMem } from '../utils/knowledge'
 
 const tab = ref('rag')
 
@@ -128,6 +129,10 @@ function debouncedLoadMemories() {
 
 onBeforeUnmount(() => clearTimeout(memTimer))
 
+function onCreateMem() {
+  openCreateMem(memDialog, memForm)
+}
+
 function openEditMem(row) {
   memDialog.id = row.id
   memForm.content = row.content
@@ -150,8 +155,8 @@ async function saveMem() {
     ElMessage.success('已保存')
     memDialog.visible = false
     await loadMemories()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } catch {
+    /* 拦截器已提示 */
   } finally {
     memDialog.saving = false
   }
@@ -161,8 +166,8 @@ async function togglePin(row) {
   try {
     await api.put(`/knowledge/memories/${row.id}`, { pinned: !row.pinned })
     await loadMemories()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  } catch {
+    /* 拦截器已提示 */
   }
 }
 

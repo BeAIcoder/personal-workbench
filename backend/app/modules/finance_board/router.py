@@ -22,6 +22,8 @@ def list_snapshots(db: Session = Depends(get_db)):
 def run_pipeline():
     try:
         snap = service.run_pipeline()
+    except service.PipelineBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except service.PipelineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {**snap, "message": "管线运行完成，快照已归档"}

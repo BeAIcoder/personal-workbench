@@ -326,7 +326,12 @@ def masked(cfg: dict) -> dict:
     """回传给前端的配置：api_key 脱敏。"""
     out = {**cfg}
     key = (cfg.get("api_key") or "").strip()
-    out["api_key"] = (MASK_PREFIX + key[-4:]) if key else ""
+    if not key:
+        out["api_key"] = ""
+    elif len(key) <= 4:
+        out["api_key"] = MASK_PREFIX  # 短密钥整体掩码：后缀回显会把全文明文泄露给前端
+    else:
+        out["api_key"] = MASK_PREFIX + key[-4:]
     out["api_key_set"] = bool(key)
     return out
 
@@ -505,15 +510,23 @@ def save_provider(data: dict) -> dict:
 
 
 def delete_provider(pid: int) -> None:
+    """删除供应商，同事务级联删除其全部模型；激活模型属于该供应商时清理激活态。
+
+    两表无数据库级联：不删 ProviderModel 会留孤儿数据，SQLite 复用 rowid 后
+    旧模型还会挂到新供应商名下。
+    """
     with SessionLocal() as db:
-        prov = db.get(ModelProvider, int(pid))
+        pid = int(pid)
+        models = db.query(ProviderModel).filter(ProviderModel.provider_id == pid).all()
+        model_ids = {m.id for m in models}
+        row = db.get(AgentSettings, 1)
+        if row is not None and row.active_model_id in model_ids:
+            row.active_model_id = None
+        for m in models:
+            db.delete(m)
+        prov = db.get(ModelProvider, pid)
         if prov is not None:
             db.delete(prov)
-        row = db.get(AgentSettings, 1)
-        if row is not None and row.active_model_id:
-            pm = db.get(ProviderModel, row.active_model_id)
-            if pm is not None and pm.provider_id == int(pid):
-                row.active_model_id = None
         db.commit()
 
 

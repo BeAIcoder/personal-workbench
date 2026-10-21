@@ -58,6 +58,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { takeFiles } from '../../_shared/fileInput'
 
 const router = useRouter()
 const loading = ref(false)
@@ -86,7 +87,7 @@ async function load() {
 }
 
 function onFiles(e) {
-  form.files = Array.from(e.target.files || [])
+  form.files = takeFiles(e)
 }
 
 async function submitUpload() {
@@ -102,8 +103,8 @@ async function submitUpload() {
     form.name = ''
     form.files = []
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '上传失败')
+  } catch {
+    /* 拦截器已统一提示 */
   } finally {
     submitting.value = false
   }

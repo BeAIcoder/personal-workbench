@@ -41,7 +41,10 @@ def list_actions() -> list[str]:
 
 
 def _cron_field_match(field: str, value: int, lo: int, hi: int) -> bool:
-    """单个 cron 字段匹配：支持 *、逗号列表、连字符区间、步长（*/n 与 a-b/n）。"""
+    """单个 cron 字段匹配：支持 *、逗号列表、连字符区间、步长（*/n 与 a-b/n）。
+
+    逗号列表中的非法项只跳过该项，不毒化整个字段（如 "0,60" 的 0 仍生效）。
+    """
     field = field.strip()
     if field == "*":
         return True
@@ -55,9 +58,9 @@ def _cron_field_match(field: str, value: int, lo: int, hi: int) -> bool:
             try:
                 step = int(step_s)
             except ValueError:
-                return False
+                continue
             if step < 1:
-                return False
+                continue
         if part == "*":
             a, b = lo, hi
         elif "-" in part:
@@ -65,18 +68,63 @@ def _cron_field_match(field: str, value: int, lo: int, hi: int) -> bool:
             try:
                 a, b = int(a_s), int(b_s)
             except ValueError:
-                return False
+                continue
         else:
             try:
                 a = int(part)
             except ValueError:
-                return False
+                continue
             b = hi if step > 1 else a  # 单值加步长视为从该值到上限
         if a > b or a < lo or b > hi:
-            return False
+            continue
         if a <= value <= b and (value - a) % step == 0:
             return True
     return False
+
+
+_CRON_BOUNDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))  # 分 时 日 月 周
+
+
+def _cron_field_valid(field: str, lo: int, hi: int) -> bool:
+    """单个 cron 字段合法性：每一项必须是 数字 / * / a-b / 带 /n 步长，且在界内。"""
+    field = field.strip()
+    if not field:
+        return False
+    for part in field.split(","):
+        part = part.strip()
+        if not part:
+            return False
+        step = 1
+        if "/" in part:
+            part, _, step_s = part.partition("/")
+            if not step_s.isdigit() or int(step_s) < 1:
+                return False
+            step = int(step_s)
+        if part == "*":
+            continue
+        if "-" in part:
+            a_s, _, b_s = part.partition("-")
+            if not (a_s.isdigit() and b_s.isdigit()):
+                return False
+            a, b = int(a_s), int(b_s)
+            if a > b or a < lo or b > hi:
+                return False
+        else:
+            if not part.isdigit():
+                return False
+            a = int(part)
+            b = hi if step > 1 else a  # 与 _cron_field_match 同口径
+            if a < lo or b > hi:
+                return False
+    return True
+
+
+def validate_cron_expr(expr: str) -> bool:
+    """五段 cron（分 时 日 月 周）整体合法性校验（创建/更新入口共用）。"""
+    parts = (expr or "").split()
+    if len(parts) != 5:
+        return False
+    return all(_cron_field_valid(field, lo, hi) for field, (lo, hi) in zip(parts, _CRON_BOUNDS))
 
 
 def cron_matches(expr: str, now: datetime | None = None) -> bool:
@@ -107,10 +155,21 @@ def job_due(job: ScheduledJob, now: datetime | None = None) -> bool:
     """纯函数：给定当前时间判断任务是否到期（单测直接覆盖）。"""
     now = now or datetime.now()
     if job.schedule_type == "cron":
-        if not cron_matches(job.cron_expr or "", now):
-            return False
-        # 同一自然分钟内不重复触发
-        return job.last_run_at is None or job.last_run_at.replace(second=0, microsecond=0) != now.replace(second=0, microsecond=0)
+        expr = job.cron_expr or ""
+        if cron_matches(expr, now):
+            # 同一自然分钟内不重复触发
+            return job.last_run_at is None or job.last_run_at.replace(second=0, microsecond=0) != now.replace(second=0, microsecond=0)
+        # 错过补偿：在 (last_run_at, now] 内找最近一次匹配分钟（上限回溯 24h），找到即 due
+        lower = now - timedelta(hours=24)
+        if job.last_run_at is not None:
+            lower = max(lower, job.last_run_at.replace(second=0, microsecond=0))
+        cursor = now.replace(second=0, microsecond=0)
+        while True:
+            cursor -= timedelta(minutes=1)
+            if cursor <= lower:  # lower 分钟本身已执行过/超出窗口，不计
+                return False
+            if cron_matches(expr, cursor):
+                return True
     if job.schedule_type == "daily":
         if not job.daily_at or len(job.daily_at) != 5 or job.daily_at[2] != ":":
             return False
@@ -131,41 +190,48 @@ def job_due(job: ScheduledJob, now: datetime | None = None) -> bool:
     return now >= job.last_run_at + timedelta(minutes=interval)
 
 
-def _record(db, job: ScheduledJob, status: str, summary: str, note_id: int | None = None) -> None:
-    job.last_run_at = datetime.now()
+def _record(db, job: ScheduledJob, status: str, summary: str, note_id: int | None = None,
+            update_last_run: bool = True) -> None:
+    now = datetime.now()
+    # 手动「立即运行」对 daily/cron 不更新 last_run_at，避免吞掉到点触发（interval 维持顺延）
+    if update_last_run:
+        job.last_run_at = now
     job.last_status = status
     runs = list(job.recent_runs or [])
-    runs.insert(0, {"at": job.last_run_at.strftime("%Y-%m-%d %H:%M"), "status": status, "summary": summary[:200]})
+    runs.insert(0, {"at": now.strftime("%Y-%m-%d %H:%M"), "status": status, "summary": summary[:200]})
     job.recent_runs = runs[:RECENT_MAX]
     if note_id is not None:
         job.last_note_id = note_id
     db.commit()
 
 
-async def _run_action_job(db, job: ScheduledJob) -> dict:
+async def _run_action_job(db, job: ScheduledJob, update_last_run: bool = True) -> dict:
     """模块动作任务：线程池执行注册的同步 handler，结果记 recent_runs。"""
     handler = JOB_ACTIONS.get(job.action)
     if handler is None:
-        _record(db, job, "error", f"动作未注册：{job.action}")
+        _record(db, job, "error", f"动作未注册：{job.action}", update_last_run=update_last_run)
         return {"status": "error", "summary": f"动作未注册：{job.action}"}
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, handler)
         summary = str(result.get("message") or result.get("summary") or "完成")[:200]
         status = result.get("status", "ok")
-        _record(db, job, status, summary)
+        _record(db, job, status, summary, update_last_run=update_last_run)
         return {"status": status, "summary": summary}
     except Exception as exc:
         logger.warning("模块动作任务 %s 执行失败", job.id, exc_info=True)
-        _record(db, job, "error", str(exc)[:500])
+        _record(db, job, "error", str(exc)[:500], update_last_run=update_last_run)
         return {"status": "error", "summary": str(exc)[:200]}
 
 
-async def run_job(job_id: int) -> dict:
+async def run_job(job_id: int, manual: bool = False) -> dict:
     """执行一次定时任务（立即运行按钮与调度循环共用）。返回 {status, summary, note_id?}。
 
     job.action 非空 = 模块动作任务：到点调用注册的同步 handler（线程池执行），
     不走 LLM、不写笔记，结果只记 recent_runs；handler 抛错记 error。
+
+    manual=True（「立即运行」入口）时，daily/cron 任务不更新 last_run_at，
+    不影响下次到点触发；interval 任务维持现状顺延。
     """
     if job_id in _running:
         return {"status": "skipped", "summary": "上一次执行尚未结束，已跳过"}
@@ -175,10 +241,11 @@ async def run_job(job_id: int) -> dict:
             job = db.get(ScheduledJob, job_id)
             if job is None:
                 return {"status": "error", "summary": "任务不存在"}
+            touch = not manual or job.schedule_type == "interval"
             if job.action:
-                return await _run_action_job(db, job)
+                return await _run_action_job(db, job, update_last_run=touch)
             if not llm_status()["configured"]:
-                _record(db, job, "skipped", "模型未配置")
+                _record(db, job, "skipped", "模型未配置", update_last_run=touch)
                 return {"status": "skipped", "summary": "模型未配置"}
 
             result = await orchestrator.chat(
@@ -189,7 +256,7 @@ async def run_job(job_id: int) -> dict:
             )
             if not result.get("ok"):
                 msg = result.get("message") or "执行失败"
-                _record(db, job, "error", msg)
+                _record(db, job, "error", msg, update_last_run=touch)
                 return {"status": "error", "summary": msg[:200]}
 
             agent_info = result.get("agent") or {}
@@ -204,14 +271,15 @@ async def run_job(job_id: int) -> dict:
             )
             db.add(note)
             db.flush()
-            _record(db, job, "ok", result.get("reply", "")[:200], note_id=note.id)
+            _record(db, job, "ok", result.get("reply", "")[:200], note_id=note.id, update_last_run=touch)
             return {"status": "ok", "summary": result.get("reply", "")[:200], "note_id": note.id}
     except Exception as exc:
         logger.warning("定时任务 %s 执行失败", job_id, exc_info=True)
         with SessionLocal() as db:
             job = db.get(ScheduledJob, job_id)
             if job is not None:
-                _record(db, job, "error", str(exc)[:500])
+                _record(db, job, "error", str(exc)[:500],
+                        update_last_run=not manual or job.schedule_type == "interval")
         return {"status": "error", "summary": str(exc)[:200]}
     finally:
         _running.discard(job_id)

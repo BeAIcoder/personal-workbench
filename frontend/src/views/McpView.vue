@@ -56,7 +56,7 @@
           <el-input v-model="argsText" placeholder="空格分隔，如：-y @modelcontextprotocol/server-filesystem D:\文档" />
         </el-form-item>
         <el-form-item label="环境变量">
-          <el-input v-model="envText" placeholder='JSON，如：{"API_KEY":"xxx"}（仅存本机库）' type="textarea" :rows="2" />
+          <el-input v-model="envText" placeholder='JSON，如：{"API_KEY":"xxx"}（仅存本机库）' type="textarea" :rows="2" @input="envTouched = true" />
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
@@ -92,6 +92,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { buildServerUpdatePayload, describeApiError, formatArgs, parseArgsText, parseEnvText, parseJsonObject } from '../utils/mcp'
 
 const loading = ref(false)
 const items = ref([])
@@ -100,6 +101,8 @@ const dialog = reactive({ visible: false, id: null, saving: false })
 const form = reactive({ name: '', command: '', enabled: true })
 const argsText = ref('')
 const envText = ref('')
+// 编辑时 envText 只是脱敏占位（'{}'）：用户没动过就不把 env 发给后端，避免静默清空
+const envTouched = ref(false)
 const testDialog = reactive({ visible: false, server: null, tools: [], tool: '', arguments: '{}', calling: false, result: '' })
 
 async function load() {
@@ -118,6 +121,7 @@ function resetForm() {
   Object.assign(form, { name: '', command: '', enabled: true })
   argsText.value = ''
   envText.value = ''
+  envTouched.value = false
 }
 
 function openCreate() {
@@ -129,23 +133,18 @@ function openCreate() {
 function openEdit(row) {
   dialog.id = row.id
   Object.assign(form, { name: row.name, command: row.command, enabled: row.enabled })
-  argsText.value = (row.args || []).join(' ')
+  argsText.value = formatArgs(row.args || [])
   envText.value = '{}'
+  envTouched.value = false
   dialog.visible = true
 }
 
 function parseArgs() {
-  return argsText.value.trim() ? argsText.value.trim().split(/\s+/) : []
+  return parseArgsText(argsText.value)
 }
 
 function parseEnv() {
-  const text = envText.value.trim()
-  if (!text) return {}
-  try {
-    const obj = JSON.parse(text)
-    if (obj && typeof obj === 'object') return obj
-  } catch { /* 落到下面报错 */ }
-  throw new Error('环境变量不是合法 JSON')
+  return parseEnvText(envText.value)
 }
 
 async function save() {
@@ -164,15 +163,15 @@ async function save() {
   try {
     const payload = { name: form.name.trim(), command: form.command.trim(), args: parseArgs(), env, enabled: form.enabled }
     if (dialog.id) {
-      await api.put(`/mcp/servers/${dialog.id}`, { command: payload.command, args: payload.args, env: payload.env, enabled: payload.enabled })
+      await api.put(`/mcp/servers/${dialog.id}`, buildServerUpdatePayload(payload, { envTouched: envTouched.value }))
     } else {
       await api.post('/mcp/servers', payload)
     }
     ElMessage.success('已保存')
     dialog.visible = false
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } catch {
+    /* 拦截器已提示 */
   } finally {
     dialog.saving = false
   }
@@ -184,9 +183,8 @@ async function connect(row) {
     const { data } = await api.post(`/mcp/servers/${row.id}/connect`, {}, { timeout: 30000 })
     ElMessage.success(`已连接，注册 ${(data.tools || []).length} 个工具`)
     await load()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '连接失败')
-    await load()
+  } catch {
+    await load()  // 拦截器已提示；刷新列表拿到最新连接状态/错误
   } finally {
     connectingId.value = null
   }
@@ -202,9 +200,8 @@ async function toggleEnabled(row) {
   try {
     await api.put(`/mcp/servers/${row.id}`, { enabled: row.enabled })
     ElMessage.success(row.enabled ? '已启用（下次启动/手动连接生效）' : '已停用')
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '操作失败')
-    row.enabled = !row.enabled
+  } catch {
+    row.enabled = !row.enabled  // 启停失败回滚开关（拦截器已提示）
   }
 }
 
@@ -231,9 +228,9 @@ function openTest(row) {
 async function runTest() {
   let args
   try {
-    args = JSON.parse(testDialog.arguments || '{}')
-  } catch {
-    ElMessage.error('参数不是合法 JSON')
+    args = parseJsonObject(testDialog.arguments, '参数')
+  } catch (e) {
+    ElMessage.error(e.message)
     return
   }
   testDialog.calling = true
@@ -241,7 +238,7 @@ async function runTest() {
     const { data } = await api.post(`/mcp/servers/${testDialog.server.id}/test-call`, { tool: testDialog.tool, arguments: args }, { timeout: 60000 })
     testDialog.result = data.text || JSON.stringify(data.raw || data, null, 2)
   } catch (e) {
-    testDialog.result = `调用失败：${e?.response?.data?.detail || e.message}`
+    testDialog.result = `调用失败：${describeApiError(e)}`
   } finally {
     testDialog.calling = false
   }

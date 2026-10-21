@@ -32,9 +32,10 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import { localMonth } from '../../_shared/dates'
 
 const loading = ref(false)
-const period = ref(new Date().toISOString().slice(0, 7))
+const period = ref(localMonth())
 const data = reactive({ period: '', items: [], subject_count: 0, debit_total: 0, credit_total: 0 })
 
 async function load() {
@@ -46,9 +47,9 @@ async function load() {
   try {
     const { data: resp } = await api.get('/finance/ledger/bip/balances/summary', { params: { period: period.value } })
     Object.assign(data, resp)
-  } catch (e) {
+  } catch {
     data.items = []
-    ElMessage.error(e?.response?.data?.detail || '汇总失败')
+    /* 拦截器已统一提示 */
   } finally {
     loading.value = false
   }

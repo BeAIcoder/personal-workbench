@@ -101,6 +101,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { noteApi } from '../api'
 import { fmtDT, snippet } from '../utils/format'
+import { parseNotesQuery, pickAfterCreate } from '../utils/notes'
 
 const route = useRoute()
 const router = useRouter()
@@ -155,7 +156,13 @@ async function createNew() {
   ElMessage.success('已创建，请编辑内容后保存')
   await load()
   loadTags()
-  select(rows.value.find((n) => n.id === data.id) || rows.value[0])
+  const target = pickAfterCreate(rows.value, data.id)
+  if (target) {
+    select(target)
+  } else {
+    // 筛选/翻页状态下新笔记不在当前列表中：保持原选中，绝不乱选第一条
+    ElMessage.warning('新笔记不在当前筛选/分页结果中，请清空筛选后到列表中查找')
+  }
 }
 
 async function save() {
@@ -219,12 +226,28 @@ function debouncedLoad() {
 
 onBeforeUnmount(() => clearTimeout(timer))
 
-function applyRoute() {
+async function selectById(id) {
+  let note = rows.value.find((n) => n.id === id)
+  if (!note) {
+    // 不在当前筛选/分页结果中：单独按 id 拉取（RAG 命中跳转场景）
+    try {
+      const { data } = await noteApi.get(id)
+      note = data
+    } catch {
+      return  // 拦截器已提示（笔记不存在或服务不可用）
+    }
+  }
+  select(note)
+}
+
+async function applyRoute() {
   if (route.path !== '/notes') return
   if (route.query.q !== undefined && route.query.q !== filters.q) {
     filters.q = String(route.query.q || '')
-    load(1)
+    await load(1)
   }
+  const { highlight } = parseNotesQuery(route.query)
+  if (highlight) await selectById(highlight)
 }
 
 onMounted(() => {

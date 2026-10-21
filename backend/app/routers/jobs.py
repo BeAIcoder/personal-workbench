@@ -42,6 +42,11 @@ def update_job(job_id: int, payload: ScheduledJobUpdate, db: Session = Depends(g
         if not job.daily_at:
             raise HTTPException(status_code=422, detail="daily 类型必须提供 daily_at（HH:MM）")
         job.interval_minutes = None
+    elif job.schedule_type == "cron":
+        if not scheduler.validate_cron_expr(job.cron_expr or ""):
+            raise HTTPException(status_code=422, detail="cron 类型必须提供合法的五段 cron_expr（分 时 日 月 周）")
+        job.interval_minutes = None
+        job.daily_at = None
     else:
         if job.interval_minutes is None:
             raise HTTPException(status_code=422, detail="interval 类型必须提供 interval_minutes（5-10080）")
@@ -61,7 +66,7 @@ def delete_job(job_id: int, db: Session = Depends(get_db)):
 @router.post("/{job_id}/run", summary="立即执行一次（不影响下次到点触发）")
 async def run_job_now(job_id: int, db: Session = Depends(get_db)):
     _get_or_404(db, job_id)
-    result = await scheduler.run_job(job_id)
+    result = await scheduler.run_job(job_id, manual=True)
     return result
 
 

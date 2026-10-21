@@ -708,11 +708,14 @@ def pl_add_transaction(
     with SessionLocal() as db:
         ensure_seed(db)
         accounts, cats = _category_maps(db)
+        warnings: list[str] = []
         acc = next((a for a in accounts.values() if a.name == (account or "").strip()), None)
         if acc is None:
             acc = db.query(PlAccount).order_by(PlAccount.sort, PlAccount.id).first()
+            aname = (account or "").strip()
+            if aname:
+                warnings.append(f"未找到账户「{aname}」，已记入「{acc.name}」")
         cid = None
-        warning = ""
         cname = (category or "").strip()
         if cname:
             # 只匹配已存在的分类（父>子），找不到按未分类记账，避免误建分类
@@ -723,7 +726,7 @@ def pl_add_transaction(
                 cat = q.first()
                 if cat is None:
                     cid = None
-                    warning = f"未找到分类「{cname}」，已按未分类记账"
+                    warnings.append(f"未找到分类「{cname}」，已按未分类记账")
                     break
                 parent_id = cat.id
                 cid = cat.id
@@ -748,8 +751,8 @@ def pl_add_transaction(
             "account": acc.name,
             "category": category_path(cats.get(cid), cats) or "未分类",
         }
-        if warning:
-            result["warning"] = warning
+        if warnings:
+            result["warning"] = "；".join(warnings)
         return result
 
 
