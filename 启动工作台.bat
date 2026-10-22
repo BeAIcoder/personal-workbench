@@ -40,15 +40,29 @@ if errorlevel 1 (
 echo       后端依赖安装完成。
 
 :check_frontend
-if exist "frontend\dist\index.html" goto start_server
-echo [2/4] 首次运行：正在安装前端依赖...
-where npm >nul 2>nul
+where node >nul 2>nul
 if errorlevel 1 (
-    echo 错误：未找到 npm 命令，请先安装 Node.js 22+。
+    echo 错误：未找到 node 命令，请先安装 Node.js 22+。
     pause
     exit /b 1
 )
 pushd frontend
+call node scripts\needs-build.js
+if errorlevel 1 goto build_frontend
+popd
+goto start_server
+
+:build_frontend
+echo [2/4] 检测到前端需要构建（源码、配置或依赖有更新）...
+if exist "node_modules" goto build_run
+echo       正在安装前端依赖...
+where npm >nul 2>nul
+if errorlevel 1 (
+    echo 错误：未找到 npm 命令，请先安装 Node.js 22+。
+    popd
+    pause
+    exit /b 1
+)
 call npm install --no-audit --no-fund
 if errorlevel 1 (
     echo       默认源安装失败，改用国内镜像重试...
@@ -60,6 +74,7 @@ if errorlevel 1 (
         exit /b 1
     )
 )
+:build_run
 echo [3/4] 正在构建前端页面...
 call npm run build
 if errorlevel 1 (

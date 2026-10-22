@@ -44,10 +44,13 @@ _TEMP_ROOT = _temp_root()
 tempfile.tempdir = str(_TEMP_ROOT)
 _TEST_DB = _TEMP_ROOT / f"workbench_test_{os.getpid()}.db"
 _DEBUG_DIR = _TEMP_ROOT / f"workbench_debug_{os.getpid()}"
+_FINANCE_DIR = _TEMP_ROOT / f"workbench_finance_{os.getpid()}"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB.as_posix()}"
 os.environ["SEED_ON_STARTUP"] = "0"
 # 调试中心数据目录指向临时目录：测试不碰真实 backend/data/debug
 os.environ["DEBUG_DATA_DIR"] = str(_DEBUG_DIR)
+# 财务模块数据目录同样强制隔离：未显式 monkeypatch 的测试也不得写真实 inbox
+os.environ["FINANCE_DATA_DIR"] = str(_FINANCE_DIR)
 # 测试环境不接入模型：显式清空 LLM 配置，避免受开发者本地 backend/.env 影响
 for _k in ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
     os.environ[_k] = ""
@@ -75,3 +78,4 @@ def pytest_sessionfinish(session, exitstatus):
     except (FileNotFoundError, PermissionError):
         pass
     shutil.rmtree(_DEBUG_DIR, ignore_errors=True)
+    shutil.rmtree(_FINANCE_DIR, ignore_errors=True)

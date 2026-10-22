@@ -52,3 +52,35 @@ describe('finance-board 管线失败后的列表刷新', () => {
     expect(runBody).toContain('if (shouldReloadAfterRun(err)) await load()')
   })
 })
+
+// 与 bugfix-frontend-finance 同范式的静态断言：无 jsdom/@vue/test-utils，
+// 通过读取 .vue 源码校验失败快照日志查看接线。
+describe('finance-board 失败快照日志查看（log_tail）', () => {
+  const src = readFileSync(
+    new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
+    'utf8',
+  )
+
+  it('快照表格提供「日志」入口（有 log_tail 才显示，失败快照可点开）', () => {
+    expect(src).toMatch(/v-if="row\.log_tail"/)
+    expect(src).toMatch(/@click="showLog\(row\)"/)
+  })
+
+  it('日志以纯文本 <pre> 展示，禁止 v-html（防注入）', () => {
+    expect(src).toContain('<pre class="log">')
+    expect(src).toContain('{{ logContent }}')
+    expect(src).not.toContain('v-html')
+  })
+
+  it('showLog 处理空值：无日志时给出占位文案', () => {
+    expect(src).toMatch(/logContent\.value = row\.log_tail \|\| '[^']+'/)
+  })
+
+  it('iframe sandbox 契约保持不变', () => {
+    expect(src).toContain('sandbox="allow-scripts"')
+  })
+
+  it('load() 请求失败时清空列表不崩溃', () => {
+    expect(src).toMatch(/catch \{[\s\S]{0,80}items\.value = \[\]/)
+  })
+})
