@@ -36,6 +36,7 @@ PORT = 8216
 BASE = f"http://127.0.0.1:{PORT}"
 DB = RESULTS / f"{AREA}.db"
 FIN_DIR = RESULTS / f"{AREA}-fin"
+DEBUG_DIR = RESULTS / f"{AREA}-debug"
 LOG = RESULTS / f"{AREA}.server.log"
 JSON_OUT = RESULTS / f"{AREA}.json"
 EVIDENCE_DIR = RESULTS / AREA
@@ -47,11 +48,14 @@ for p in (DB, Path(str(DB) + "-wal"), Path(str(DB) + "-shm")):
         p.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
 
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 _log = open(LOG, "w", encoding="utf-8")

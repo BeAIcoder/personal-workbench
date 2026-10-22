@@ -9,7 +9,7 @@
   （真实代码路径：子进程 → 归档 → DB → UI），并另测真实 503 降级。
 - 现金流：空态、创建运行（合法/缺参/非法月份/非法类型/zip-slip/解压炸弹）、文件名
   清洗与超长名、真实 V1 引擎失败时 503 + failed + 日志（不伪造成功）、重跑、产物下载
-  409/404、running 状态守卫、列表上限观察、UI 新建/执行失败/日志/空态/XSS/加载失败。
+  409/404、running 状态守卫、分页与真实 total、UI 新建/执行失败/日志/空态/XSS/加载失败。
 - 费用：规则摘要/重载、上传校验（缺文件/类型/空文件/20MB 超限）、非法 xlsx 落 failed
   且清理 inbox、真实引擎成功分类（7 行合成明细账）与统计/明细对拍、下载魔数与中文
   文件名、分页边界、路径穿越文件名、UI 上传/结果页/图表/未命中筛选/分页/异常 id/
@@ -530,12 +530,15 @@ try:
                 assert s == 200 and lst["total"] == 1, f"失败也应归档快照: {lst}"
                 item = lst["items"][0]
                 assert item["status"] == "failed" and item["html_path"] == "", f"失败快照字段异常: {item}"
-                # 契约观察：SnapshotOut 不返回 log_tail，日志只落在库里
                 log = db_rows("SELECT log_tail FROM mod_board_snapshot WHERE id=?", (item["id"],))[0]["log_tail"]
                 assert log and "probe m02 forced failure" in log, f"失败日志未入库: {log[:120]!r}"
+                # 契约：SnapshotOut 有界暴露 log_tail（入库 ≤4000，读取 ≤500 字符尾部），
+                # API 与 DB 双重可查——前端「日志」按钮即读该字段
+                assert item["log_tail"] == (log[-500:] if log else ""), \
+                    f"API log_tail 应为 DB 值的有界尾部: {item['log_tail'][:60]!r}"
             finally:
                 (BOARD_PIPE / "fail.flag").unlink(missing_ok=True)
-            return "失败快照入库、html_path 为空、503 明确（日志仅 DB 可查）"
+            return "失败快照入库、html_path 为空、503 明确（日志 API+DB 双查）"
         record("BCE-B-API-006", "管线失败归档 failed 快照", b_api_run_failed)
 
         def b_api_run_unavailable():
@@ -713,8 +716,11 @@ try:
         def c_api_empty():
             reset_cashflow()
             s, _, d = req("GET", "/api/finance/cashflow/runs")
-            assert s == 200 and d == {"total": 0, "items": []}, f"空列表异常: {s} {d}"
-            return "空列表 total=0"
+            assert s == 200, f"空列表状态异常: {s} {d}"
+            assert d["total"] == 0 and d["items"] == [], f"空列表内容异常: {s} {d}"
+            # 分页契约（Task 4）：响应带 page/page_size，默认 1/20；老调用不传参仍 200
+            assert d["page"] == 1 and d["page_size"] == 20, f"分页默认字段异常: {d}"
+            return "空列表 total=0 + 分页默认 page/page_size"
         record("BCE-C-API-001", "现金流空列表", c_api_empty)
 
         def c_api_validation():
@@ -760,15 +766,14 @@ try:
             s, _, d = cash_create(files=[("files", "broken.zip", b"not-a-zip")])
             assert s == 400 and ("ZIP" in d.get("detail", "") or "损坏" in d.get("detail", "")), \
                 f"损坏 ZIP 应 400: {s} {d}"
-            # ZIP 条目名含 Windows 非法字符：清洗后落盘，不得 500
+            # ZIP 条目名含 Windows 非法字符：按审计 A04 拒绝，不清洗后落盘
             buf3 = io.BytesIO()
             with zipfile.ZipFile(buf3, "w") as zf:
                 zf.writestr("数据<>:|?/bad?.xlsx", b"entry")
             s, _, d = cash_create(files=[("files", "names.zip", buf3.getvalue())])
-            assert s == 201, f"ZIP 条目名应清洗后接受，实际 {s}: {str(d)[:200]}"
-            names = [f["name"] for f in d["input_files"]]
-            assert names and all(not (set(n) & set('<>:"|?*')) for n in names), f"条目名未清洗: {names}"
-            return "非法扩展名/zip-slip/炸弹/损坏 ZIP 均 400；条目非法名清洗后 201"
+            assert s == 400 and "非法文件名" in d.get("detail", ""), \
+                f"ZIP 非法条目名应 400，实际 {s}: {str(d)[:200]}"
+            return "非法扩展名/zip-slip/炸弹/损坏 ZIP/非法条目名均 400"
         record("BCE-C-API-003", "上传文件类型与 ZIP 防护", c_api_file_validation)
 
         def c_api_create_and_detail():
@@ -863,8 +868,9 @@ try:
             return "running 状态 execute 返回 400"
         record("BCE-C-API-009", "running 状态执行守卫", c_api_running_guard)
 
-        def c_api_list_cap():
-            """设计观察：列表最多 50 条且 total 等于返回条数，超过 50 的历史运行不可达。"""
+        def c_api_list_pagination():
+            """分页契约（Task 4）：列表按 page/page_size 分页且 total 为数据库真实计数，
+            翻页可遍历全部记录——取代旧「固定 50 条上限、total=当页条数、超 50 条不可达」观察项。"""
             reset_cashflow()
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for i in range(52):
@@ -873,11 +879,32 @@ try:
                     "log_tail,error,elapsed_sec,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (9, "failed", "[]", "[]", "", "", "fixture", 0.0, now, now),
                 )
+            # 默认分页：第 1 页 20 条；total 是真实总数 52，不是当页条数
             s, _, d = req("GET", "/api/finance/cashflow/runs")
-            assert s == 200 and len(d["items"]) == 50, f"列表上限应 50: {len(d['items'])}"
-            assert d["total"] == 50, f"当前契约 total 等于返回条数（观察）: {d['total']}"
-            return "观察项：52 条记录只返回 50 条且 total=50，无分页入口"
-        record("BCE-C-API-010", "列表 50 条上限（观察项）", c_api_list_cap)
+            assert s == 200 and len(d["items"]) == 20, f"默认每页应 20 条: {len(d['items'])}"
+            assert d["total"] == 52, f"total 应为数据库真实计数 52: {d['total']}"
+            assert d["page"] == 1 and d["page_size"] == 20, f"分页回显异常: {d}"
+            # 第 2 页仍 20 条且 total 不变；第 3 页余 12 条——52 条全量可达
+            s, _, d2 = req("GET", "/api/finance/cashflow/runs?page=2")
+            assert s == 200 and len(d2["items"]) == 20 and d2["total"] == 52, f"第 2 页异常: {len(d2['items'])}/{d2['total']}"
+            s, _, d3 = req("GET", "/api/finance/cashflow/runs?page=3")
+            assert s == 200 and len(d3["items"]) == 12 and d3["total"] == 52, f"第 3 页异常: {len(d3['items'])}/{d3['total']}"
+            s, _, d4 = req("GET", "/api/finance/cashflow/runs?page=4")
+            assert s == 200 and d4["items"] == [] and d4["total"] == 52, f"越界页应空列表: {d4['items']}"
+            # 三页 id 两两不同且各自倒序（按 id 倒序分页，无重复无遗漏）
+            ids = [x["id"] for x in d["items"] + d2["items"] + d3["items"]]
+            assert len(ids) == 52 and len(set(ids)) == 52, f"分页 id 重复或遗漏: {len(set(ids))}"
+            for pg in (d["items"], d2["items"], d3["items"]):
+                pg_ids = [x["id"] for x in pg]
+                assert pg_ids == sorted(pg_ids, reverse=True), f"页内未按 id 倒序: {pg_ids[:5]}"
+            # 分页参数边界：page>=1、1<=page_size<=100
+            assert req("GET", "/api/finance/cashflow/runs?page=0")[0] == 422, "page=0 应 422"
+            assert req("GET", "/api/finance/cashflow/runs?page_size=101")[0] == 422, "page_size=101 应 422"
+            s, _, d100 = req("GET", "/api/finance/cashflow/runs?page_size=100")
+            assert s == 200 and len(d100["items"]) == 52 and d100["total"] == 52, \
+                f"page_size=100 应一次取满: {len(d100['items'])}"
+            return "分页 20/20/12 + 真实 total=52 + 参数边界 + 倒序无重复"
+        record("BCE-C-API-010", "现金流列表分页与真实 total", c_api_list_pagination)
 
         # ================= 现金流 UI =================
 
@@ -1023,13 +1050,14 @@ try:
             assert s == 400, f"非法 xlsx 应 400，实际 {s}: {str(d)[:240]}"
             assert "银行明细账" in d.get("detail", "") or "读取失败" in d.get("detail", ""), \
                 f"400 提示异常: {d}"
+            # 行数/内容护栏在写运行记录前生效：非法内容不落 running/failed 半成品
             s, _, lst = req("GET", "/api/finance/expense/runs")
-            assert s == 200 and lst["total"] == 1 and lst["items"][0]["status"] == "failed", \
-                f"失败运行未落库 failed: {lst}"
+            assert s == 200 and lst["total"] == 0 and lst["items"] == [], \
+                f"非法内容被写运行记录: {lst}"
             inbox = FIN_DIR / "finance_expense" / "inbox"
             assert not inbox.exists() or not any(inbox.iterdir()), "失败上传文件未清理，inbox 留孤儿"
-            return "非法内容 400、运行 failed、inbox 清理"
-        record("BCE-E-API-003", "非法 xlsx 失败落库与清理", e_api_bad_xlsx_failed)
+            return "非法内容 400、不写运行记录、inbox 清理"
+        record("BCE-E-API-003", "非法 xlsx 前置拒绝与清理", e_api_bad_xlsx_failed)
 
         def e_api_classify_success():
             reset_expense()
@@ -1083,10 +1111,12 @@ try:
         def e_api_path_traversal():
             reset_expense()
             run = exp_classify_ok(filename="../../穿越/evil.xlsx")
-            assert run["original_filename"] == "evil.xlsx", f"路径未取 basename: {run['original_filename']}"
+            assert run.get("original_filename") == "evil.xlsx", f"路径未取 basename: {run!r}"
             inbox = FIN_DIR / "finance_expense" / "inbox"
             stored = list(inbox.glob("*.xlsx"))
-            assert len(stored) == 1 and ".." not in stored[0].name and stored[0].name != "evil.xlsx"
+            assert stored, f"上传未落 inbox: run={run!r}, stored={stored!r}"
+            assert all(".." not in p.name and p.name != "evil.xlsx" for p in stored), \
+                f"落盘名异常: run={run!r}, stored={stored!r}"
             return "文件名仅取 basename，落盘 uuid"
         record("BCE-E-API-007", "上传文件名路径穿越", e_api_path_traversal)
 
@@ -1268,11 +1298,9 @@ try:
             "board_pipeline": "isolated synthetic fixture (finance-bce-board-pipeline)；真实微信管线未执行",
             "cashflow_engine": "真实 V1 引擎（合成输入，失败路径）",
             "expense_engine": "真实费用分类引擎（合成银行明细账）",
-            "pending_rebuild": "BCE-B-UI-005：BoardView.vue 已修，frontend/dist 未重建，重建前该用例预期失败",
-            "observed_gaps": [
-                "看板 SnapshotOut 不返回 log_tail，失败日志仅 DB 可查",
-                "现金流列表固定上限 50 且 total=返回数，超 50 条无分页入口",
-            ],
+            "dist_precondition": "探针跑在构建产物上：frontend/dist 必须由当前 src 重新构建"
+                                "（启动工作台.bat 的 needs-build 检查会提示），陈旧 dist 会让前端修复类用例失败",
+            "observed_gaps": [],
         },
     }
     out = RESULTS / f"{AREA}.json"

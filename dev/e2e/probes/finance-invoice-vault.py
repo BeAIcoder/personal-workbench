@@ -33,6 +33,7 @@ PORT = 8212
 BASE = f"http://127.0.0.1:{PORT}"
 DB = RESULTS / f"{AREA}.db"
 FIN_DIR = RESULTS / f"{AREA}-fin"
+DEBUG_DIR = RESULTS / f"{AREA}-debug"
 AREA_DIR = RESULTS / AREA
 FIXTURES = AREA_DIR / "fixtures"
 SHOTS = AREA_DIR / "shots"
@@ -186,10 +187,15 @@ def start_server():
         import shutil
 
         shutil.rmtree(FIN_DIR)
+    if DEBUG_DIR.exists():
+        import shutil
+
+        shutil.rmtree(DEBUG_DIR)
     _kill_port(PORT)
     env = os.environ.copy()
     env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
     env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+    env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
     env["PYTHONIOENCODING"] = "utf-8"
     log = open(LOG, "w", encoding="utf-8")
     proc = subprocess.Popen(
@@ -557,7 +563,8 @@ def run_probes():
         goto(page, "/finance/invoice/batches/99999")
         assert wait_toast(page, "批次不存在"), "不存在批次未给出 404 提示"
         assert len(page_errors) == errors_before, f"出现未捕获异常：{page_errors[-3:]}"
-        assert page.locator(".el-card").count() > 0, "页面结构应保持渲染"
+        assert page.locator(".el-result", has_text="批次不存在或加载失败").count() > 0, \
+            "404 未切到错误态（页面结构断言已随失败态实现更新）"
     record("TC-FIV-017", "不存在批次详情 → 404 优雅提示", tc_017_detail_404)
 
     def tc_018_export_all_failed():

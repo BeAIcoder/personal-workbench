@@ -52,6 +52,7 @@ PORT = 8219
 BASE = f"http://127.0.0.1:{PORT}"
 DB = RESULTS / f"{AREA}.db"
 FIN_DIR = RESULTS / f"{AREA}-fin"
+DEBUG_DIR = RESULTS / f"{AREA}-debug"
 UPLOAD_DIR = RESULTS / f"{AREA}-uploads"
 PP_DIR = RESULTS / f"{AREA}-pp"
 SHOTS = RESULTS / AREA / "shots"
@@ -65,7 +66,7 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 for p in (DB,):
     if p.exists():
         p.unlink()
-for d in (FIN_DIR, UPLOAD_DIR, PP_DIR):
+for d in (FIN_DIR, DEBUG_DIR, UPLOAD_DIR, PP_DIR):
     if d.exists():
         shutil.rmtree(d)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -88,6 +89,7 @@ PP_DIR.mkdir(parents=True, exist_ok=True)
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 env["SEED_ON_STARTUP"] = "0"
 # 无可用 LLM：显式空串覆盖 backend/.env 的兜底配置
@@ -804,20 +806,22 @@ try:
             body = api_body(resp)
             assert isinstance(body.get("detail"), list) and body["detail"], f"422 detail 结构异常: {body}"
             wait_stream_done()
-            wait_count(".msg-row", 2)
+            # 现行契约：发送失败回滚本次乐观气泡并恢复草稿/附件，不在对话里留错误气泡，
+            # 失败原因走 toast（见 frontend/tests/swarm-chat-resilience.test.js）
+            wait_count(".msg-row", 0)
             toast = page.locator(".el-message--error").first
             toast.wait_for(state="visible", timeout=5000)
             assert "422" in toast.inner_text(), f"422 降级提示缺少状态码: {toast.inner_text()!r}"
-            assert "HTTP 422" in page.locator(".ai-bubble.error-bubble").inner_text(), "422 未渲染错误气泡"
+            assert page.locator(".input-row textarea").input_value() == "超" * 8001, "失败后未恢复原始草稿"
             assert_no_app_errors("超长消息 422")
             # 失败后可继续发送
             clear_toasts()
             send_message("恢复发送")
             wait_stream_done()
-            wait_count(".msg-row", 4)
+            wait_count(".msg-row", 2)
             assert "模型未配置" in page.locator(".ai-bubble").last.inner_text(), "超长 422 后无法恢复发送"
             assert_no_app_errors("超长消息后恢复")
-            return "8001 字符 422 有提示/错误气泡/无未捕获异常，且可继续发送"
+            return "8001 字符 422 有提示/草稿恢复/无未捕获异常，且可继续发送"
         record("CHAT-SEND-003", "超长消息 422 优雅降级", tc_send_too_long)
 
         def tc_send_enter():
