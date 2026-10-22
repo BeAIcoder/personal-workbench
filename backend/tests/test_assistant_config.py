@@ -32,12 +32,13 @@ def test_save_globals_validates(client):
 
 
 def test_test_connection_requires_complete_config(client):
-    body = client.post(
+    # 自定义配置缺 api_key：400 明确拒绝（L3 修复：不借用激活密钥，状态码语义化）
+    resp = client.post(
         "/api/assistant/config/test",
         json={"config": {"base_url": "https://x.com/v1", "model": "m"}},  # 缺 api_key
-    ).json()
-    assert body["text"]["ok"] is False
-    assert "API Key" in body["text"]["error"]
+    )
+    assert resp.status_code == 400
+    assert "API Key" in resp.json()["detail"]
 
 
 def test_multimodal_png_util_returns_valid_data_uri():

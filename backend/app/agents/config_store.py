@@ -38,6 +38,48 @@ MASK_PREFIX = "••••••"
 
 logger = logging.getLogger(__name__)
 
+# 连通性/多模态测试的显式客户端超时（秒）：SDK 默认 600s、聊天路径 120s，
+# 测试路径收紧到 30s——「挂起服务器」应快速失败并给出中文提示，而不是长时间占住请求。
+TEST_TIMEOUT_SECONDS = 30.0
+
+# LLM 调用常见失败的中文提示映射（连通性/多模态/工具测试共用）：
+# 只做类型与状态码识别，不回传上游原文与堆栈，避免把内部细节暴露给界面。
+_FRIENDLY_ERROR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("AuthenticationError", "PermissionDeniedError"), "API Key 无效、已过期或没有权限（鉴权失败），请检查 Key 与账号状态"),
+    (("RateLimitError",), "请求过于频繁或被限流（429），请稍后重试或降低调用频率"),
+    (("APITimeoutError", "TimeoutError", "ReadTimeout"), "请求超时，请检查网络连接或稍后重试"),
+    (("APIConnectionError", "ConnectionError", "ConnectError"), "无法连接到服务器，请检查 Base URL 与网络连接"),
+    (("InternalServerError",), "服务器内部错误（5xx），请稍后重试"),
+    (("BadRequestError",), "请求被服务器拒绝（400），请检查模型名与参数是否正确"),
+)
+
+
+def _friendly_error(exc: BaseException) -> str:
+    """把 LLM 调用异常映射为中文提示（供测试路径使用，不回传堆栈与上游原文）。"""
+    name = type(exc).__name__
+    text = str(exc)
+    # 优先按异常类型名匹配；其次按消息里的 HTTP 状态码兜底
+    for names, message in _FRIENDLY_ERROR_RULES:
+        if name in names:
+            return message
+    for code, hint in (
+        ("401", "API Key 无效、已过期或没有权限（鉴权失败），请检查 Key 与账号状态"),
+        ("403", "没有访问权限（403），请检查 Key 与账号状态"),
+        ("429", "请求过于频繁或被限流（429），请稍后重试或降低调用频率"),
+        ("400", "请求被服务器拒绝（400），请检查模型名与参数是否正确"),
+        ("500", "服务器内部错误（5xx），请稍后重试"),
+        ("502", "网关错误（502），请稍后重试"),
+        ("503", "服务暂时不可用（503），请稍后重试"),
+        ("504", "网关超时（504），请稍后重试"),
+    ):
+        if code in text:
+            return hint
+    if "timed out" in text.lower() or "timeout" in text.lower():
+        return "请求超时，请检查网络连接或稍后重试"
+    if "connection" in text.lower():
+        return "无法连接到服务器，请检查 Base URL 与网络连接"
+    return f"测试失败（{name}），请检查配置或稍后重试"
+
 
 def _check_http_url(url: str) -> str:
     """http(s) 地址安全校验（SDK 构造 / 网关探测 / httpx 测试共用口径）。
@@ -682,7 +724,8 @@ async def test_connection(cfg: dict) -> dict:
 
     if not (cfg.get("api_key") and cfg.get("base_url") and cfg.get("model")):
         return {"ok": False, "error": "请先填写 Base URL / API Key / 模型名"}
-    model = build_model(cfg)
+    # 测试路径显式收紧超时（默认 120s → 30s）：挂起服务器应快速失败并给出中文提示
+    model = build_model({**cfg, "client_timeout": TEST_TIMEOUT_SECONDS, "client_max_retries": 0})
     if model is None:
         return {"ok": False, "error": "配置不完整，无法构造模型"}
     from agentscope.message import Msg, TextBlock
@@ -693,6 +736,8 @@ async def test_connection(cfg: dict) -> dict:
             model, [Msg(name="user", role="user", content=[TextBlock(type="text", text="请只回复：连接成功")])]
         )
         latency = round((time.time() - started) * 1000)
+        if not text.strip():
+            return {"ok": False, "latency_ms": latency, "error": "模型返回了空回复，请检查模型名是否正确"}
         return {
             "ok": True,
             "latency_ms": latency,
@@ -703,7 +748,8 @@ async def test_connection(cfg: dict) -> dict:
             },
         }
     except Exception as exc:
-        return {"ok": False, "latency_ms": round((time.time() - started) * 1000), "error": f"{type(exc).__name__}: {exc}"[:200]}
+        logger.info("连通性测试失败：%s", type(exc).__name__)
+        return {"ok": False, "latency_ms": round((time.time() - started) * 1000), "error": _friendly_error(exc)}
 
 
 # 工具调用测试用的极简工具（OpenAI function 格式；AgentScope 两种协议的模型层都接受该格式并自行转换）
@@ -724,7 +770,8 @@ async def test_tool_calling(cfg: dict) -> dict:
 
     if not (cfg.get("api_key") and cfg.get("base_url") and cfg.get("model")):
         return {"ok": False, "error": "请先填写 Base URL / API Key / 模型名"}
-    model = build_model(cfg)
+    # 与文本连通性测试同一套 30s 显式超时（见 TEST_TIMEOUT_SECONDS）
+    model = build_model({**cfg, "client_timeout": TEST_TIMEOUT_SECONDS, "client_max_retries": 0})
     if model is None:
         return {"ok": False, "error": "配置不完整，无法构造模型"}
 
@@ -749,7 +796,8 @@ async def test_tool_calling(cfg: dict) -> dict:
             "error": None if ok else "模型未发起工具调用",
         }
     except Exception as exc:
-        return {"ok": False, "latency_ms": round((time.time() - started) * 1000), "error": f"{type(exc).__name__}: {exc}"[:200]}
+        logger.info("工具调用测试失败：%s", type(exc).__name__)
+        return {"ok": False, "latency_ms": round((time.time() - started) * 1000), "error": _friendly_error(exc)}
 
 
 def _http_anthropic_multimodal_test(cfg: dict) -> dict:
@@ -782,15 +830,15 @@ def _http_anthropic_multimodal_test(cfg: dict) -> dict:
         },
     )
     try:
-        resp = json.load(urllib.request.urlopen(req, timeout=60))
+        resp = json.load(urllib.request.urlopen(req, timeout=TEST_TIMEOUT_SECONDS))
         latency = round((time.time() - started) * 1000)
         content = "".join(b.get("text", "") for b in resp.get("content", []) if isinstance(b, dict))
         ok = ("红" in content) or ("red" in content.lower())
         return {"ok": ok, "latency_ms": latency, "reply": content.strip()[:120] or "(空回复)", "supported": True}
     except urllib.error.HTTPError as exc:
-        return {"ok": False, "latency_ms": round((time.time() - started) * 1000), "supported": False, "error": f"HTTP {exc.code}"}
+        return {"ok": False, "latency_ms": round((time.time() - started) * 1000), "supported": False, "error": _friendly_error(exc)}
     except Exception as exc:
-        return {"ok": False, "latency_ms": round((time.time() - started) * 1000), "supported": False, "error": f"{type(exc).__name__}: {exc}"[:160]}
+        return {"ok": False, "latency_ms": round((time.time() - started) * 1000), "supported": False, "error": _friendly_error(exc)}
 
 
 async def test_multimodal_anthropic(cfg: dict) -> dict:
@@ -820,17 +868,17 @@ def _http_multimodal_test(cfg: dict) -> dict:
         headers={"Authorization": "Bearer " + cfg["api_key"], "Content-Type": "application/json"},
     )
     try:
-        resp = json.load(urllib.request.urlopen(req, timeout=60))
+        resp = json.load(urllib.request.urlopen(req, timeout=TEST_TIMEOUT_SECONDS))
         latency = round((time.time() - started) * 1000)
         content = (resp["choices"][0]["message"].get("content") or "")
         ok = ("红" in content) or ("red" in content.lower())
         return {"ok": ok, "latency_ms": latency, "reply": content.strip()[:120] or "(空回复)", "supported": True}
     except urllib.error.HTTPError as exc:
         latency = round((time.time() - started) * 1000)
-        return {"ok": False, "latency_ms": latency, "supported": False, "error": f"HTTP {exc.code}"}
+        return {"ok": False, "latency_ms": latency, "supported": False, "error": _friendly_error(exc)}
     except Exception as exc:
         latency = round((time.time() - started) * 1000)
-        return {"ok": False, "latency_ms": latency, "supported": False, "error": f"{type(exc).__name__}: {exc}"[:160]}
+        return {"ok": False, "latency_ms": latency, "supported": False, "error": _friendly_error(exc)}
 
 
 async def test_multimodal(cfg: dict) -> dict:

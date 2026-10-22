@@ -125,7 +125,8 @@
           placeholder="输入问题，Enter 发送，Shift+Enter 换行；可点 📎 附加文件或图片"
           @keydown.enter.exact.prevent="send()"
         />
-        <el-button type="primary" :loading="loading" @click="send()">发送</el-button>
+        <el-button v-if="loading" type="danger" @click="abortStream()">停止</el-button>
+        <el-button v-else type="primary" @click="send()">发送</el-button>
       </div>
     </div>
   </el-card>

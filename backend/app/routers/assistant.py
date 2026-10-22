@@ -159,7 +159,8 @@ async def test_config(payload: TestRequest):
             # 归一再走同一套校验——真值视为显式新 key，非法 base_url 400，守卫内绝不 500。
             key_in = str(cfg.get("api_key") or "").strip()
             if not key_in or key_in == config_store.MASK or key_in.startswith(config_store.MASK_PREFIX):
-                return {"text": {"ok": False, "error": "请填写新的 API Key：测试自定义配置不会沿用当前激活模型的密钥"}}
+                # 空/掩码 key 明确 400 拒绝：测试自定义配置不会沿用当前激活模型的密钥
+                raise HTTPException(status_code=400, detail="请填写新的 API Key：测试自定义配置不会沿用当前激活模型的密钥")
             # 归一化后的显式新 key 回写 cfg：下游各测试（SDK/工具/图片）拿到的与守卫校验过的同一字符串
             cfg = {**cfg, "api_key": key_in}
             base_url = str(cfg.get("base_url") or "").strip()
