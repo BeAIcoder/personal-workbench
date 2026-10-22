@@ -29,6 +29,7 @@ E2E_DIR = ROOT / "dev" / "e2e"
 RESULT_DIR = E2E_DIR / "probe_results" / "knowledge"
 DB = E2E_DIR / "probe_results" / "knowledge.db"
 FIN_DIR = E2E_DIR / "probe_results" / "knowledge-fin"
+DEBUG_DIR = E2E_DIR / "probe_results" / "knowledge-debug"
 LOG = E2E_DIR / "probe_results" / "knowledge.server.log"
 SHOTS = RESULT_DIR / "shots"
 PORT = 8207
@@ -41,10 +42,13 @@ if DB.exists():
     DB.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 log_fp = open(LOG, "w", encoding="utf-8")

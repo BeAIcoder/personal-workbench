@@ -32,6 +32,7 @@ RESULTS = ROOT / "dev" / "e2e" / "probe_results"
 AREA = "tasks"
 DB = RESULTS / f"{AREA}.db"
 FIN_DIR = RESULTS / f"{AREA}-fin"
+DEBUG_DIR = RESULTS / f"{AREA}-debug"
 SHOTS = RESULTS / AREA / "shots"
 LOG = RESULTS / f"{AREA}.server.log"
 PORT = 8202
@@ -44,10 +45,13 @@ if DB.exists():
     DB.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 env["SEED_ON_STARTUP"] = "0"  # 探测库保持空库起点，计数类断言才确定
 

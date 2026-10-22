@@ -29,6 +29,7 @@ RESULTS = ROOT / "dev" / "e2e" / "probe_results" / "mcp"
 SHOTS = RESULTS / "shots"
 DB = RESULTS / "mcp.db"
 FIN_DIR = RESULTS / "mcp-fin"
+DEBUG_DIR = RESULTS / "mcp-debug"
 SERVER_LOG = ROOT / "dev" / "e2e" / "probe_results" / "mcp.server.log"
 PORT = 8208
 BASE = f"http://127.0.0.1:{PORT}"
@@ -116,6 +117,8 @@ for p in (DB,):
         p.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 if SERVER_LOG.exists():
     SERVER_LOG.unlink()
 SHOTS.mkdir(parents=True, exist_ok=True)
@@ -125,6 +128,7 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 env["SEED_ON_STARTUP"] = "0"
 
@@ -377,7 +381,10 @@ def main():
             item = next((i for i in body["items"] if i["name"] == "faketest"), None)
             assert item, "API 列表缺少 faketest"
             assert item["env"] == {"FAKE_TOKEN": "***"}, f"env 未脱敏: {item['env']}"
-            assert db_row("faketest")["env"] == {"FAKE_TOKEN": "secret-xyz"}, "env 未正确落库"
+            stored = db_row("faketest")["env"]
+            assert set(stored) == {"FAKE_TOKEN"}, f"env 键未正确落库: {stored}"
+            assert stored["FAKE_TOKEN"].startswith("dpapi:"), "env 未 DPAPI 密封"
+            assert "secret-xyz" not in json.dumps(stored, ensure_ascii=False), "env 明文落库"
         record("TC-MCP-001", "创建服务器（合法 env JSON）", tc_create_ok)
 
         # ---------- TC-MCP-002 非法 env JSON 提示 ----------
@@ -481,9 +488,11 @@ def main():
             wait_toast("已连接，注册 2 个工具", timeout=30000)
             result = call_tool_ui("faketest", "env_dump", '{"key":"FAKE_TOKEN"}')
             assert "secret-xyz" in result, f"编辑保存后 env 被清空: {result[:120]}"
-            stored = db_row("faketest")
-            assert stored["env"] == {"FAKE_TOKEN": "secret-xyz"}, f"DB env 被清空: {stored['env']}"
-            assert stored["args"] == [fake], f"args 被破坏: {stored['args']}"
+            row_db = db_row("faketest")
+            stored = row_db["env"]
+            assert set(stored) == {"FAKE_TOKEN"}, f"DB env 被清空: {stored}"
+            assert stored["FAKE_TOKEN"].startswith("dpapi:"), "保留的 env 未保持密封"
+            assert row_db["args"] == [fake], f"args 被破坏: {row_db['args']}"
         record("TC-MCP-008", "编辑只改命令 env 保留（上轮修复回归）", tc_edit_keeps_env)
 
         # ---------- TC-MCP-009 编辑改 env 生效 ----------

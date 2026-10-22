@@ -32,6 +32,7 @@ AREA_DIR = RESULTS_DIR / AREA
 SHOTS = AREA_DIR / "shots"
 DB = RESULTS_DIR / f"{AREA}.db"
 FIN_DIR = RESULTS_DIR / f"{AREA}-fin"
+DEBUG_DIR = RESULTS_DIR / f"{AREA}-debug"
 SERVER_LOG = RESULTS_DIR / f"{AREA}.server.log"
 PORT = 8214
 BASE = f"http://127.0.0.1:{PORT}"
@@ -44,10 +45,13 @@ if DB.exists():
     DB.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 _log_fh = open(SERVER_LOG, "w", encoding="utf-8")

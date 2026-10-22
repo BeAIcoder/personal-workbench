@@ -34,9 +34,14 @@
 
 ## 归档格式
 
-与 Playwright 完全同构：`backend/data/debug/runs/<run_id>/result.json`
+与 Playwright 同构：默认归档到 `dev/e2e/debug_data_ai_verify/runs/<run_id>/result.json`
 （run_id 形如 `20261013-175354_ai-verify`），经 `debug_reporter.save_run()` 落库，
 调试中心「测试运行」页直接可查。
+
+- 默认目录每次运行前重置，与三旧脚本的 `debug_data_*` 两两不同，**不再默认写真实
+  `backend/data/debug`**；需要归档到别处时用 `--debug-dir` 或环境变量 `DEBUG_DATA_DIR`
+  显式指定（只写不重置）。
+- 只有在明确验收真实调试中心数据流时，才显式把 `DEBUG_DATA_DIR` 指向真实目录。
 
 ## 维护约定
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""E2E 交互测试：AAA 模式，独立测试库 + 独立财务数据目录，覆盖核心 CRUD 与全局搜索。"""
+"""E2E 交互测试：AAA 模式，独立测试库 + 独立财务数据目录 + 独立调试归档目录，覆盖核心 CRUD 与全局搜索。"""
 import os
 import shutil
 import subprocess
@@ -9,23 +9,36 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from debug_reporter import acquire_run_lock
+
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 E2E_DIR = ROOT / "dev" / "e2e"
 DB = E2E_DIR / "e2e.db"
 FIN_DIR = E2E_DIR / "finance_data"
+DEBUG_DIR = E2E_DIR / "debug_data_interactions"
 PORT = 8123
 BASE = f"http://127.0.0.1:{PORT}"
 STARTED_AT = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+# 运行互斥：三脚本固定端口 8123/8124，禁止并行执行（并行会互相踩端口/目录）
+release_lock = acquire_run_lock()
 
 if DB.exists():
     DB.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 
+# 隔离三件套（dev/e2e 下各自独立，绝不指向 backend/data 真实数据）：
+# DEBUG_DATA_DIR 同时写入父进程 os.environ——归档器 debug_reporter 在本进程内
+# 读取同一变量，保证归档目录与服务端读取的调试目录一致
+os.environ["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 server = subprocess.Popen(
@@ -237,7 +250,7 @@ try:
     for e in uniq_console[:10]:
         print(f"  !! {e[:200]}")
 
-    # 归档到调试中心（backend/data/debug/runs/），失败不阻断原有输出
+    # 归档到调试中心（本脚本独立 DEBUG_DIR），失败不阻断原有输出
     try:
         from debug_reporter import save_run
 
@@ -249,7 +262,7 @@ try:
             tests=results,
             extra={"console_errors": uniq_console},
         )
-        print(f"run_id={run_id}（已归档到调试中心）")
+        print(f"run_id={run_id}（已归档到 {DEBUG_DIR}）")
     except Exception as e:
         print(f"调试中心归档跳过：{e}")
 finally:
@@ -258,3 +271,4 @@ finally:
         server.wait(timeout=10)
     except Exception:
         server.kill()
+    release_lock()

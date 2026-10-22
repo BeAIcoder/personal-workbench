@@ -36,6 +36,7 @@ PROBE_DIR = E2E_DIR / "probe_results" / "schedules"
 SHOTS = PROBE_DIR / "shots"
 DB = PROBE_DIR / "schedules.db"
 FIN_DIR = PROBE_DIR / "schedules-fin"
+DEBUG_DIR = PROBE_DIR / "schedules-debug"
 PORT = 8203
 BASE = f"http://127.0.0.1:{PORT}"
 STARTED_AT = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -46,10 +47,13 @@ if DB.exists():
     DB.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 # 干净库：不灌演示数据，保证「空库空态」等断言确定性
 env["SEED_ON_STARTUP"] = "0"

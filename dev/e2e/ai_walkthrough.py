@@ -11,19 +11,31 @@
     python ai_walkthrough.py                          # 全部通过
     python ai_walkthrough.py --fail AI-VERIFY-004:tooltip 没弹出 --note "重测"
     python ai_walkthrough.py --fail AI-VERIFY-005     # 可重复传多个 --fail
+    python ai_walkthrough.py --debug-dir <隔离目录>    # 显式指定归档目录
 
 失败项会经 save_run 自动建/更新问题（source=e2e、P1），全绿不写 issues.json。
 验收集（CHECKLIST）随功能演进维护：新增验收点加条目即可。
+
+归档隔离（二轮 e2e-artifact-safety 加固）：未显式指定目录时，归档落到 dev/e2e 下
+专有的测试调试目录 debug_data_ai_verify（每次运行前重置，与三旧脚本的 debug_data_*
+两两不同），绝不默认写真实 backend/data/debug；需要归档到别处时显式给出隔离路径
+（--debug-dir 优先于环境变量 DEBUG_DATA_DIR），调用方目录只写不重置。
 """
 import argparse
+import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+E2E_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(E2E_DIR))
 from debug_reporter import save_run
 
 BASE = "http://127.0.0.1:8000"
+
+# 本脚本专有的默认调试归档目录（dev/e2e 下，已被 .gitignore 的 debug_data*/ 覆盖）
+DEFAULT_DEBUG_DIR = E2E_DIR / "debug_data_ai_verify"
 
 # 当前验收集：覆盖核心页面 + 近期修复的关键交互（2026-10-13 首轮走查基线）
 CHECKLIST = [
@@ -54,10 +66,25 @@ def parse_fail(specs):
     return out
 
 
+def resolve_debug_dir(cli_dir=None):
+    """解析本次归档目录：--debug-dir > 环境变量 DEBUG_DATA_DIR > 默认测试调试目录。
+
+    默认目录是 dev/e2e 下专供本脚本的调试归档目录，未显式指定时绝不写真实
+    backend/data/debug（与三旧脚本的 debug_data_* 各自独立、互不重置）。
+    """
+    for candidate in (cli_dir, os.environ.get("DEBUG_DATA_DIR", "").strip()):
+        if candidate:
+            return Path(candidate)
+    return DEFAULT_DEBUG_DIR
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fail", action="append", default=[], help="标记失败项：ID[:原因]，可重复")
     ap.add_argument("--note", default="", help="附加说明，写入 run 的 extra")
+    ap.add_argument("--debug-dir", default="",
+                    help="归档调试目录（显式隔离路径，只写不重置）；缺省用 DEBUG_DATA_DIR，"
+                         "再缺省用 dev/e2e/debug_data_ai_verify")
     args = ap.parse_args()
 
     fails = parse_fail(args.fail)
@@ -70,6 +97,12 @@ def main():
          "detail": fails.get(tid, detail)}
         for tid, name, detail in CHECKLIST
     ]
+
+    # 归档目录隔离：仅重置本脚本自有的默认目录；调用方显式路径绝不触碰
+    debug_dir = resolve_debug_dir(args.debug_dir)
+    if debug_dir == DEFAULT_DEBUG_DIR and debug_dir.exists():
+        shutil.rmtree(debug_dir)
+    os.environ["DEBUG_DATA_DIR"] = str(debug_dir)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     run_id = save_run(

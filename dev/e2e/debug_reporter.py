@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""E2E 结果归档：把一次测试运行写入调试中心（backend/data/debug/）。
+"""E2E 结果归档：把一次测试运行写入调试中心（目录由 DEBUG_DATA_DIR 决定，默认 backend/data/debug/）。
 
 与 backend/app/modules/debug_center/service.py 共用同一文件格式（UTF-8、原子写）：
 
@@ -13,17 +13,23 @@
 - 同 title+page 且 status 为 open/in_progress 的已存在：只刷新 updated_at 与 evidence=run_id；
 - 否则新建；全绿时不写 issues.json（不自动关闭任何 open 问题）。
 
-本文件不依赖后端包，E2E 脚本直接以文件方式落库（e2e 后端进程与真实后端共用
-backend/data/debug/，读取侧由 /api/debug/* 提供）。
+归档目录由环境变量 DEBUG_DATA_DIR 决定（与后端 service.data_dir() 同规则，运行时读取）：
+未设置时默认 backend/data/debug。dev/e2e 三个旧 E2E 脚本各自把 DEBUG_DATA_DIR
+指向 dev/e2e 下独立目录（同时写入父进程 os.environ 与子进程 env），因此归档器与
+e2e 服务端读取同一调试目录，且绝不写真实 backend/data/debug；probes 亦同此约定。
+
+本文件不依赖后端包，E2E 脚本直接以文件方式落库，读取侧由 /api/debug/* 提供。
 """
 import json
 import os
 import shutil
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+E2E_DIR = ROOT / "dev" / "e2e"
 # 调试中心数据根目录（与后端 service.data_dir() 同规则：DEBUG_DATA_DIR 优先）
 DEFAULT_DEBUG_DIR = ROOT / "backend" / "data" / "debug"
 ISSUES_FILE = "issues.json"
@@ -39,6 +45,59 @@ def _now_str() -> str:
 def _debug_dir() -> Path:
     override = os.environ.get("DEBUG_DATA_DIR", "").strip()
     return Path(override) if override else DEFAULT_DEBUG_DIR
+
+
+def _lock_fd(fd: int) -> None:
+    """对 fd 第 0 字节加排他文件锁（不等待）：Windows 用 msvcrt，其余用 fcntl。"""
+    os.lseek(fd, 0, os.SEEK_SET)
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_fd(fd: int) -> None:
+    os.lseek(fd, 0, os.SEEK_SET)
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def acquire_run_lock(base_dir=None):
+    """E2E 三脚本运行互斥锁：固定端口 8123/8124，禁止并行执行（并行会互相踩端口/目录）。
+
+    锁文件 <base_dir 或 dev/e2e>/.e2e-run.lock，OS 级排他文件锁：
+    进程退出即自动释放，不会留残留锁。已被持有时抛 RuntimeError。
+    返回 release() 释放函数（幂等）。三个旧脚本共用同一把锁。
+    """
+    lock_path = (Path(base_dir) if base_dir else E2E_DIR) / ".e2e-run.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        _lock_fd(fd)
+    except OSError as e:
+        os.close(fd)
+        raise RuntimeError(
+            f"另一个 E2E 脚本正在运行（{lock_path} 被占用）：脚本使用固定端口 "
+            f"8123/8124 且目录每次运行重置，禁止并行执行"
+        ) from e
+    released = False
+
+    def release():
+        nonlocal released
+        if released:
+            return
+        released = True
+        try:
+            _unlock_fd(fd)
+        finally:
+            os.close(fd)
+
+    return release
 
 
 def _atomic_write_json(path: Path, data) -> None:

@@ -32,6 +32,7 @@ PROBE_DIR = E2E_DIR / "probe_results" / "finance-ledger"
 SHOTS = PROBE_DIR / "shots"
 DB = PROBE_DIR / "finance-ledger.db"
 FIN_DIR = PROBE_DIR / "finance-ledger-fin"
+DEBUG_DIR = PROBE_DIR / "finance-ledger-debug"
 PORT = 8213
 BASE = f"http://127.0.0.1:{PORT}"
 STARTED_AT = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -42,10 +43,13 @@ if DB.exists():
     DB.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 server = subprocess.Popen(
@@ -176,6 +180,14 @@ def main():
 
     def visible_toast_text():
         return " ".join(t.inner_text() for t in page.locator(".el-message:visible").all())
+
+    def confirm_delete(expected):
+        """破坏性删除统一走「可取消确认」：探针必须显式点确定，不能假设 X 即删。"""
+        box = page.locator(".el-message-box:visible")
+        box.wait_for(state="visible", timeout=5000)
+        assert expected in box.inner_text(), f"删除确认文案异常: {box.inner_text()[:120]}"
+        box.locator("button", has_text="确定").click()
+        box.wait_for(state="hidden", timeout=5000)
 
     def upload(file_path):
         page.locator("input[type=file]").set_input_files(str(file_path))
@@ -502,6 +514,7 @@ def main():
             assert "探测账户" in drawer.inner_text(), "新账户未出现在管理列表"
             row = drawer.locator(".manage-row", has_text="探测账户")
             row.locator("button", has_text="删除").click()
+            confirm_delete("确定删除账户")
             page.wait_for_timeout(1800)
             assert "探测账户" not in drawer.inner_text(), "空账户删除失败"
 
@@ -533,6 +546,7 @@ def main():
             page.wait_for_timeout(600)
             drawer = page.locator(".el-drawer:visible")
             drawer.locator(".manage-row", has_text="探测账户2").locator("button", has_text="删除").click()
+            confirm_delete("确定删除账户")
             page.wait_for_timeout(1800)
             assert "探测账户2" in drawer.inner_text(), "有交易引用的账户被误删"
             assert "不能删除" in visible_toast_text(), "缺少拒绝删除提示"
@@ -552,6 +566,7 @@ def main():
             assert "探测分类" in drawer.inner_text(), "新分类未出现在管理列表"
             row = drawer.locator(".manage-row", has_text="探测分类")
             row.locator("button", has_text="删除").click()
+            confirm_delete("确定删除分类")
             page.wait_for_timeout(1800)
             assert "探测分类" not in drawer.inner_text(), "空分类删除失败"
 

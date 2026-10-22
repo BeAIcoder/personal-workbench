@@ -5,7 +5,7 @@
 - 供应商与模型 tab：增删改供应商/模型、启停开关、「已停用」徽标、当前生效模型来源行、
   激活切换、连通/能力探测按钮在无密钥隔离库下的优雅降级；
 - 专家团队 tab：路由测试、新建/编辑/启停/删除专家、恢复出厂确认；
-- 工作参数 tab：技能池目录检测、启用技能开关、保存工作参数。
+- 工作参数 tab：技能池/插件目录检测（未保存目录先「保存并检测」）、启用技能开关、保存工作参数。
 
 隔离：DATABASE_URL=sqlite:///dev/e2e/probe_results/assistant-settings.db，
 FINANCE_DATA_DIR=dev/e2e/probe_results/assistant-settings-fin（每次运行重置）。
@@ -39,6 +39,7 @@ RESULTS = E2E_DIR / "probe_results"
 SHOTS = RESULTS / "assistant-settings" / "shots"
 DB = RESULTS / "assistant-settings.db"
 FIN_DIR = RESULTS / "assistant-settings-fin"
+DEBUG_DIR = RESULTS / "assistant-settings-debug"
 SKILLS_POOL = RESULTS / "assistant-settings-skills"
 PORT = 8206
 AREA = "assistant-settings"
@@ -51,6 +52,8 @@ for p in (DB,):
         p.unlink()
 if FIN_DIR.exists():
     shutil.rmtree(FIN_DIR)
+if DEBUG_DIR.exists():
+    shutil.rmtree(DEBUG_DIR)
 if SKILLS_POOL.exists():
     shutil.rmtree(SKILLS_POOL)
 SHOTS.mkdir(parents=True, exist_ok=True)
@@ -65,6 +68,7 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
+env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 server = subprocess.Popen(
@@ -188,6 +192,20 @@ def confirm_box(btn_text="确定"):
     box.wait_for(state="visible", timeout=5000)
     box.locator("button", has_text=btn_text).first.click()
     page.wait_for_timeout(600)
+
+
+def detect_with_save_first(detect_btn):
+    """新契约（A02）：目录检测只对已保存目录生效。输入框路径与已保存配置不一致时
+    前端弹「需要先保存」确认框；探针走「保存并检测」——先保存工作参数再检测的
+    真实用户流程。目录已保存时无确认框，直接进入检测。"""
+    detect_btn.click()
+    box = page.locator(".el-message-box:visible")
+    try:
+        box.wait_for(state="visible", timeout=2000)
+    except Exception:
+        return  # 目录已保存：无确认框，直接检测
+    box.locator("button", has_text="保存并检测").first.click()
+    box.wait_for(state="hidden", timeout=5000)
 
 
 def wait_toast(text, timeout=6000):
@@ -429,6 +447,7 @@ try:
             card = prov_card("探测供应商A2")
             row = model_row(card, "probe-model-1")
             row.locator(".pill-x").click()
+            confirm_box("确定")
             page.wait_for_timeout(800)
             assert model_row(card, "probe-model-1").count() == 0, "删除模型后行仍在"
             card.locator(".prov-ops button", has_text="探测全部模型").click()
@@ -647,7 +666,7 @@ try:
 
         def tc_skills_detect_missing():
             fill_input(drawer(), "技能池目录", str(RESULTS / "no_such_dir_xyz"))
-            drawer().locator("button", has_text="检测").first.click()
+            detect_with_save_first(drawer().locator("button", has_text="检测").first)
             hint = form_item(drawer(), "技能池目录").locator(".cfg-hint").first
             hint.wait_for(state="visible", timeout=10000)
             txt = hint.inner_text()
@@ -656,7 +675,7 @@ try:
 
         def tc_skills_detect_hit():
             fill_input(drawer(), "技能池目录", str(SKILLS_POOL))
-            drawer().locator("button", has_text="检测").first.click()
+            detect_with_save_first(drawer().locator("button", has_text="检测").first)
             hint = form_item(drawer(), "技能池目录").locator(".cfg-hint").first
             hint.filter(has_text="probe-skill").wait_for(state="visible", timeout=10000)
             assert "probe-skill" in hint.inner_text(), f"未发现夹具技能: {hint.inner_text()[:80]}"
@@ -688,8 +707,8 @@ try:
 
         def tc_plugins_detect_missing():
             fill_input(drawer(), "插件目录", str(RESULTS / "no_such_plugins"))
-            drawer().locator("button", has_text="检测").nth(1).click()
-            hint = drawer().locator(".cfg-hint", has_text="插件").last
+            detect_with_save_first(drawer().locator("button", has_text="检测").nth(1))
+            hint = form_item(drawer(), "插件目录").locator(".cfg-hint").first
             hint.wait_for(state="visible", timeout=10000)
             assert hint.count() > 0, "插件检测无结论"
         record("AS-GLOB-006", "插件目录检测（不存在）：有结论不崩", tc_plugins_detect_missing)
@@ -730,11 +749,24 @@ try:
         record("AS-API-004", "测试无启用模型的供应商 → 400 明确文案", tc_api_test_no_enabled_model)
 
         def tc_api_skills_discover_contract():
+            # 新契约（A02）：发现接口只扫描已保存目录；未保存目录 200 + count 0 +
+            # 「目录未保存」，不得以任意 dir 触发扫描/插件加载
             st, body = api("GET", f"/api/assistant/skills/discover?dir={urllib.request.quote(str(RESULTS / 'no_such_dir_xyz'))}")
-            assert st == 200 and body.get("count") == 0 and body.get("error"), f"目录不存在契约: {st} {body}"
+            assert st == 200 and body.get("count") == 0 and "未保存" in (body.get("error") or ""), \
+                f"未保存目录契约: {st} {body}"
+            # 目录真实存在但未保存：同样不被扫描（不因目录有效就放行）
+            st, body = api("GET", f"/api/assistant/skills/discover?dir={urllib.request.quote(str(RESULTS))}")
+            assert st == 200 and body.get("count") == 0 and "未保存" in (body.get("error") or ""), \
+                f"未保存的有效目录也不得扫描: {st} {body}"
+            # 已保存目录（前面 UI 已保存技能池）正常计数
             st, body = api("GET", f"/api/assistant/skills/discover?dir={urllib.request.quote(str(SKILLS_POOL))}")
             assert st == 200 and body.get("count") == 1, f"技能池扫描契约: {st} {body}"
-        record("AS-API-005", "skills/discover 契约：不存在报错 / 存在计数", tc_api_skills_discover_contract)
+            # 插件发现同样只限已保存目录（load_qwenpaw_plugin 会执行插件后端代码）；
+            # 用从未保存过的路径，确保拒绝来自「未保存」而非「目录不存在」
+            st, body = api("GET", f"/api/assistant/plugins/discover?dir={urllib.request.quote(str(RESULTS / 'api_unsaved_plugins'))}")
+            assert st == 200 and body.get("loadable") == 0 and "未保存" in (body.get("error") or ""), \
+                f"插件未保存目录契约: {st} {body}"
+        record("AS-API-005", "skills/plugins discover 契约：未保存拒绝 / 已保存计数", tc_api_skills_discover_contract)
 
         def tc_api_delete_provider_cascade():
             st, _ = api("POST", "/api/assistant/providers", {"name": "级联供应商", "base_url": UNREACHABLE})
