@@ -4,12 +4,21 @@
 - anthropic 协议 → AnthropicChatModel（ZCode 的 CodingPlan 网关等）
 
 配置来源优先级：激活模型（model_providers + provider_models，界面可管理）> backend/.env 兜底。
+
+两种协议共用 120 秒显式 SDK 超时（client_kwargs 透传）；base_url 统一经
+config_store.validate_base_url 安全校验（拒绝内嵌凭据/非 http(s)/控制字符，
+允许 Ollama 等私网 http），不合法时拒绝构造（返回 None）。
 """
 import logging
 
 from . import config_store
 
 logger = logging.getLogger(__name__)
+
+# 两种协议 SDK 客户端的统一显式超时（秒）：agentscope 的 client_kwargs 会透传给
+# openai.AsyncClient / anthropic.AsyncAnthropic；两者默认超时均为 600 秒（10 分钟），
+# 单用户工作台场景下显式收紧到 120 秒，避免一次挂起长时间占住请求。
+LLM_TIMEOUT_SECONDS = 120.0
 
 
 def llm_status(cfg: dict | None = None) -> dict:
@@ -62,7 +71,10 @@ def _apply_reasoning(parameters_cls, cfg: dict, protocol: str, kwargs: dict) -> 
 
 
 def build_model(cfg: dict | None = None):
-    """构造 AgentScope 模型实例；配置不完整返回 None。agentscope 惰性导入。"""
+    """构造 AgentScope 模型实例；配置不完整或 base_url 未通过安全校验时返回 None。
+
+    agentscope 惰性导入；两种协议均带 120 秒显式 SDK 超时（client_kwargs 透传）。
+    """
     cfg = cfg or config_store.load()
     if not (cfg.get("api_key") and cfg.get("base_url") and cfg.get("model")):
         return None
@@ -71,12 +83,17 @@ def build_model(cfg: dict | None = None):
         from agentscope.credential import AnthropicCredential
         from agentscope.model import AnthropicChatModel
 
-        base_url = cfg["base_url"].strip()
+        try:
+            # 与网关探测/多模态测试同一套 base_url 安全校验（拒绝内嵌凭据/非 http(s)/控制字符）
+            base_url = config_store.validate_base_url(cfg["base_url"])
+        except ValueError:
+            logger.warning("Anthropic 协议 base_url 未通过 URL 安全校验，拒绝构造模型（不记录地址与密钥）")
+            return None
         # anthropic SDK 会在 base_url 后追加 /v1/messages；去掉多余的 /v1 尾巴
-        # （仅剥结尾 /v1，大小写不敏感；URL 其余部分保持原样，不做小写化）
-        stripped = base_url.rstrip("/")
-        if stripped.lower().endswith("/v1"):
-            base_url = stripped[: -len("/v1")]
+        # （仅剥结尾 /v1，大小写不敏感；URL 其余部分保持原样，不做小写化；
+        #  validate_base_url 已做去首尾空白与去尾斜杠归一化）
+        if base_url.lower().endswith("/v1"):
+            base_url = base_url[: -len("/v1")]
 
         try:
             credential = AnthropicCredential(api_key=cfg["api_key"], base_url=base_url)
@@ -98,20 +115,28 @@ def build_model(cfg: dict | None = None):
             max_retries=2,
             context_size=cfg.get("context_size") or 200000,
             parameters=parameters,
+            client_kwargs={"timeout": LLM_TIMEOUT_SECONDS},
         )
 
     from agentscope.credential import OpenAICredential
     from agentscope.model import OpenAIChatModel
 
     try:
+        # 与 anthropic 分支/网关探测同一套 base_url 安全校验
+        base_url = config_store.validate_base_url(cfg["base_url"])
+    except ValueError:
+        logger.warning("OpenAI 协议 base_url 未通过 URL 安全校验，拒绝构造模型（不记录地址与密钥）")
+        return None
+
+    try:
         credential = OpenAICredential(
             api_key=cfg["api_key"],
-            base_url=cfg["base_url"],
+            base_url=base_url,
         )
     except Exception:
         logger.warning("OpenAICredential 关键字构造失败，改用 data 构造", exc_info=True)
         credential = OpenAICredential(
-            data={"api_key": cfg["api_key"], "base_url": cfg["base_url"]}
+            data={"api_key": cfg["api_key"], "base_url": base_url}
         )
 
     param_kwargs = _apply_reasoning(OpenAIChatModel.Parameters, cfg, "openai", {"max_tokens": cfg.get("max_tokens") or None})
@@ -129,4 +154,5 @@ def build_model(cfg: dict | None = None):
         max_retries=2,
         context_size=cfg.get("context_size") or 128000,
         parameters=parameters,
+        client_kwargs={"timeout": LLM_TIMEOUT_SECONDS},
     )

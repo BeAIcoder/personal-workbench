@@ -8,11 +8,14 @@
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .agents import expert_packs
 from .agents.secrets_box import ensure_dpapi_available
@@ -35,6 +38,7 @@ from .routers import (
 )
 from .seed import seed_agent_specs, seed_if_empty
 from .scheduler import scheduler_loop
+from .upload import UploadTooLargeError
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,15 @@ async def lifespan(_: FastAPI):
     # MCP 服务器：启动启用的 stdio 服务器并注册其工具（单服务器失败不影响宿主）
     from .agents import mcp as mcp_manager
 
+    # 存量 MCP env 明文一次性迁移为 DPAPI 格式（与 LLM Key 同口径）；失败仅记日志，
+    # 新写入/更新已强制密封，不会因为迁移失败退回明文
+    try:
+        with SessionLocal() as db:
+            migrated_env = mcp_manager.migrate_env_secrets(db)
+        if migrated_env:
+            logger.info("MCP env 明文迁移：%d 个服务器已密封", migrated_env)
+    except Exception:
+        logger.warning("MCP env 明文迁移跳过（不影响启动）", exc_info=True)
     try:
         mcp_results = mcp_manager.start_all_from_db()
         for name, status in mcp_results.items():
@@ -192,6 +205,180 @@ app.add_middleware(
 )
 
 
+# 全局 ASGI 请求体上限（审计 A01）：容纳现有最大的 100MB 发票批次上传 +
+# multipart 开销，同时把声明了超大 Content-Length 的请求体挡在路由之前，
+# 避免超大 body 在路由做长度检查前就耗尽内存/临时盘
+MAX_REQUEST_BODY_BYTES = 128 * 1024 * 1024
+
+
+class _RequestBodyTooLarge(Exception):
+    """请求体超过全局上限：中间件内部信号，收口为 413。"""
+
+
+def _content_length(scope: Scope) -> int | None:
+    raw = Headers(scope=scope).get("content-length")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+async def _respond_too_large(scope: Scope, receive: Receive, send: Send, max_bytes: int) -> None:
+    response = JSONResponse(status_code=413, content={"detail": f"请求体超过 {max_bytes} 字节上限"})
+    await response(scope, receive, send)
+
+
+class RequestBodyLimitMiddleware:
+    """全局请求体护栏（审计 A01）：Content-Length 早拒 + receive 累计。
+
+    双层覆盖：声明了超大 Content-Length 的请求进入路由前直接 413；
+    无 Content-Length 的 chunked 请求体在 receive 侧累计计数，超限即 413
+    并中断读取。413 由中间件在 receive 内直接发出、并丢弃应用的后续响应——
+    否则宽容型路由（如报错采集的 except Exception）会把超限异常吞掉，
+    客户端看到的是 200/201 而不是 413。无论路由吞不吞异常、重复读取多少
+    次，413 只发一次。上限为模块级常量，测试可 monkeypatch 小值验证两条路径。
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        max_bytes = MAX_REQUEST_BODY_BYTES
+        declared = _content_length(scope)
+        if declared is not None and declared > max_bytes:
+            await _respond_too_large(scope, receive, send, max_bytes)
+            return
+
+        total = 0
+        responded = False
+        response_started = False
+
+        async def receive_with_limit() -> Message:
+            nonlocal total, responded
+            message = await receive()
+            if message["type"] == "http.request":
+                total += len(message.get("body", b""))
+                if total > max_bytes:
+                    # responded 去重：宽容路由吞掉异常后再次读取时不得补发 413
+                    # （ASGI 单响应契约）；response_started 时应用响应已开始，
+                    # 状态码已定，同样无从补发
+                    if not responded and not response_started:
+                        responded = True
+                        await _respond_too_large(scope, receive, send, max_bytes)
+                    raise _RequestBodyTooLarge
+            return message
+
+        async def send_watch(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            if responded:
+                # 413 已由本中间件发出：丢弃应用后续响应，避免双响应
+                return
+            await send(message)
+
+        try:
+            await self.app(scope, receive_with_limit, send_watch)
+        except _RequestBodyTooLarge:
+            # 应用自己的响应已开始则无法再改状态码，交回上层记录；
+            # 其余情况（含路由吞掉异常后继续跑）413 都已发出，就此收口
+            if response_started and not responded:
+                raise
+
+
+app.add_middleware(RequestBodyLimitMiddleware)
+
+
+# Origin 校验放行的回环开发来源：本机单人工作台，回环任意端口均视为可信开发来源
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# /api 状态变更方法：可改变本机状态的接口，必须验证请求来源
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _split_origin(origin: str) -> tuple[str, str, int | None]:
+    parsed = urlsplit(origin)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
+
+
+def _split_host_header(host: str) -> tuple[str, int | None]:
+    parsed = urlsplit("//" + host)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    return (parsed.hostname or "").lower(), port
+
+
+def _origin_allowed(origin: str, host_header: str) -> bool:
+    """来源可信判定：显式 CORS 配置 / 回环开发来源 / 运维配置的 HOST 同源。
+
+    不再把「请求自带的 Origin」与「请求自带的 Host」互证：攻击者若能同时控制
+    两者（DNS rebinding），同源回退会循环放行。唯一保留的同源放行是 Origin 主机
+    等于启动配置 `settings.host`（运维显式配置，而非请求头自证）。
+    """
+    if origin in {o.strip() for o in settings.cors_origins.split(",") if o.strip()}:
+        return True
+    scheme, host, port = _split_origin(origin)
+    if scheme not in ("http", "https"):
+        return False
+    if host in _LOOPBACK_HOSTS:
+        return True
+    configured_host = (settings.host or "").lower()
+    if configured_host and host == configured_host and port in (None, settings.port):
+        return True
+    return False
+
+
+def _needs_origin_guard(method: str, path: str) -> bool:
+    """校验范围：/api 状态变更方法 + /api 下的发现接口（目录扫描/插件加载类 GET）。
+
+    普通 /api 读取不做 Origin 硬拦：跨站读取响应已由 CORS 兜底，硬拦只会
+    破坏「浏览器直接打开 /api 链接」等既有用法（现有 API 默认兼容）。
+    """
+    if not path.startswith("/api"):
+        return False
+    if method in _STATE_CHANGING_METHODS:
+        return True
+    return "discover" in path.split("/")
+
+
+class OriginGuardMiddleware:
+    """Origin 校验（审计 A02）：工作台面向本机单人、无鉴权，必须防止任意网页
+    驱动 /api 状态变更与发现接口（如插件目录扫描）。放行：无 Origin 的
+    CLI/探针、回环开发来源、显式配置的 CORS 来源，以及运维配置 HOST 的同源来源；
+    其余一律 403。CORS 预选（OPTIONS）不拦，交由 CORSMiddleware 处理。
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            method = scope.get("method", "").upper()
+            path = scope.get("path", "")
+            if _needs_origin_guard(method, path):
+                headers = Headers(scope=scope)
+                origin = (headers.get("origin") or "").strip()
+                if origin and not _origin_allowed(origin, headers.get("host") or ""):
+                    logger.warning("Origin 校验拒绝：%s %s（Origin: %s）", method, path, origin)
+                    response = JSONResponse(status_code=403, content={"detail": "请求来源不被信任"})
+                    await response(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(OriginGuardMiddleware)
+
+
 @app.api_route("/api/health", methods=["GET", "HEAD"], tags=["系统"], summary="健康检查")
 def health():
     # HEAD 供容器/负载均衡探活（无响应体），GET 返回完整状态
@@ -209,6 +396,14 @@ def _overflow_error_as_422(request, exc):
     """
     logger.warning("参数超出整数范围：%s %s", request.method, request.url.path)
     return JSONResponse(status_code=422, content={"detail": "ID 超出可接受范围"})
+
+
+@app.exception_handler(UploadTooLargeError)
+def _upload_too_large_as_400(request, exc: UploadTooLargeError):
+    """上传超限统一收口 400：各上传路由复用 read_upload_limited 即自动生效，
+    无需每处自行 try/except。"""
+    logger.warning("上传超过限额：%s %s（上限 %d 字节）", request.method, request.url.path, exc.max_bytes)
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
 app.include_router(tasks.router, prefix="/api")

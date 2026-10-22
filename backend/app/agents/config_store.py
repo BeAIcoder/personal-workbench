@@ -39,21 +39,40 @@ MASK_PREFIX = "••••••"
 logger = logging.getLogger(__name__)
 
 
-def _safe_gateway_url(base_url: str, path: str) -> str:
-    """连通性/多模态测试的网关地址校验：仅 http(s)、拒绝内嵌凭据与控制字符。
+def _check_http_url(url: str) -> str:
+    """http(s) 地址安全校验（SDK 构造 / 网关探测 / httpx 测试共用口径）。
 
     本应用为本机单用户场景，允许 127.0.0.1/内网地址（如 Ollama 本地网关），
     因此只做协议白名单与字符合法性校验，不封禁私网段。
+    错误信息不回显 URL 主体：地址可能内嵌 userinfo 等敏感片段，不进日志/响应。
     """
-    url = f"{str(base_url).rstrip('/')}{path}"
     if any(ord(ch) < 0x21 or ch == "\x7f" for ch in url):
         raise ValueError("网关地址含非法字符")
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ValueError(f"网关地址仅允许 http(s)：{url[:80]}")
+        raise ValueError("网关地址仅允许 http(s)")
     if parts.username or parts.password:
         raise ValueError("网关地址不允许内嵌用户名/密码")
     return url
+
+
+def _safe_gateway_url(base_url: str, path: str) -> str:
+    """连通性/多模态测试的网关地址校验：仅 http(s)、拒绝内嵌凭据与控制字符。
+
+    口径与 SDK 构造侧（validate_base_url）同源：本机单用户场景允许
+    127.0.0.1/内网地址（如 Ollama 本地网关），不封禁私网段。
+    """
+    return _check_http_url(f"{str(base_url).rstrip('/')}{path}")
+
+
+def validate_base_url(base_url) -> str:
+    """供应商/自定义模型 base_url 安全校验（SDK 构造与探测共用入口）。
+
+    与 _safe_gateway_url 同一套口径：仅 http(s)、需有主机名、拒绝内嵌凭据与
+    控制字符；允许 Ollama 等本机/内网 http 地址。返回去首尾空白与尾部斜杠后
+    的归一化地址，供 OpenAICredential/AnthropicCredential 与 httpx 测试使用。
+    """
+    return _check_http_url(str(base_url or "").strip().rstrip("/"))
 
 # 供应商预设：数据文件 provider_presets.json（界面选择后自动填充 base_url 与候选模型）。
 # 协议仅 openai / anthropic 两种；anthropic 协议经 agentscope 模型层分流。

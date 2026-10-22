@@ -9,8 +9,10 @@
   取厂商接受的最高档。
 
 约定：
-- 探测失败（厂商不可达/参数被拒/超时）是正常结果，一律以 error 字段返回，
+- 探测失败（厂商不可达/参数被拒/超时/base_url 不合法）是正常结果，一律以 error 字段返回，
   不抛异常逃逸到 HTTP 层；网络与 HTTP 错误在 _chat_once 内就地转换；
+  base_url 发出前经 config_store.validate_base_url 校验（与 SDK 构造/网关探测同口径，
+  允许 Ollama 等私网 http），非法地址拒绝发起请求，已保存密钥不会发往别处；
 - anthropic 协议（/v1/messages 与 /chat/completions 不兼容）暂不支持自动探测，
   直接返回 skipped；
 - 每个探测函数写回模型行字段并 commit，分步详情并入 probe_result JSON，
@@ -26,6 +28,7 @@ from datetime import datetime
 import httpx
 
 from ..models import ModelProvider
+from .config_store import validate_base_url
 from .secrets_box import unseal
 
 logger = logging.getLogger(__name__)
@@ -94,10 +97,13 @@ def _chat_once(
     reasoning_effort: str | None = None,
     timeout: int = 30,
 ) -> dict:
-    """向 OpenAI 兼容 /chat/completions 发一条请求；网络/HTTP 错误绝不抛异常。
+    """向 OpenAI 兼容 /chat/completions 发一条请求；网络/HTTP/URL 校验错误绝不抛异常。
 
     返回 {ok, status_code, error, content, reasoning_content, finish_reason, usage}：
     ok=True 仅表示 HTTP 2xx 且解析出响应体；错误一律进 error 字段。
+    base_url 先经 config_store.validate_base_url 校验（与 SDK 构造/网关探测同口径：
+    仅 http(s)、需主机名、拒绝内嵌凭据与控制字符，允许 Ollama 等私网 http）；
+    不合法则就地转为 error 字段，绝不带密钥向该地址发起请求。
     """
     out = {
         "ok": False,
@@ -108,7 +114,13 @@ def _chat_once(
         "finish_reason": None,
         "usage": None,
     }
-    url = f"{str(base_url or '').rstrip('/')}/chat/completions"
+    try:
+        base = validate_base_url(base_url)
+    except ValueError as exc:
+        logger.warning("模型探测 base_url 未通过 URL 安全校验，已拒绝发起请求（不记录地址与密钥）")
+        out["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        return out
+    url = f"{base}/chat/completions"
     payload = {
         "model": model,
         "messages": messages,

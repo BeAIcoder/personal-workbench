@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
 from ..models import McpServer
+from .secrets_box import seal, unseal
 
 logger = logging.getLogger(__name__)
 
@@ -210,12 +211,39 @@ _servers: dict[str, McpStdioServer] = {}
 _manager_lock = threading.Lock()
 
 
+def _is_sealed(value: object) -> bool:
+    return isinstance(value, str) and value.startswith("dpapi:")
+
+
+def seal_env_values(env: dict | None) -> dict:
+    """把 MCP env 值逐个 DPAPI 密封后落库；空值原样保留（无秘密可护）。"""
+    return {str(k): ("" if v in (None, "") else seal(str(v))) for k, v in (env or {}).items()}
+
+
+def unseal_env_values(env: dict | None) -> dict:
+    """读取/连接时还原 env 值；历史明文值按 secrets_box 兼容原样返回。"""
+    return {str(k): ("" if v in (None, "") else unseal(str(v))) for k, v in (env or {}).items()}
+
+
+def migrate_env_secrets(db: Session) -> int:
+    """把存量明文 MCP env 一次性迁移为 DPAPI 格式，返回迁移的服务器条数。"""
+    count = 0
+    for row in db.query(McpServer).all():
+        values = row.env or {}
+        if values and not all(_is_sealed(v) for v in values.values()):
+            row.env = seal_env_values(values)
+            count += 1
+    if count:
+        db.commit()
+    return count
+
+
 def _row_to_server(row: McpServer) -> McpStdioServer:
     return McpStdioServer(
         name=row.name,
         command=row.command,
         args=list(row.args or []),
-        env=dict(row.env or {}),
+        env=unseal_env_values(row.env),
     )
 
 
@@ -369,7 +397,7 @@ def create_server(db: Session, name: str, command: str, args: list[str],
     if db.query(McpServer).filter(McpServer.name == name).first():
         raise ValueError(f"服务器名已存在：{name}")
     row = McpServer(name=name, command=command.strip(), args=args or [],
-                    env=env or {}, enabled=enabled, status="stopped")
+                    env=seal_env_values(env), enabled=enabled, status="stopped")
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -386,6 +414,14 @@ def update_server(db: Session, server_id: int, data: dict) -> dict:
     if running:
         running.stop()
     _unregister_server_tools(row.name)
+    # env 更新按界面掩码语义合并：值为 *** 的键保留已存秘密，未掩码键才真正替换
+    if "env" in data and data["env"] is not None:
+        old_env = unseal_env_values(row.env)
+        merged = {
+            str(k): (old_env[str(k)] if v == "***" and str(k) in old_env else v)
+            for k, v in data["env"].items()
+        }
+        data["env"] = seal_env_values(merged)
     for field in ("command", "args", "env", "enabled"):
         if field in data and data[field] is not None:
             setattr(row, field, data[field])
