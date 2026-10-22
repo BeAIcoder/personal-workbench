@@ -86,7 +86,10 @@ def test_update_without_env_key_preserves_env(db, fake_server):
         sid = db.query(mcp_agent.McpServer).filter(mcp_agent.McpServer.name == name).first().id
         update_server(db, sid, {"command": sys.executable})  # 只改命令，不带 env
         row = db.query(mcp_agent.McpServer).filter(mcp_agent.McpServer.name == name).first()
-        assert row.env == {"TOKEN": "secret-xyz"}, "未传 env 却被清空"
+        assert row.env["TOKEN"].startswith("dpapi:")
+        from app.agents.mcp import unseal_env_values
+
+        assert unseal_env_values(row.env) == {"TOKEN": "secret-xyz"}
     finally:
         _cleanup(name)
 
