@@ -191,7 +191,7 @@ PYTHONIOENCODING=utf-8 /d/DevEnv/runtime/python/python.exe dev/e2e/probes/<area>
 ### 后端回归测试（新增/改动）
 
 `test_dashboard_search.py`、`test_notes.py`、`test_assistant.py`、`test_skill_store.py`、`test_expert_packs.py`、
-`test_agent_specs.py`（恢复出厂模块工具）、`test_module_finance_cashflow.py`（本地模块，随 `.gitignore` 不入库）等；
+`test_agent_specs.py`（恢复出厂模块工具）、`test_module_finance_cashflow.py`（2026-10-22 起随模块入库）等；
 当轮全量 **469 例**（后被第八节 505 例取代，均为历史值）。
 
 ### 旧 E2E 资产（不在上表内）
