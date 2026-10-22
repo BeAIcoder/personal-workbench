@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
 from ..models import Memory
+from ..utils import escape_like
 
 MAX_CONTENT = 2000
 RECALL_TOP_K = 5
@@ -83,8 +84,9 @@ def delete_memory(db: Session, memory_id: int) -> None:
 def list_memories(db: Session, keyword: str = "", limit: int = 100) -> list[dict]:
     q = db.query(Memory)
     if keyword:
-        like = f"%{keyword}%"
-        q = q.filter(Memory.content.like(like))
+        # 关键词按字面匹配：% / _ / 反斜杠经 escape_like 转义 + 显式 escape，
+        # 不通配放大结果集（审计台账 A08）
+        q = q.filter(Memory.content.like(f"%{escape_like(keyword)}%", escape="\\"))
     rows = q.order_by(Memory.pinned.desc(), Memory.id.desc()).limit(min(limit, 500)).all()
     return [_out(r) for r in rows]
 

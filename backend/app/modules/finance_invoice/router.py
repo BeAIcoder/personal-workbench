@@ -11,9 +11,36 @@ from . import service
 from .engine import EngineUnavailableError, engine_status
 from .schemas import ExportResult, InvoiceBatchDetail, InvoiceBatchOut, InvoiceItemOut, InvoiceItemPatch
 
+try:
+    # 统一上传防护由 core 任务提供（app/upload.py）：分块限额读取替代全量 file.read()；
+    # 共享模块未落地期间名称置空，端点明确 503 失败，绝不退回无界读取。
+    from ...upload import read_upload_limited
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    read_upload_limited = None
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["财务模块·发票处理"])
+
+
+async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
+    """经共享 read_upload_limited 限额读取单个上传内容（审计 A01）。
+
+    超限/读取失败映射 400；共享读取器缺失时 503 明确失败，不退回全量 await file.read()。
+    """
+    if read_upload_limited is None:
+        logger.error("共享上传模块 app.upload 不可用，拒绝发票上传读取")
+        raise HTTPException(status_code=503, detail="上传读取服务暂不可用，请稍后重试")
+    try:
+        return await read_upload_limited(file, max_bytes)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("发票上传受限读取失败（上限 %s 字节）：%s", max_bytes, exc)
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件读取失败或超过 {max_bytes // 1024 // 1024}MB 大小上限",
+        ) from exc
 
 
 @router.get("/engine/status", summary="发票解析引擎可用性自检（降级探测，永不 503）")
@@ -32,7 +59,20 @@ async def create_batch(
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ):
-    uploads = [(f.filename or "file.pdf", await f.read()) for f in files]
+    # 逐文件限额读取并累计合计：单文件沿用 service.MAX_FILE_BYTES，
+    # 批次合计超 service.MAX_BATCH_BYTES 即止（后续文件不再读取），
+    # 避免旧行为「全量读入内存后」才在 service 层发现超限。
+    uploads: list[tuple[str, bytes]] = []
+    total = 0
+    for f in files:
+        content = await _read_upload(f, service.MAX_FILE_BYTES)
+        total += len(content)
+        if total > service.MAX_BATCH_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"批次总大小超过 {service.MAX_BATCH_BYTES // 1024 // 1024}MB 上限",
+            )
+        uploads.append((f.filename or "file.pdf", content))
     try:
         # 逐张 PDF 解析为重活：丢线程池执行，避免阻塞事件循环
         batch = await asyncio.to_thread(service.create_batch, db, uploads, name=name)

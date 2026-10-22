@@ -120,14 +120,13 @@ async def get_policies(
     if is_active is not None:
         query = query.filter(Policy.is_active == is_active)
 
-    # 关键词搜索
+    # 关键词搜索：%/_ 按字面匹配（autoescape），与全库其余 LIKE 点口径一致
     if keyword:
-        kw = f"%{keyword}%"
         query = query.filter(
             or_(
-                Policy.title.like(kw),
-                Policy.policy_number.like(kw),
-                Policy.summary.like(kw),
+                Policy.title.contains(keyword, autoescape=True),
+                Policy.policy_number.contains(keyword, autoescape=True),
+                Policy.summary.contains(keyword, autoescape=True),
             )
         )
 

@@ -1,7 +1,7 @@
 """
 企业信息路由
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 from ....database import get_db
@@ -48,7 +48,9 @@ class EnterpriseResponse(BaseModel):
         from_attributes = True
 
 @router.get("/", response_model=List[EnterpriseResponse])
-async def get_enterprises(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+async def get_enterprises(skip: int = Query(0, ge=0, description="跳过记录数"),
+                          limit: int = Query(100, ge=1, le=200, description="返回记录数上限"),
+                          db: Session = Depends(get_db)):
     """获取企业列表"""
     enterprises = db.query(Enterprise).offset(skip).limit(limit).all()
     return enterprises

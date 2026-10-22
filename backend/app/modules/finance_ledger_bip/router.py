@@ -1,4 +1,6 @@
 """finance_ledger_bip 模块接口：/api/finance/ledger/bip（前缀由注册器按 manifest.prefix 挂载）。"""
+import asyncio
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -19,11 +21,38 @@ from .schemas import (
     VoucherListOut,
 )
 
+try:
+    # 统一上传防护由 core 任务提供（app/upload.py）：分块限额读取替代全量 file.read()；
+    # 共享模块未落地期间名称置空，端点明确 503 失败，绝不退回无界读取。
+    from app.upload import read_upload_limited
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    read_upload_limited = None
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["财务模块·企业记账（BIP）"])
 
 
 def _bad_request(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
+
+
+async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
+    """经共享 read_upload_limited 限额读取上传内容。
+
+    超限/读取失败映射 400（沿用「上限」口径）；共享读取器缺失时 503 明确失败，
+    不退回全量 await file.read()（审计台账 A01：超大/chunked 上传无界读内存）。
+    """
+    if read_upload_limited is None:
+        logger.error("共享上传模块 app.upload 不可用，拒绝 BIP 上传读取")
+        raise HTTPException(status_code=503, detail="上传读取组件暂不可用，请稍后重试")
+    try:
+        return await read_upload_limited(file, max_bytes)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("BIP 上传受限读取失败（上限 %s 字节）：%s", max_bytes, exc)
+        raise _bad_request(ValueError(f"文件读取失败或超过 {max_bytes // 1024 // 1024}MB 大小上限")) from exc
 
 
 # ---------------- 导入向导 ----------------
@@ -36,9 +65,11 @@ def _bad_request(exc: ValueError) -> HTTPException:
 async def preview_import(file: UploadFile = File(...)):
     # 防路径穿越：只取文件名部分；扩展名白名单与大小限制在 service 层校验
     filename = Path(file.filename or "upload.xlsx").name
-    content = await file.read()
+    content = await _read_upload(file, service.MAX_UPLOAD_BYTES)
     try:
-        return service.preview_import(filename, content)
+        # Excel 解析为同步重活：移入线程池执行，慢解析期间不阻塞事件循环
+        # （/api/health 等其它请求保持可响应，审计台账 A05）
+        return await asyncio.to_thread(service.preview_import, filename, content)
     except ValueError as exc:
         raise _bad_request(exc) from exc
 

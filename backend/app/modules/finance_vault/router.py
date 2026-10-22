@@ -1,5 +1,6 @@
 """finance_vault 模块接口：/api/finance/vault（前缀由注册器按 manifest.prefix 挂载）。"""
 import asyncio
+import logging
 
 import duckdb
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -16,7 +17,36 @@ from .schemas import (
     QueryOut,
 )
 
+try:
+    # 统一上传防护由 core 任务提供（app/upload.py）：分块限额读取替代全量 file.read()；
+    # 共享模块未落地期间名称置空，端点明确 503 失败，绝不退回无界读取。
+    from ...upload import read_upload_limited
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    read_upload_limited = None
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["财务模块·数据仓"])
+
+
+async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
+    """经共享 read_upload_limited 限额读取上传内容（审计 A01）。
+
+    超限/读取失败映射 400；共享读取器缺失时 503 明确失败，不退回全量 await file.read()。
+    """
+    if read_upload_limited is None:
+        logger.error("共享上传模块 app.upload 不可用，拒绝数据仓上传读取")
+        raise HTTPException(status_code=503, detail="上传读取服务暂不可用，请稍后重试")
+    try:
+        return await read_upload_limited(file, max_bytes)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("数据仓上传受限读取失败（上限 %s 字节）：%s", max_bytes, exc)
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件读取失败或超过 {max_bytes // 1024 // 1024}MB 大小上限",
+        ) from exc
 
 
 @router.get("/tables", response_model=DatasetListOut, summary="数据集清单（表名/行数/来源/注册时间）")
@@ -32,7 +62,7 @@ async def ingest_file(
     mode: str = Query("replace", description="replace=整表重建 / append=按列名追加"),
     sheet: str = Query("", description="xlsx 工作表名或序号（默认第一个）"),
 ):
-    content = await file.read()
+    content = await _read_upload(file, service.MAX_UPLOAD_BYTES)
     try:
         # 解析入仓为重活：丢线程池执行，避免阻塞事件循环
         return await asyncio.to_thread(

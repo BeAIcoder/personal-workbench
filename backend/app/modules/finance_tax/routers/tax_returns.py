@@ -1,11 +1,8 @@
 """
 纳税申报路由
 """
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from ....database import get_db
@@ -112,8 +109,8 @@ def calculate_tax(return_data: dict) -> dict:
 @router.get("/", response_model=List[TaxReturnResponse])
 async def get_tax_returns(
     enterprise_id: int | None = None,
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="跳过记录数"),
+    limit: int = Query(100, ge=1, le=200, description="返回记录数上限"),
     db: Session = Depends(get_db)
 ):
     """获取纳税申报列表"""

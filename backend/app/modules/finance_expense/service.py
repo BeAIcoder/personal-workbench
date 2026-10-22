@@ -6,6 +6,9 @@
 
 故障隔离：引擎目录缺失或导入失败时，模块本身照常加载（manifest/路由/表均不受影响），
 依赖引擎的接口返回 503 + 中文提示；运行记录查询等接口不受引擎状态影响。
+
+行数护栏：上传 Excel 先按共享上限 MAX_IMPORT_ROWS 统计各工作表非空行，超限在引擎执行
+与运行记录写库前失败关闭（400），超大文件不进入引擎解析。
 """
 import importlib
 import os
@@ -22,6 +25,13 @@ from ...config import BASE_DIR, get_finance_data_dir, settings
 from ...database import SessionLocal
 from .models import ExpenseRow, ExpenseRun
 
+# 单次导入行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
+# 绝不放行无上限文件进入引擎（与 BIP/税务/数据仓等财务模块同一口径）。
+try:
+    from ...import_limits import MAX_IMPORT_ROWS
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    MAX_IMPORT_ROWS = None
+
 MODULE_NAME = "finance_expense"
 
 # 引擎默认相对位置：01-财税自动化/现金流滚动预测/费用分类汇总系统-v2.0
@@ -31,6 +41,12 @@ _ENGINE_REQUIRED_FILES = ("expense_classification.py", "rules_loader.py", "class
 # 上传约束：扩展名白名单 + 大小上限（测试可 monkeypatch 调低）
 ALLOWED_EXTENSIONS = {".xlsx", ".xls"}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+# 银行明细账读取失败提示：行数护栏的 Excel 统计与引擎 read_bank_data 返回 None 共用同一口径
+_BANK_READ_FAIL_DETAIL = (
+    "银行明细账读取失败：请确认上传的是银行存款辅助明细账"
+    "（表头在第 11 行，含 科目编码/日期/摘要/贷方本币 等列）"
+)
 
 
 class EngineUnavailableError(RuntimeError):
@@ -46,6 +62,82 @@ _ENGINE_LOCK = threading.Lock()
 def _reset_engine_state() -> None:
     """清空引擎缓存（测试隔离与故障恢复用）。"""
     _ENGINE.update(classifier_cls=None, load_rules=None, app_config=None, engine_dir="")
+
+
+def _row_has_value(values) -> bool:
+    """一行是否含非空值：None/空白字符串视为空（不同读取器的空单元格表示不统一，这里归一）。"""
+    return any(v is not None and str(v).strip() != "" for v in values)
+
+
+def _count_xlsx_rows(path: Path, limit: int) -> int:
+    """.xlsx 非空行计数：openpyxl 只读模式流式迭代，超过 limit 即停，不完整解析无限行。
+
+    reset_dimensions 防尺寸标签失真：只读迭代默认被工作表 <dimension> 声明行数截断
+    （pandas 内部同样处理），标签失真的文件会漏数后续数据行。
+    """
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        total = 0
+        for sheet in workbook.worksheets:
+            sheet.reset_dimensions()
+            for row in sheet.iter_rows(values_only=True):
+                if _row_has_value(row):
+                    total += 1
+                    if total > limit:
+                        return total
+        return total
+    finally:
+        workbook.close()
+
+
+def _count_xls_rows(path: Path, limit: int) -> int:
+    """.xls 非空行计数：xlrd 无行流式读取，按工作表逐张解析（on_demand 及时释放），
+    超过 limit 即停止解析剩余工作表；非空行口径与 .xlsx 一致。"""
+    import xlrd
+
+    book = xlrd.open_workbook(str(path), on_demand=True)
+    try:
+        total = 0
+        for idx in range(book.nsheets):
+            sheet = book.sheet_by_index(idx)
+            for r in range(sheet.nrows):
+                if _row_has_value(sheet.cell_value(r, c) for c in range(sheet.ncols)):
+                    total += 1
+                    if total > limit:
+                        return total
+            book.unload_sheet(idx)
+        return total
+    finally:
+        book.release_resources()
+
+
+def _excel_row_count(path: Path, limit: int) -> int:
+    """Excel 各工作表非空行合计（含表头行、跳过标题空区）：未超限时精确，超限早停于 limit+1。"""
+    if path.suffix.lower() == ".xls":
+        return _count_xls_rows(path, limit)
+    return _count_xlsx_rows(path, limit)
+
+
+def _guard_import_rows(path: Path) -> None:
+    """行数护栏（复用共享 MAX_IMPORT_ROWS）：超限/上限服务缺失即失败关闭，抛 ValueError。
+
+    在 classify_file 最前端调用：先于引擎执行与运行记录写库，超限文件不产生任何半成品；
+    Excel 读取失败与引擎 read_bank_data 返回 None 同口径（提示确认银行明细账格式）。
+    """
+    if MAX_IMPORT_ROWS is None:
+        raise ValueError("导入行数上限服务暂不可用，请稍后重试")
+    try:
+        count = _excel_row_count(path, MAX_IMPORT_ROWS)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(_BANK_READ_FAIL_DETAIL) from exc
+    if count > MAX_IMPORT_ROWS:
+        raise ValueError(
+            f"文件数据行数（{count}）超过单次导入上限（{MAX_IMPORT_ROWS} 行），请拆分后导入"
+        )
 
 
 def module_subdir(kind: str) -> Path:
@@ -167,9 +259,12 @@ def run_to_dict(run: ExpenseRun) -> dict:
 def classify_file(db: Session, original_filename: str, stored_path: Path) -> ExpenseRun:
     """执行一轮费用分类：读取银行明细账 → 整合 → 清洗 → 分类 → 汇总 → 导出，结果入库。
 
+    行数护栏先行：超过共享 MAX_IMPORT_ROWS 的文件在统计阶段即失败关闭（ValueError，
+    路由层映射 400 并清理 inbox 上传），引擎不执行、不写运行记录、无半成品。
     失败时运行记录落库为 failed 并把中文错误抛给路由层（400）。
     引擎不可用抛 EngineUnavailableError（503），此时不写运行记录。
     """
+    _guard_import_rows(stored_path)
     engine = _ensure_engine()
     run = ExpenseRun(original_filename=original_filename[:300], status="running")
     db.add(run)
@@ -180,7 +275,7 @@ def classify_file(db: Session, original_filename: str, stored_path: Path) -> Exp
     try:
         clf = engine["classifier_cls"]()
         if clf.read_bank_data(str(stored_path)) is None:
-            raise ValueError("银行明细账读取失败：请确认上传的是银行存款辅助明细账（表头在第 11 行，含 科目编码/日期/摘要/贷方本币 等列）")
+            raise ValueError(_BANK_READ_FAIL_DETAIL)
         if clf.integrate_data() is None:
             raise ValueError("数据整合失败")
         if clf.clean_data() is None:

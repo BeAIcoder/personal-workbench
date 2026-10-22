@@ -1,6 +1,7 @@
 """finance_expense 模块接口：/api/finance/expense（前缀由注册器按 manifest.prefix 挂载）。"""
 import asyncio
 import gc
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,7 +13,37 @@ from ...database import get_db
 from . import service
 from .schemas import ExpenseRunOut, RunDetailOut, RulesReloadOut, RulesSummaryOut, RunListOut
 
+try:
+    # 统一上传防护由 core 任务提供（app/upload.py）：分块限额读取替代全量 file.read()；
+    # 共享模块未落地期间名称置空，端点明确 503 失败，绝不退回无界读取。
+    from ...upload import read_upload_limited
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    read_upload_limited = None
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["财务模块·费用分类"])
+
+
+async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
+    """经共享 read_upload_limited 限额读取上传内容（审计 A01：替代先读后限的无界读取）。
+
+    超限/读取失败映射 400（沿用「上限」口径）；共享读取器缺失时 503 明确失败，
+    不退回全量 await file.read()。
+    """
+    if read_upload_limited is None:
+        logger.error("共享上传模块 app.upload 不可用，拒绝费用分类上传读取")
+        raise HTTPException(status_code=503, detail="上传读取服务暂不可用，请稍后重试")
+    try:
+        return await read_upload_limited(file, max_bytes)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("费用上传受限读取失败（上限 %s 字节）：%s", max_bytes, exc)
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件读取失败或超过 {max_bytes // 1024 // 1024}MB 大小上限",
+        ) from exc
 
 
 def _discard_stored(path: Path) -> None:
@@ -44,14 +75,9 @@ async def classify(file: UploadFile = File(...), db: Session = Depends(get_db)):
     suffix = Path(original).suffix.lower()
     if suffix not in service.ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="仅支持 .xlsx/.xls 格式的银行明细账文件")
-    content = await file.read()
+    content = await _read_upload(file, service.MAX_UPLOAD_BYTES)
     if not content:
         raise HTTPException(status_code=400, detail="文件内容为空")
-    if len(content) > service.MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"文件超过 {service.MAX_UPLOAD_BYTES // 1024 // 1024}MB 大小上限",
-        )
     try:
         # 引擎首载含 os.chdir + pandas import，同为秒级重活，丢线程池避免阻塞事件循环
         await asyncio.to_thread(service.ensure_engine_ready)
