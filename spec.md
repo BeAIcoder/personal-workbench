@@ -177,7 +177,7 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 - **校验**：`interval` 必须带 `interval_minutes`（5~10080）、`daily` 必须带 `daily_at`（HH:MM）、
   `cron` 必须带合法 `cron_expr`，否则 422。
 
-### 4.4 财务模块（8 可入库 + 1 本地专用 + 1 机制示例）
+### 4.4 财务模块（9 可入库 + 1 机制示例）
 
 | 模块 | 级别 | 关键规格 |
 | --- | --- | --- |
@@ -189,7 +189,7 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 | finance_tax 企业所得税 | 整体迁入 | 原项目 5 routers + 10 services 零改动移植，`mod_tax_` 表前缀，迁移脚本幂等 |
 | finance_board 报表看板 | L2 | m01–m04 管线子进程触发（单步 600s 超时），HTML 快照归档 + 管线日志尾部（入库截断至 4000 字符、读取只暴露末 500 字符），iframe 嵌入（响应带 CSP `frame-ancestors 'self'`） |
 | finance_pos POS 对账 | L1 | 台账 + 差异分析两步执行（单步 900s 超时），产物差集归集，上传 50MB |
-| finance_cashflow 现金流填报（本地专用） | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护，**整目录 gitignore**；运行记录列表分页（`page` ≥ 1、`page_size` 1–100，返回 `{total, items, page, page_size}`，按 id 倒序），上传 50MB |
+| finance_cashflow 现金流填报 | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护；运行记录列表分页（`page` ≥ 1、`page_size` 1–100，返回 `{total, items, page, page_size}`，按 id 倒序），上传 50MB |
 | finance_hello 模块示例 | 机制实证 | 连通性自检 + 样例表 `mod_hello_entry` + 只读工具 `hello_ping`（财税专员白名单内） |
 
 跨项目引擎路径（费用分类 / 发票工具）经 `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH`
@@ -454,7 +454,7 @@ mod_tax_return          finance_tax
 mod_tax_policy          finance_tax
 mod_board_snapshot      finance_board
 mod_pos_run             finance_pos
-mod_cashflow_run        finance_cashflow（本地专用，gitignore）
+mod_cashflow_run        finance_cashflow
 ```
 
 要点：
@@ -557,7 +557,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | 数据仓 SQL | SELECT-only + 表名白名单 + 强制 LIMIT + 独立线程 `interrupt()` 超时；去注释后执行 |
 | 执行面 | Bash 工具默认关闭且自带危险文件/目录黑名单；QwenPaw 插件默认关闭且只读模式跳过 |
 | 监听面 | 仅 127.0.0.1；非回环 HOST 启动时告警（未做鉴权，勿在不可信网络开放） |
-| 数据边界 | `gitignore` 分层：`data/`、`.env`、`backups/`、`finance_cashflow` 全目录；提交前无真实业务值 |
+| 数据边界 | `gitignore` 分层：`data/`、`.env`、`backups/`、现金流引擎产出/真实数据；提交前无真实业务值 |
 
 ## 11. 接口设计
 

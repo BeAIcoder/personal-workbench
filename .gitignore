@@ -62,13 +62,15 @@ build/
 # 所有 .mimosa 目录（包括子目录）
 **/.mimosa/
 
-# finance_cashflow 模块：其引擎「现金流滚动预测 V1」含真实业务数据、仓内声明永不推远端，
-# 凡引用它的模块代码一并保持本地（2026-10-12 阶段四决策）
-backend/app/modules/finance_cashflow/
-# finance_cashflow 的测试与前端同样本地化（后端模块不存在时测试会 collection error）
-backend/tests/test_module_finance_cashflow.py
-frontend/src/modules/finance-cashflow/
-frontend/tests/finance-cashflow.test.js
+# finance_cashflow 引擎产出/真实数据永不入库；模块代码与测试自 2026-10-22 起纳入跟踪
+backend/app/modules/finance_cashflow/**/input/
+backend/app/modules/finance_cashflow/**/output/
+backend/app/modules/finance_cashflow/**/artifacts/
+backend/app/modules/finance_cashflow/**/runs/
+backend/app/modules/finance_cashflow/**/*.xlsx
+backend/app/modules/finance_cashflow/**/*.xls
+backend/app/modules/finance_cashflow/**/*.csv
+backend/app/modules/finance_cashflow/**/*.zip
 
 # 脱敏映射表（私有钥匙，永不入库；机制见 dev/SANITIZE.md）
 dev/sanitize-map.local.json
