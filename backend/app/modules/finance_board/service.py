@@ -147,6 +147,8 @@ def _out(s: BoardSnapshot) -> dict:
         "status": s.status,
         "html_path": s.html_path,
         "elapsed_sec": s.elapsed_sec,
+        # 入库时已截到 4000 字符，读取再取尾部 500：日志有界暴露，不整文件无界返回
+        "log_tail": s.log_tail[-500:] if s.log_tail else "",
         "created_at": s.created_at.strftime("%Y-%m-%d %H:%M:%S") if s.created_at else "",
     }
 

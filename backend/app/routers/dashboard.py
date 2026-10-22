@@ -11,6 +11,10 @@ from ..schemas import NoteOut, ScheduleOut, TaskOut
 
 router = APIRouter(prefix="/dashboard", tags=["工作台概览"])
 
+# 概览页「今日日程」有界读取：个人库日程很多时不一次取全量；截断状态可见，
+# 用户可点「查看全部」去日程页，不静默丢数据
+MAX_TODAY_SCHEDULES = 100
+
 
 @router.get("/summary", summary="工作台统计数据（概览页一次取全）")
 def summary(db: Session = Depends(get_db)):
@@ -48,12 +52,14 @@ def summary(db: Session = Depends(get_db)):
     )
 
     # ---- 日程统计 ----
-    today_schedules = (
+    today_schedule_query = (
         db.query(Schedule)
         # end_time == day_start 表示日程在今天 00:00 整结束，与今天无交集，不应计入「今日日程」
         .filter(Schedule.start_time < tomorrow, Schedule.end_time > day_start)
-        .order_by(Schedule.start_time.asc())
-        .all()
+    )
+    today_schedule_total = today_schedule_query.count()
+    today_schedules = (
+        today_schedule_query.order_by(Schedule.start_time.asc()).limit(MAX_TODAY_SCHEDULES).all()
     )
     week_end = day_start + timedelta(days=7)
     upcoming_schedule_count = (
@@ -100,7 +106,12 @@ def summary(db: Session = Depends(get_db)):
             "today_due": today_due,
             "completion_rate": round(done / total_tasks * 100, 1) if total_tasks else 0.0,
         },
-        "schedule": {"today_count": len(today_schedules), "upcoming_7d": upcoming_schedule_count},
+        "schedule": {
+            "today_count": len(today_schedules),
+            "today_schedule_total": today_schedule_total,
+            "today_schedules_truncated": today_schedule_total > len(today_schedules),
+            "upcoming_7d": upcoming_schedule_count,
+        },
         "note": {"total": note_total, "week_added": week_note_count},
         "upcoming_tasks": [TaskOut.model_validate(t) for t in upcoming_tasks],
         "today_schedules": [ScheduleOut.model_validate(s) for s in today_schedules],

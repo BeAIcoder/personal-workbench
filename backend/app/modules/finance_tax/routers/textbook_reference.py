@@ -5,10 +5,6 @@
 注意：/{textbook_name} 动态路由必须保持在所有静态路径（/mappings、/full-reference 等）之后，
 否则会拦截静态路径请求（FastAPI 按注册顺序匹配）。
 """
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 

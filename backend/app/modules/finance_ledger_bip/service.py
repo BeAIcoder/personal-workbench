@@ -8,6 +8,11 @@
 - 查询：凭证组合筛选分页 / 凭证分录明细 / 分录按科目前缀筛选 / 科目发生额汇总；
 - export_vouchers_to_vault：与 finance_vault 数据仓的可选联动，模块缺失或禁用时抛
   VaultUnavailableError（路由层转 503 中文提示），绝不崩溃。
+
+行数防护：Excel 解析后按共享上限 MAX_IMPORT_ROWS（默认 200,000 行）做可检测溢出检查，
+超限在预览/确认入口即抛 BipRowLimitExceeded（ValueError 子类，路由层映射 400），
+不写库、也不在 tmp 留下被拒上传（无半成品）；其余解析异常对外只给通用中文提示，
+完整异常进服务器日志，不回带本机异常路径（审计台账 A09）。
 """
 from __future__ import annotations
 
@@ -26,7 +31,15 @@ from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir
 from ...database import SessionLocal
+from ...utils import escape_like
 from .models import BipBalance, BipBatch, BipEntry, BipVoucher
+
+try:
+    # 单次导入行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
+    # 绝不放行无上限导入（与 assistant.py 聊天 Excel 转换同口径）。
+    from ...import_limits import MAX_IMPORT_ROWS
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    MAX_IMPORT_ROWS = None
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +101,10 @@ _HEADER_FUZZY = ("凭证号", "科目", "摘要", "账簿", "借方", "贷方", 
 
 class VaultUnavailableError(RuntimeError):
     """数据仓模块 finance_vault 不可用（未安装 / 未启用 / 导入失败）。"""
+
+
+class BipRowLimitExceeded(ValueError):
+    """导入数据行数超过共享上限 MAX_IMPORT_ROWS：解析阶段即中止，无半成品。"""
 
 
 # ---------------- 基础工具 ----------------
@@ -225,7 +242,12 @@ def _locate_header_row(raw: pd.DataFrame) -> int:
 
 
 def read_bip_excel(path: Path) -> pd.DataFrame:
-    """读取 BIP 导出 Excel：自动定位表头行、归一化/去重列名、剔除全空行与空名列。"""
+    """读取 BIP 导出 Excel：自动定位表头行、归一化/去重列名、剔除全空行与空名列。
+
+    行数防护：解析完成后按共享上限 MAX_IMPORT_ROWS 检查，超限抛
+    BipRowLimitExceeded（ValueError 子类，预览/确认入口映射 400），
+    避免超大表无界进入内存后续的入库流程。
+    """
     engine = "xlrd" if path.suffix.lower() == ".xls" else "openpyxl"
     raw = pd.read_excel(path, header=None, dtype=object, engine=engine)
     if raw.empty:
@@ -235,7 +257,14 @@ def read_bip_excel(path: Path) -> pd.DataFrame:
     df.columns = _uniquify([_norm_col(c) for c in raw.iloc[hdr].tolist()])
     df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
     keep = [c for c in df.columns if c and c.lower() != "nan" and not c.lower().startswith("unnamed")]
-    return df[keep].reset_index(drop=True)
+    df = df[keep].reset_index(drop=True)
+    if MAX_IMPORT_ROWS is None:
+        raise BipRowLimitExceeded("导入行数上限服务暂不可用，请稍后重试")
+    if len(df) > MAX_IMPORT_ROWS:
+        raise BipRowLimitExceeded(
+            f"文件数据行数（{len(df)}）超过单次导入上限（{MAX_IMPORT_ROWS} 行），请拆分后导入"
+        )
+    return df
 
 
 def detect_file_type(columns: list[str]) -> str:
@@ -355,10 +384,7 @@ def save_preview_file(filename: str, content: bytes) -> tuple[str, Path]:
 def preview_import(filename: str, content: bytes) -> dict:
     """上传预览：识别文件类型 → 列映射建议 → 前 50 行预览。"""
     token, path = save_preview_file(filename, content)
-    try:
-        df = read_bip_excel(path)
-    except Exception as exc:
-        raise ValueError(f"Excel 解析失败：{exc}") from exc
+    df = _read_staged_excel(path)
     columns = [str(c) for c in df.columns]
     file_type = detect_file_type(columns)
     mapping = suggest_mapping(file_type, columns) if file_type != TYPE_UNKNOWN else {}
@@ -388,6 +414,34 @@ def _resolve_token(token: str) -> Path:
     if not path.is_file():
         raise LookupError("预览文件不存在或已过期，请重新上传预览")
     return path
+
+
+def _discard_preview(path: Path) -> None:
+    """清理预览半成品：tmp 文件与 .name 边车（解析失败/行数超限时调用，失败仅记日志）。"""
+    for p in (path, path.with_name(path.name + ".name")):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("预览半成品清理跳过：%s", p.name, exc_info=True)
+
+
+def _read_staged_excel(path: Path) -> pd.DataFrame:
+    """解析暂存的预览文件（read_bip_excel，含行数上限检查）。
+
+    失败即清理预览半成品（tmp 文件 + .name 边车）：行数超限与解析失败都不在磁盘
+    留下被拒上传。行数超限（BipRowLimitExceeded）的固定文案原样透出，路由层映射
+    400；其余异常对外只给通用中文提示，完整异常进服务器日志，不回带本机异常
+    路径（审计台账 A06 / A09）。
+    """
+    try:
+        return read_bip_excel(path)
+    except BipRowLimitExceeded:
+        _discard_preview(path)
+        raise
+    except Exception as exc:
+        _discard_preview(path)
+        logger.warning("BIP 暂存文件解析失败：%s", exc, exc_info=True)
+        raise ValueError("Excel 解析失败，请检查文件格式或稍后重试") from exc
 
 
 def _merge_mapping(file_type: str, columns: list[str], user_mapping: dict[str, str] | None) -> dict[str, str]:
@@ -539,10 +593,7 @@ def confirm_import(
 ) -> dict:
     """确认入库：解析预览文件 → 合并/校验列映射 → 写库并留档批次与原文件。"""
     path = _resolve_token(token)
-    try:
-        df = read_bip_excel(path)
-    except Exception as exc:
-        raise ValueError(f"Excel 解析失败：{exc}") from exc
+    df = _read_staged_excel(path)
     if df.empty:
         raise ValueError("文件内没有可导入的数据（或表头识别失败），请检查文件")
     columns = [str(c) for c in df.columns]
@@ -774,7 +825,8 @@ def query_entries(
     page, page_size = max(1, page), max(1, min(page_size, 200))
     q = db.query(BipEntry, BipVoucher).join(BipVoucher, BipVoucher.id == BipEntry.voucher_id)
     if subject_prefix:
-        q = q.filter(BipEntry.subject_code.like(f"{subject_prefix}%"))
+        # 通配符/反斜杠按字面匹配：escape_like 转义 % _ \ 后配 escape="\\"（审计台账 A08）
+        q = q.filter(BipEntry.subject_code.like(escape_like(subject_prefix) + "%", escape="\\"))
     if period:
         q = q.filter(BipVoucher.period == period)
     if ledger:
@@ -896,7 +948,13 @@ def export_vouchers_to_vault(db: Session, period: str | None = None) -> dict:
     ).outerjoin(agg, agg.c.vid == BipVoucher.id)
     if period:
         q = q.filter(BipVoucher.period == period)
-    rows = q.order_by(BipVoucher.voucher_date, BipVoucher.id).all()
+    # 行数护栏前移到取数阶段：超限时最多多取 1 行即拒绝，不先把全量凭证组装进
+    # DataFrame 再让数据仓发现超限（个人库也可能达到上限，内存峰值不应先发生）
+    if MAX_IMPORT_ROWS is None:
+        raise ValueError("导入行数上限模块缺失，拒绝导出")
+    rows = q.order_by(BipVoucher.voucher_date, BipVoucher.id).limit(MAX_IMPORT_ROWS + 1).all()
+    if len(rows) > MAX_IMPORT_ROWS:
+        raise ValueError(f"凭证数据行数超过单次入仓上限（{MAX_IMPORT_ROWS} 行），请按期间分批导出")
     if not rows:
         return {"ok": True, "table": "bip_voucher", "mode": "append" if period else "replace",
                 "rows": 0, "result": {}, "message": "无符合条件的凭证数据，未执行入仓"}

@@ -2,6 +2,8 @@
 财务数据导入路由
 提供财务报表导入、模板下载等API
 """
+import asyncio
+import logging
 import os
 import tempfile
 from fastapi import APIRouter, UploadFile, File, HTTPException
@@ -15,6 +17,15 @@ from ..services.financial_data_importer import (
     ImportResult,
 )
 
+try:
+    # 统一上传防护由 core 任务提供（app/upload.py）：分块限额读取替代全量 file.read()；
+    # 共享模块未落地期间名称置空，端点明确 503 失败，绝不退回无界读取。
+    from app.upload import read_upload_limited
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    read_upload_limited = None
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/financial-import", tags=["财务数据导入"])
 
 importer = FinancialDataImporter()
@@ -22,6 +33,27 @@ importer = FinancialDataImporter()
 # 上传约束：扩展名白名单（大小写不敏感）+ 大小上限（与 finance_expense 模块一致，测试可 monkeypatch 调低）
 ALLOWED_EXTENSIONS = (".xlsx", ".xls")
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+
+async def _read_upload_limited(file: UploadFile) -> bytes:
+    """经共享 read_upload_limited 限额读取上传内容。
+
+    超限/读取失败映射 400（沿用「上限」口径）；共享读取器缺失时 503 明确失败，
+    不退回全量 await file.read()（审计台账 A01：超大/chunked 上传无界读内存）。
+    """
+    if read_upload_limited is None:
+        logger.error("共享上传模块 app.upload 不可用，拒绝财务报表上传读取")
+        raise HTTPException(status_code=503, detail="上传读取组件暂不可用，请稍后重试")
+    try:
+        return await read_upload_limited(file, MAX_UPLOAD_BYTES)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("财务报表上传受限读取失败（上限 %s 字节）：%s", MAX_UPLOAD_BYTES, exc)
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 大小上限",
+        ) from exc
 
 
 class ImportResponse(BaseModel):
@@ -50,8 +82,8 @@ async def import_financial_statement(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
         raise HTTPException(status_code=400, detail="仅支持.xlsx或.xls格式的Excel文件")
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_BYTES:
+    content = await _read_upload_limited(file)
+    if len(content) > MAX_UPLOAD_BYTES:  # 双保险：共享读取器已限额，保留既有口径
         raise HTTPException(
             status_code=400,
             detail=f"文件超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 大小上限",
@@ -64,9 +96,12 @@ async def import_financial_statement(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        result = importer.import_from_file(tmp_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文件处理失败：{str(e)}")
+        # 解析为同步重活：移入线程池执行，慢解析期间不阻塞事件循环（审计台账 A05）
+        result = await asyncio.to_thread(importer.import_from_file, tmp_path)
+    except Exception:
+        # 服务器保留完整异常日志；对外只给通用中文提示，不回带本机异常路径（审计台账 A09）
+        logger.exception("财务报表导入处理失败：%s", file.filename)
+        raise HTTPException(status_code=500, detail="文件处理失败，请检查文件格式或稍后重试")
     finally:
         # Clean up temp file
         try:
@@ -107,8 +142,8 @@ async def import_financial_statement_to_enterprise(
     if not file.filename or not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
         raise HTTPException(status_code=400, detail="仅支持.xlsx或.xls格式的Excel文件")
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_BYTES:
+    content = await _read_upload_limited(file)
+    if len(content) > MAX_UPLOAD_BYTES:  # 双保险：共享读取器已限额，保留既有口径
         raise HTTPException(
             status_code=400,
             detail=f"文件超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 大小上限",
@@ -120,9 +155,12 @@ async def import_financial_statement_to_enterprise(
         tmp_path = tmp.name
 
     try:
-        result = importer.import_from_file(tmp_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文件处理失败：{str(e)}")
+        # 解析为同步重活：移入线程池执行，慢解析期间不阻塞事件循环（审计台账 A05）
+        result = await asyncio.to_thread(importer.import_from_file, tmp_path)
+    except Exception:
+        # 服务器保留完整异常日志；对外只给通用中文提示，不回带本机异常路径（审计台账 A09）
+        logger.exception("财务报表导入处理失败（企业 %s）：%s", enterprise_id, file.filename)
+        raise HTTPException(status_code=500, detail="文件处理失败，请检查文件格式或稍后重试")
     finally:
         try:
             os.unlink(tmp_path)
@@ -153,8 +191,10 @@ async def download_template():
     """
     try:
         template_bytes = importer.generate_template()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"模板生成失败：{str(e)}")
+    except Exception:
+        # 服务器保留完整异常日志；对外只给通用中文提示，不回带本机异常路径（审计台账 A09）
+        logger.exception("财务报表模板生成失败")
+        raise HTTPException(status_code=500, detail="模板生成失败，请稍后重试")
 
     return StreamingResponse(
         iter([template_bytes]),
@@ -170,8 +210,10 @@ async def download_balance_sheet_template():
     """下载仅包含资产负债表的导入模板"""
     try:
         template_bytes = importer.generate_template(include_sheets=[StatementType.BALANCE_SHEET])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"模板生成失败：{str(e)}")
+    except Exception:
+        # 服务器保留完整异常日志；对外只给通用中文提示，不回带本机异常路径（审计台账 A09）
+        logger.exception("资产负债表模板生成失败")
+        raise HTTPException(status_code=500, detail="模板生成失败，请稍后重试")
 
     return StreamingResponse(
         iter([template_bytes]),
@@ -187,8 +229,10 @@ async def download_income_statement_template():
     """下载仅包含利润表的导入模板"""
     try:
         template_bytes = importer.generate_template(include_sheets=[StatementType.INCOME_STATEMENT])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"模板生成失败：{str(e)}")
+    except Exception:
+        # 服务器保留完整异常日志；对外只给通用中文提示，不回带本机异常路径（审计台账 A09）
+        logger.exception("利润表模板生成失败")
+        raise HTTPException(status_code=500, detail="模板生成失败，请稍后重试")
 
     return StreamingResponse(
         iter([template_bytes]),

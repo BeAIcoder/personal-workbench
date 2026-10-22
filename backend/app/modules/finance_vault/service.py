@@ -26,6 +26,13 @@ from ...config import get_finance_data_dir
 from ...database import SessionLocal
 from .models import VaultDataset
 
+try:
+    # 单次入仓行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
+    # 绝不放行无上限入仓（与 BIP/税务/聊天 Excel 导入同口径）。
+    from ...import_limits import MAX_IMPORT_ROWS
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    MAX_IMPORT_ROWS = None
+
 # ---------- 可调常量（测试可 monkeypatch）----------
 
 MAX_QUERY_ROWS = 1000                  # /query 结果强制上限
@@ -37,6 +44,22 @@ MAX_SQL_LEN = 20000                    # SQL 文本长度上限
 
 # 表名白名单：仅小写字母/数字/下划线，1-64 字符
 _TABLE_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+# 数据引擎保留的表函数/元信息函数名（A09）：数据集名不得与之同名。
+# 括号/点号已由 _TABLE_NAME_RE 排除，这里封堵「合法标识符形状的函数名」，
+# 避免查询白名单放行后与表函数调用形态混淆（如 FROM read_csv 的歧义）。
+_RESERVED_TABLE_FUNCTIONS = frozenset({
+    "read_csv", "read_csv_auto", "read_parquet", "read_json", "read_json_auto",
+    "read_ndjson", "read_ndjson_auto", "read_blob", "read_text",
+    "sniff_csv", "sniff_parquet", "sniff_json",
+    "parquet_scan", "parquet_schema", "parquet_metadata", "parquet_file_metadata",
+    "delta_scan", "glob", "range", "generate_series", "unnest",
+    "query", "query_table", "sqlite_scan", "sqlite_query",
+    "postgres_scan", "postgres_query", "mysql_scan", "mysql_query",
+    "iceberg_scan", "pragma_table_info",
+    "duckdb_tables", "duckdb_columns", "duckdb_functions", "duckdb_settings",
+    "duckdb_schemas", "duckdb_databases", "duckdb_types", "duckdb_views",
+    "duckdb_constraints", "duckdb_indexes", "duckdb_sequences",
+})
 # 写操作 / DDL / 系统命令关键词（在校验视图上做词边界匹配；视图已剥离注释与字符串内容）
 _FORBIDDEN_RE = re.compile(
     r"\b(?:insert|update|delete|drop|create|alter|truncate|attach|detach|pragma|set|reset|"
@@ -46,6 +69,38 @@ _FORBIDDEN_RE = re.compile(
 )
 # 语句末尾的顶层 LIMIT（可选 OFFSET）
 _TRAILING_LIMIT_RE = re.compile(r"\blimit\s+(\d+)(\s+offset\s+\d+)?\s*$", re.IGNORECASE)
+
+
+def _string_literal_spans(text: str) -> list[tuple[int, int]]:
+    """返回字符串字面量的字符区间（含首尾引号；'' 为转义引号）。"""
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "'":
+            i += 1
+            continue
+        start = i
+        i += 1
+        while i < n:
+            if text[i] == "'":
+                if i + 1 < n and text[i + 1] == "'":
+                    i += 2
+                    continue
+                i += 1
+                break
+            i += 1
+        spans.append((start, i))
+    return spans
+
+
+def _real_trailing_limit(clean: str):
+    """在剥注释后的执行文本上找真实末尾 LIMIT，跳过字符串字面量里的 LIMIT 文本。"""
+    spans = _string_literal_spans(clean)
+    for m in _TRAILING_LIMIT_RE.finditer(clean):
+        if any(start <= m.start() < end for start, end in spans):
+            continue
+        return m
+    return None
 # 词法 token：带引号标识符 / 字符串 / 单词（含 schema.table 形式）/ 括号 / 逗号 / 其他单字符
 _TOKEN_RE = re.compile(r'"(?:[^"]|"")*"|\'[^\']*\'|[a-z_][a-z0-9_.]*|\(|\)|,|\S')
 _IDENT_RE = re.compile(r"[a-z_][a-z0-9_.]*")
@@ -53,6 +108,13 @@ _IDENT_RE = re.compile(r"[a-z_][a-z0-9_.]*")
 _CLAUSE_KEYWORDS = {
     "where", "group", "order", "having", "limit", "offset", "window", "qualify",
     "union", "intersect", "except", "on", "using", "returning",
+}
+# 连接修饰词：位于 FROM/JOIN 与真实表名之间（LEFT/OUTER/CROSS/LATERAL 等）。
+# expect_table 遇到它们继续等待表名、after_table 遇到它们切回 expect_table——
+# 漏掉会让 JOIN 之后的表引用（含派生表/子查询后的 JOIN）绕过白名单（A09）。
+_JOIN_KEYWORDS = {
+    "join", "inner", "outer", "left", "right", "full", "cross", "natural",
+    "semi", "anti", "lateral", "positional", "asof",
 }
 
 # 写操作串行化（同进程多连接 DuckDB 允许，但并发写事务可能冲突，应用层串行最稳）
@@ -101,10 +163,12 @@ def _connect() -> duckdb.DuckDBPyConnection:
 
 
 def validate_table_name(table: str) -> str:
-    """表名白名单校验：仅小写字母/数字/下划线，1-64 字符。"""
+    """表名白名单校验：仅小写字母/数字/下划线，1-64 字符，且不得占用引擎表函数名。"""
     name = (table or "").strip()
     if not _TABLE_NAME_RE.fullmatch(name):
         raise ValueError(f"非法表名 {table!r}：仅允许小写字母/数字/下划线，1-64 字符")
+    if name in _RESERVED_TABLE_FUNCTIONS:
+        raise ValueError(f"非法表名 {table!r}：该名为数据引擎保留的表函数名")
     return name
 
 
@@ -169,10 +233,11 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") -> dict:
     """模块间契约：把 DataFrame 入仓为 DuckDB 表，并登记到 mod_vault_dataset。
 
-    - table：目标表名（仅小写字母/数字/下划线，1-64 字符）；
+    - table：目标表名（仅小写字母/数字/下划线，1-64 字符，且不得占用引擎表函数名）；
     - df：pandas.DataFrame（空列名/重名自动规范化；非 DataFrame 输入尝试转换）；
     - mode：replace（整表重建，默认）/ append（按列名 BY NAME 追加，表不存在则创建）；
-    - source：来源说明（写入登记表，留空记为 dataframe）。
+    - source：来源说明（写入登记表，留空记为 dataframe）；
+    - 行数护栏：数据行数超过共享上限 MAX_IMPORT_ROWS 即拒绝，不落库、不留半成品。
 
     返回 {"table": table, "rows": 入仓后总行数}；参数非法抛 ValueError。
     """
@@ -182,6 +247,10 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
     df = _normalize_columns(df)
+    if MAX_IMPORT_ROWS is None:
+        raise ValueError("导入行数上限服务暂不可用，请稍后重试")
+    if len(df) > MAX_IMPORT_ROWS:
+        raise ValueError(f"数据行数（{len(df)}）超过单次导入上限（{MAX_IMPORT_ROWS} 行），请拆分后导入")
     with _write_lock:
         con = _connect()
         try:
@@ -327,7 +396,8 @@ def _extract_refs_and_ctes(view: str) -> tuple[set[str], set[str]]:
     """从校验视图（转小写后）提取 FROM/JOIN 表引用集合与 CTE 别名集合。
 
     逐 token 走状态机（idle → expect_table → after_table），覆盖：
-    显式 JOIN、逗号连接（FROM a, b）、派生表/子查询（括号栈恢复上下文）。
+    显式 JOIN（含 LEFT/RIGHT/FULL/CROSS/NATURAL/LATERAL 等修饰词）、逗号连接
+    （FROM a, b）、派生表/子查询（括号栈恢复上下文）。
     FROM/JOIN 后直接跟字符串（文件路径表）抛 SqlRejected。
     """
     tokens = _TOKEN_RE.findall(view.lower())
@@ -354,6 +424,9 @@ def _extract_refs_and_ctes(view: str) -> tuple[set[str], set[str]]:
             i += 1
             continue
         if state == "expect_table":
+            if tok in _JOIN_KEYWORDS:
+                i += 1
+                continue
             if tok.startswith("'"):
                 raise SqlRejected("不允许从文件路径读取，仅允许已注册数据集")
             if tok.startswith('"'):
@@ -368,6 +441,8 @@ def _extract_refs_and_ctes(view: str) -> tuple[set[str], set[str]]:
             continue
         if state == "after_table":
             if tok == ",":
+                state = "expect_table"
+            elif tok in _JOIN_KEYWORDS:
                 state = "expect_table"
             elif tok in _CLAUSE_KEYWORDS:
                 state = "idle"
@@ -413,13 +488,15 @@ def validate_readonly_sql(sql: str, allowed_tables: set[str]) -> str:
     unknown = sorted(refs - allowed - ctes)
     if unknown:
         raise SqlRejected(f"引用了未注册的数据集：{'、'.join(unknown)}")
-    # 强制 LIMIT：无顶层 LIMIT 补上；超出上限改写为上限+1
-    m = _TRAILING_LIMIT_RE.search(view)
+    # 强制 LIMIT：无顶层 LIMIT 补上；超出上限改写为上限+1。
+    # 匹配必须在剥注释后的执行文本上做，并跳过字符串字面量，否则
+    # SELECT 'LIMIT 999999' ... LIMIT 999999 会被改写成字符串内容而非真实 LIMIT。
+    m = _real_trailing_limit(clean)
     if m is None:
         return f"{clean}\nLIMIT {MAX_QUERY_ROWS + 1}"
     if int(m.group(1)) <= MAX_QUERY_ROWS:
         return clean
-    return _TRAILING_LIMIT_RE.sub(lambda mo: f"LIMIT {MAX_QUERY_ROWS + 1}{mo.group(2) or ''}", clean, count=1)
+    return clean[:m.start()] + f"LIMIT {MAX_QUERY_ROWS + 1}{m.group(2) or ''}" + clean[m.end():]
 
 
 # ---------- 查询 / 预览 ----------

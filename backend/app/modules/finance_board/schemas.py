@@ -8,6 +8,8 @@ class SnapshotOut(BaseModel):
     status: str
     html_path: str = ""
     elapsed_sec: float = 0.0
+    # 管线输出日志尾部（入库已截断，读取再按尾部有界暴露）
+    log_tail: str = ""
     created_at: str = ""
 
 

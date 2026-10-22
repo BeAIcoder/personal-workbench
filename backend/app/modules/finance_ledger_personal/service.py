@@ -11,10 +11,18 @@ import re
 from datetime import date, datetime
 
 from sqlalchemy import func
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
 from .models import PlAccount, PlBudget, PlCategory, PlTransaction
+
+try:
+    # 单次导入行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
+    # 绝不放行无上限导入（与 finance_ledger_bip 同口径）。
+    from ...import_limits import MAX_IMPORT_ROWS
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    MAX_IMPORT_ROWS = None
 
 MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 MAX_IMPORT_BYTES = 5 * 1024 * 1024  # CSV 导入上限 5MB
@@ -538,6 +546,22 @@ def put_budgets(db: Session, payload) -> dict:
 
 # ---------------- CSV 导入 / 导出 ----------------
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _csv_cell(value: str | None) -> str:
+    """CSV 单元格防公式注入：以 = + - @ 开头的文本前置单引号。
+
+    只处理用户可控文本（账户/分类/备注）；日期、币种和金额列不套用，负数金额
+    保持数值语义，不被当成公式。
+    """
+    text = "" if value is None else str(value)
+    stripped = text.lstrip(" \t\r\n")
+    if stripped and stripped[0] in _FORMULA_PREFIXES:
+        return "'" + text
+    return text
+
+
 def export_csv(
     db: Session,
     month: str | None = None,
@@ -559,8 +583,8 @@ def export_csv(
                 KIND_ZH.get(tx.kind, tx.kind),
                 f"{_money(tx.amount):.2f}",
                 acc.name if acc else "",
-                category_path(cats.get(tx.category_id), cats),
-                tx.note or "",
+                _csv_cell(category_path(cats.get(tx.category_id), cats)),
+                _csv_cell(tx.note),
             ]
         )
     return buf.getvalue()
@@ -621,7 +645,15 @@ def _resolve_category(db: Session, cache: dict, path: str, kind: str, created: s
 
 
 def import_csv(db: Session, content: bytes) -> dict:
-    """导入 CSV：中文列名 日期/类型/金额/账户/分类/备注；坏行跳过并记录原因。"""
+    """导入 CSV：中文列名 日期/类型/金额/账户/分类/备注；坏行跳过并记录原因。
+
+    行数护栏：数据行数超过共享上限 MAX_IMPORT_ROWS 即拒绝（可映射 400），无半成品。
+    行级隔离：每行在 SAVEPOINT（begin_nested）内处理并在行内 flush——行内 flush
+    失败只回滚本行，不毒化整批事务；失败行中途创建的账户/分类随行回滚，并从缓存与
+    建档记录中剔除，不污染后续有效行。最终一次 commit 仅提交有效行，
+    imported/skipped/errors 与实际提交一致。对外 errors 文案：DB 级失败只记行号与
+    通用提示，不回带 SQL 语句/表名/绑定参数（解析类 ValueError 限本行用户输入）。
+    """
     ensure_seed(db)
     text = _decode_csv(content)
     rows = [r for r in csv.reader(io.StringIO(text)) if any((c or "").strip() for c in r)]
@@ -632,6 +664,10 @@ def import_csv(db: Session, content: bytes) -> dict:
     missing = [n for n in ("日期", "类型", "金额") if n not in col]
     if missing:
         raise ValueError(f"CSV 缺少必需列：{'、'.join(missing)}")
+    if MAX_IMPORT_ROWS is None:
+        raise ValueError("导入行数上限服务暂不可用，请稍后重试")
+    if len(rows) - 1 > MAX_IMPORT_ROWS:
+        raise ValueError(f"文件数据行数（{len(rows) - 1}）超过单次导入上限（{MAX_IMPORT_ROWS} 行），请拆分后导入")
 
     account_cache: dict[str, PlAccount] = {}
     category_cache: dict = {}
@@ -644,35 +680,54 @@ def import_csv(db: Session, content: bytes) -> dict:
         return (row[idx] or "").strip() if idx is not None and idx < len(row) else ""
 
     for line_no, row in enumerate(rows[1:], start=2):
+        # 行前快照：失败行中途写入的缓存项与建档记录需随行回滚一并剔除
+        account_keys = set(account_cache)
+        category_keys = set(category_cache)
+        made_accounts = set(created_accounts)
+        made_categories = set(created_categories)
         try:
-            day = _parse_day(cell(row, "日期"))
-            zh = cell(row, "类型")
-            kind = ZH_KIND.get(zh, zh.lower())
-            if kind not in KINDS:
-                raise ValueError(f"类型「{zh}」应为 收入 或 支出")
-            try:
-                amount = round(float(cell(row, "金额").replace(",", "")), 2)
-            except ValueError:
-                raise ValueError(f"金额「{cell(row, '金额')}」不是数字") from None
-            if amount <= 0:
-                raise ValueError("金额必须大于 0")
-            acc = _resolve_account(db, account_cache, cell(row, "账户"), created_accounts)
-            cid = _resolve_category(db, category_cache, cell(row, "分类"), kind, created_categories)
-            db.add(
-                PlTransaction(
-                    kind=kind,
-                    amount=amount,
-                    occurred_on=day,
-                    account_id=acc.id,
-                    category_id=cid,
-                    note=cell(row, "备注")[:500],
-                    tags=[],
+            with db.begin_nested():  # 行级 SAVEPOINT：本行 flush 失败只回滚本行
+                day = _parse_day(cell(row, "日期"))
+                zh = cell(row, "类型")
+                kind = ZH_KIND.get(zh, zh.lower())
+                if kind not in KINDS:
+                    raise ValueError(f"类型「{zh}」应为 收入 或 支出")
+                try:
+                    amount = round(float(cell(row, "金额").replace(",", "")), 2)
+                except ValueError:
+                    raise ValueError(f"金额「{cell(row, '金额')}」不是数字") from None
+                if amount <= 0:
+                    raise ValueError("金额必须大于 0")
+                acc = _resolve_account(db, account_cache, cell(row, "账户"), created_accounts)
+                cid = _resolve_category(db, category_cache, cell(row, "分类"), kind, created_categories)
+                db.add(
+                    PlTransaction(
+                        kind=kind,
+                        amount=amount,
+                        occurred_on=day,
+                        account_id=acc.id,
+                        category_id=cid,
+                        note=cell(row, "备注")[:500],
+                        tags=[],
+                    )
                 )
-            )
+                db.flush()  # 行内落盘验证：DB 级失败在本行 SAVEPOINT 内暴露并可回滚
             imported += 1
         except Exception as e:  # noqa: BLE001 坏行只跳过不中断整批导入
+            # begin_nested 上下文退出即回滚本行 SAVEPOINT；剔除本行中途写入的缓存与
+            # 建档记录，避免后续有效行复用被回滚的对象
+            for key in set(account_cache) - account_keys:
+                account_cache.pop(key, None)
+            for key in set(category_cache) - category_keys:
+                category_cache.pop(key, None)
+            created_accounts.intersection_update(made_accounts)
+            created_categories.intersection_update(made_categories)
             if len(errors) < 10:
-                errors.append(f"第{line_no}行：{e}")
+                # DB 级失败不回带原始异常文本（含 SQL 语句、表名、列名、绑定参数、
+                # 驱动名），只给行号 + 通用文案（A09 口径：对外错误不回带 SQL 与
+                # 本机路径）；解析类 ValueError 的文案限本行用户输入，保留可读提示
+                detail = "数据行落库失败，请检查该行数据" if isinstance(e, SQLAlchemyError) else str(e)
+                errors.append(f"第{line_no}行：{detail}")
     db.commit()
     return {
         "imported": imported,

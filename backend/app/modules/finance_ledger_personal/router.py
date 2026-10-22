@@ -1,8 +1,11 @@
 """finance_ledger_personal 模块接口：/api/finance/ledger/personal（前缀由注册器挂载）。
 
 上传安全约束（与宿主 assistant 上传同口径）：扩展名白名单（仅 .csv）、
-5MB 大小限制、文件名清洗 + resolve 校验防路径穿越；原件留档在模块数据目录 inbox/。
+5MB 大小限制（经共享 read_upload_limited 分块限额读取）、文件名清洗 +
+resolve 校验防路径穿越；原件留档在模块数据目录 inbox/。
 """
+import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -31,7 +34,36 @@ from .schemas import (
     TrendItem,
 )
 
+try:
+    # 统一上传防护由 core 任务提供（app/upload.py）：分块限额读取替代全量 file.read()；
+    # 共享模块未落地期间名称置空，端点明确 503 失败，绝不退回无界读取。
+    from ...upload import read_upload_limited
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    read_upload_limited = None
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["财务模块·个人记账"])
+
+
+async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
+    """经共享 read_upload_limited 限额读取上传内容（审计 A01）。
+
+    超限/读取失败映射 400；共享读取器缺失时 503 明确失败，不退回全量 await file.read()。
+    """
+    if read_upload_limited is None:
+        logger.error("共享上传模块 app.upload 不可用，拒绝个人记账上传读取")
+        raise HTTPException(status_code=503, detail="上传读取服务暂不可用，请稍后重试")
+    try:
+        return await read_upload_limited(file, max_bytes)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("个人记账上传受限读取失败（上限 %s 字节）：%s", max_bytes, exc)
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件读取失败或超过 {max_bytes // 1024 // 1024}MB 大小上限",
+        ) from exc
 
 
 def _run(fn, *args, **kwargs):
@@ -160,16 +192,15 @@ async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail="非法的文件名")
     if Path(safe_name).suffix.lower() != ".csv":
         raise HTTPException(status_code=400, detail="仅支持 .csv 文件")
-    content = await file.read()
-    if len(content) > service.MAX_IMPORT_BYTES:
-        raise HTTPException(status_code=400, detail="文件超过 5MB 上限")
+    content = await _read_upload(file, service.MAX_IMPORT_BYTES)
     inbox = get_finance_data_dir() / "finance_ledger_personal" / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     dest = inbox / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
     if dest.resolve().parent != inbox.resolve():
         raise HTTPException(status_code=400, detail="非法的文件名")
     dest.write_bytes(content)
-    result = _run(service.import_csv, db, content)
+    # 解析入库为重活：丢线程池执行，避免阻塞事件循环（审计 A05）
+    result = await asyncio.to_thread(_run, service.import_csv, db, content)
     return result
 
 

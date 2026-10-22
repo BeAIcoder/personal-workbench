@@ -4,22 +4,43 @@ from io import BytesIO
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from ...database import get_db
+from ...upload import read_upload_limited
 from . import service
 from .schemas import PosRunListOut, PosRunOut
 
 router = APIRouter(tags=["财务模块·POS 对账"])
 
 
+async def _read_upload(file: UploadFile) -> bytes:
+    """经共享 read_upload_limited 分块限额读取单个上传文件。
+
+    超限抛 UploadTooLargeError（main.py 已全局映射 400）：读取期即中断，
+    不会把超大文件整体吞进内存后再拒（审计 A01）。
+    """
+    return await read_upload_limited(file, service.MAX_UPLOAD_BYTES)
+
+
 @router.post("/runs", response_model=PosRunOut, status_code=201,
              summary="上传输入文件建运行（SHOP 对账单 + 认领记录 + 辅助明细账 + 凭证列表，或一个 ZIP）")
 async def create_run(files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
-    uploads = [(f.filename or "file.xlsx", await f.read()) for f in files]
     try:
-        return service.create_run(db, uploads)
+        uploads: list[tuple[str, bytes]] = []
+        total = 0
+        for f in files:
+            content = await _read_upload(f)
+            total += len(content)
+            if total > service.MAX_BATCH_BYTES:
+                raise ValueError(
+                    f"上传批次总大小超过 {service.MAX_BATCH_BYTES // 1024 // 1024}MB 上限，请拆分后上传"
+                )
+            uploads.append((f.filename or "file.xlsx", content))
+        # 归集/落盘/引擎探测是同步重活：丢线程池执行，避免阻塞事件循环、拖垮并发请求
+        return await run_in_threadpool(service.create_run, db, uploads)
     except service.EngineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:

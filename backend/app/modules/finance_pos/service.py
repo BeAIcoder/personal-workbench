@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import sys
 import time
@@ -27,12 +28,55 @@ LEDGER_SCRIPT = "generate_pos_ledger.py"
 ANALYZE_SCRIPT = "analyze_pos_reconciliation.py"
 STEP_TIMEOUT = 900
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_BATCH_BYTES = 100 * 1024 * 1024  # 单次上传批次（多文件合计）上限
 MAX_UNZIP_BYTES = 200 * 1024 * 1024  # ZIP 解压后总量上限（防解压炸弹）
 ALLOWED_SUFFIXES = (".xlsx", ".xls", ".zip")
+ALLOWED_MEMBER_SUFFIXES = (".xlsx", ".xls")  # ZIP 成员仅限业务数据格式（拒 .py/plugin.json 等）
+MAX_ZIP_MEMBERS = 500                       # ZIP 成员（文件）数量上限
+MAX_SAFE_STEM = 100                         # 落盘文件名词干上限，留足时间戳前缀与 Windows 255 限制余量
+_WIN_ILLEGAL = set('<>:"/\\|?*')
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
+    f"{prefix}{i}" for prefix in ("COM", "LPT") for i in range(1, 10)
+}
 
 
 class EngineUnavailableError(RuntimeError):
     """引擎目录缺失或不可用。"""
+
+
+def _safe_name(filename: str) -> str:
+    """把用户上传的文件名转成 Windows/Linux 都能落盘的安全单段名（保留扩展名）。
+
+    仅取末段（防路径穿越），替换 Windows 非法字符与控制字符，去掉首尾点/空格，
+    规避设备保留名，并对超长词干截断。返回的是展示名，也是磁盘名的主体。
+    """
+    raw = (filename or "").replace("\\", "/").split("/")[-1]
+    raw = "".join("_" if ch in _WIN_ILLEGAL or ord(ch) < 32 else ch for ch in raw)
+    raw = raw.strip(" .")
+    if raw in ("", ".", ".."):
+        raise ValueError("非法的文件名")
+    suffix = Path(raw).suffix
+    stem = raw[: -len(suffix)] if suffix else raw
+    stem = stem.strip(" .")
+    if stem.upper() in _RESERVED_NAMES:
+        stem = f"_{stem}"
+    if len(stem) > MAX_SAFE_STEM:
+        stem = stem[:MAX_SAFE_STEM].rstrip(" .")
+    if not stem:
+        raise ValueError("非法的文件名")
+    return f"{stem}{suffix}"
+
+
+def _safe_member_segment(part: str) -> str:
+    """校验 ZIP 成员的单段名：非法 Windows 文件名（含 <>:"/\\|?*、控制字符、
+    设备保留名、纯点/首尾点空格）直接拒绝——ZIP 内容不可信，不做静默替换。"""
+    if not part or part.strip(" .") == "":
+        raise ValueError("非法文件名")
+    if any(ch in _WIN_ILLEGAL or ord(ch) < 32 for ch in part):
+        raise ValueError("非法文件名")
+    if Path(part).stem.upper() in _RESERVED_NAMES:
+        raise ValueError("非法文件名")
+    return part
 
 
 def engine_dir() -> Path:
@@ -52,47 +96,92 @@ def _runs_root() -> Path:
     return d
 
 
+def _unique_path(target: Path) -> Path:
+    """ZIP 内多个条目清洗后可能重名，追加 _1/_2 避免互相覆盖。"""
+    if not target.exists():
+        return target
+    stem, suffix = target.stem, target.suffix
+    for i in range(1, 1000):
+        candidate = target.with_name(f"{stem}_{i}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise ValueError(f"ZIP 内同名文件过多：{target.name}")
+
+
 def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> list[str]:
-    """解压 ZIP 到 dest：is_relative_to 防 zip-slip（拒绝越界条目），累计解压后总量防炸弹。"""
+    """解压 ZIP 到 dest：限定成员扩展名（业务数据格式）/数量/累计解压后总量，
+    is_relative_to 防 zip-slip（拒绝越界条目），成员名逐段做 Windows 合法性校验。"""
     names: list[str] = []
     root = dest.resolve()
     total_unc = 0
+    members = 0
     for info in zf.infolist():
         name = info.filename.replace("\\", "/")
         if info.is_dir() or name.startswith("~$"):
             continue
+        members += 1
+        if members > MAX_ZIP_MEMBERS:
+            raise ValueError(f"ZIP 内成员过多（超过 {MAX_ZIP_MEMBERS} 个）")
         target = (dest / name).resolve()
         if not target.is_relative_to(root):
             raise ValueError(f"ZIP 内含非法路径：{name}")
         total_unc += info.file_size
         if total_unc > MAX_UNZIP_BYTES:
             raise ValueError(f"ZIP 解压后总大小超过 {MAX_UNZIP_BYTES // 1024 // 1024}MB 上限")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(zf.read(info))
-        names.append(Path(name).name)
+        parts: list[str] = []
+        for part in name.split("/"):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                raise ValueError(f"ZIP 内含非法路径：{name}")
+            try:
+                parts.append(_safe_member_segment(part))
+            except ValueError as exc:
+                raise ValueError(f"ZIP 内含非法文件名：{name}") from exc
+        if not parts:
+            continue
+        if Path(parts[-1]).suffix.lower() not in ALLOWED_MEMBER_SUFFIXES:
+            raise ValueError(
+                f"ZIP 内含不支持的文件类型：{name}（仅 {'/'.join(ALLOWED_MEMBER_SUFFIXES)}）"
+            )
+        target = dest.joinpath(*parts)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target = _unique_path(target)
+            target.write_bytes(zf.read(info))
+        except OSError as exc:
+            raise ValueError(f"ZIP 条目无法落盘：{name}（{exc}）") from exc
+        names.append(target.name)
     return names
 
 
 def _save_inputs(run_dir: Path, files: list[tuple[str, bytes]]) -> list[dict]:
+    """上传文件落入 run_dir/input：ZIP 解包、其余原样；返回清单 [{name, size}]。"""
     inbox = run_dir / "input"
     inbox.mkdir(parents=True, exist_ok=True)
     saved: list[dict] = []
     for filename, content in files:
-        safe = Path(filename or "").name
-        if safe in ("", ".", ".."):
-            raise ValueError("非法的文件名")
+        safe = _safe_name(filename)
         suffix = Path(safe).suffix.lower()
         if suffix not in ALLOWED_SUFFIXES:
             raise ValueError(f"不支持的文件类型：{safe}（仅 {'/'.join(ALLOWED_SUFFIXES)}）")
         if len(content) > MAX_UPLOAD_BYTES:
             raise ValueError(f"文件 {safe} 超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 上限")
         if suffix == ".zip":
-            with zipfile.ZipFile(BytesIO(content)) as zf:
-                for name in _safe_extract(zf, inbox):
-                    saved.append({"name": name, "size": 0})
+            try:
+                with zipfile.ZipFile(BytesIO(content)) as zf:
+                    for name in _safe_extract(zf, inbox):
+                        saved.append({"name": name, "size": 0})
+            except zipfile.BadZipFile as exc:
+                raise ValueError(f"ZIP 文件损坏或格式不正确：{safe}") from exc
+            except OSError as exc:
+                raise ValueError(f"ZIP 文件 {safe} 落盘失败：{exc}") from exc
         else:
             dest = inbox / f"{datetime.now():%H%M%S_%f}_{safe}"
-            dest.write_bytes(content)
+            try:
+                dest.write_bytes(content)
+            except OSError as exc:
+                raise ValueError(f"文件 {safe} 落盘失败：{exc}") from exc
             saved.append({"name": safe, "size": len(content)})
     return saved
 
@@ -111,7 +200,13 @@ def create_run(db: Session, files: list[tuple[str, bytes]]) -> dict:
     run_dir = _runs_root() / f"{run.id:06d}_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir.mkdir(parents=True, exist_ok=True)
     run.run_dir = str(run_dir)
-    run.input_files = _save_inputs(run_dir, files)
+    try:
+        run.input_files = _save_inputs(run_dir, files)
+    except Exception:
+        # 校验/落盘失败：回滚未提交的运行记录并清掉半成品目录，避免 400 后留垃圾
+        db.rollback()
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise
     db.commit()
     db.refresh(run)
     return _out(run)

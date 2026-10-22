@@ -3,6 +3,7 @@
 支持Excel财务报表解析、数据映射、验证和模板生成
 """
 import io
+import logging
 import re
 import zipfile
 import xml.etree.ElementTree as ET
@@ -14,6 +15,30 @@ from typing import Any, Dict, List, Optional, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+
+try:
+    # 单次导入行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
+    # 绝不放行无上限导入（与 assistant.py 聊天 Excel 转换同口径）。
+    from ....import_limits import MAX_IMPORT_ROWS
+except ImportError:  # pragma: no cover - 集成共享模块后不存在该分支
+    MAX_IMPORT_ROWS = None
+
+logger = logging.getLogger(__name__)
+
+
+class ImportRowLimitExceeded(ValueError):
+    """导入数据行数超过共享上限 MAX_IMPORT_ROWS：解析阶段即中止，不产出半成品结果。"""
+
+
+def _enforce_row_limit(row_count: int) -> None:
+    """行数防护：超限即抛 ImportRowLimitExceeded（解析阶段中止，无半成品）；
+    共享上限缺失时失败关闭，绝不放行无上限导入（与 assistant.py 同口径）。"""
+    if MAX_IMPORT_ROWS is None:
+        raise ImportRowLimitExceeded("导入行数上限服务暂不可用，请稍后重试")
+    if row_count > MAX_IMPORT_ROWS:
+        raise ImportRowLimitExceeded(
+            f"文件数据行数超过单次导入上限（{MAX_IMPORT_ROWS} 行），请拆分后导入"
+        )
 
 
 # ============================================================
@@ -230,6 +255,8 @@ class FinancialSystemXmlParser:
                     except (ValueError, TypeError):
                         cells[coord] = raw_val
             rows.append(cells)
+            # 流式行数防护：超限即中止，不在内存继续累积全表（可检测溢出，审计台账 A06）
+            _enforce_row_limit(len(rows))
         return rows
 
 
@@ -556,6 +583,9 @@ class StandardTemplateParser:
                 df = pd.read_excel(xls, sheet_name=sheet_name, header=0)
                 if df.shape[1] < 2:
                     continue
+
+                # 行数防护：单 sheet 超限即抛错（可检测溢出，不生成巨型文件，审计台账 A06）
+                _enforce_row_limit(len(df))
 
                 # Normalize column names
                 df.columns = [str(c).strip() for c in df.columns]
@@ -1086,10 +1116,16 @@ class FinancialDataImporter:
         try:
             # Step 1: Try to detect and parse
             parsed_data = self._auto_detect_and_parse(file_path)
-        except Exception as e:
+        except ImportRowLimitExceeded as exc:
+            # 行数超限：明确错误、无半成品数据（解析阶段已中止）
+            result.errors.append(ValidationError(field="file", message=str(exc)))
+            return result
+        except Exception:
+            # 服务器保留完整异常日志；对外只给通用中文提示，不回带本机异常路径（审计台账 A09）
+            logger.exception("财务报表解析失败：%s", file_path)
             result.errors.append(ValidationError(
                 field="file",
-                message=f"文件解析失败：{str(e)}"
+                message="文件解析失败，请检查文件格式或稍后重试"
             ))
             return result
 
@@ -1168,6 +1204,8 @@ class FinancialDataImporter:
                     )
                 if data.get("balance_sheet") or data.get("income_statement") or data.get("cash_flow"):
                     return data
+        except ImportRowLimitExceeded:
+            raise  # 行数超限必须透出，不得被「尝试下一种解析器」吞掉
         except Exception:
             pass
 
@@ -1193,6 +1231,8 @@ class FinancialDataImporter:
                 data["income_statement"] = self.parser.parse_income_statement(rows)
                 data["cash_flow"] = self.parser.parse_cash_flow(rows)
                 data["format"] = ImportFormat.FINANCIAL_SYSTEM_EXPORT.value
+        except ImportRowLimitExceeded:
+            raise  # 行数超限必须透出，不得被「尝试下一种解析器」吞掉
         except Exception:
             pass
 

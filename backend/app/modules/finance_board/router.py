@@ -43,8 +43,17 @@ def snapshot_html(snapshot_id: int, db: Session = Depends(get_db)):
     path = Path(snap.html_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="快照文件缺失，请重新运行管线")
+    # 快照路径必须落在本模块快照根目录内：数据库/管线产物被篡改时不得借该接口
+    # 以 text/html 同源吐出任意本机文件
+    snapshots_root = service._snapshots_dir().resolve()
+    resolved = path.resolve()
+    if not resolved.is_relative_to(snapshots_root):
+        raise HTTPException(status_code=403, detail="快照路径无效")
     return FileResponse(
         str(path),
         media_type="text/html; charset=utf-8",
-        headers={"Content-Security-Policy": "frame-ancestors 'self'"},
+        headers={
+            "Content-Security-Policy": "frame-ancestors 'self'",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
