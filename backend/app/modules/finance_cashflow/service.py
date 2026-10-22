@@ -22,6 +22,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
+from ...utils import resolve_engine_root
 from .models import CashflowRun
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,8 @@ def _safe_member_segment(part: str) -> str:
 def engine_dir() -> Path:
     """V1 引擎目录：配置优先，否则按默认相对位置推导（01-财税自动化 同级）。"""
     if settings.finance_cashflow_engine_path:
-        return Path(settings.finance_cashflow_engine_path)
+        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
+        return resolve_engine_root(settings.finance_cashflow_engine_path)
     base = Path(__file__).resolve()
     for parent in base.parents:
         if parent.name == "01-财税自动化":

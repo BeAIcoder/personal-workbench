@@ -10,6 +10,8 @@
 行数护栏：上传 Excel 先按共享上限 MAX_IMPORT_ROWS 统计各工作表非空行，超限在引擎执行
 与运行记录写库前失败关闭（400），超大文件不进入引擎解析。
 """
+import contextlib
+from contextlib import contextmanager
 import importlib
 import os
 import sys
@@ -23,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from ...config import BASE_DIR, get_finance_data_dir, settings
 from ...database import SessionLocal
+from ...utils import resolve_engine_root
 from .models import ExpenseRow, ExpenseRun
 
 # 单次导入行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
@@ -45,7 +48,7 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 # 银行明细账读取失败提示：行数护栏的 Excel 统计与引擎 read_bank_data 返回 None 共用同一口径
 _BANK_READ_FAIL_DETAIL = (
     "银行明细账读取失败：请确认上传的是银行存款辅助明细账"
-    "（表头在第 11 行，含 科目编码/日期/摘要/贷方本币 等列）"
+    "（需含 科目编码/日期/摘要/贷方本币 等列；表头行已自动定位）"
 )
 
 
@@ -55,6 +58,7 @@ class EngineUnavailableError(RuntimeError):
 
 # 引擎加载缓存：仅缓存成功结果；失败不缓存，下次调用重新探测（目录后补上也无需重启）
 _ENGINE: dict[str, Any] = {"classifier_cls": None, "load_rules": None, "app_config": None, "engine_dir": ""}
+_BANK_HEADER_LOCK = threading.Lock()
 # 引擎加载锁：os.chdir 是进程级状态，并发请求下 chdir+import 临界区必须串行化
 _ENGINE_LOCK = threading.Lock()
 
@@ -162,13 +166,62 @@ def find_engine_dir() -> Path | None:
     """
     configured = (settings.finance_expense_engine_path or "").strip()
     if configured:
-        candidate = Path(configured)
-        return candidate if _is_engine_dir(candidate) else None
+        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
+        candidate = resolve_engine_root(configured)
+        return candidate if candidate and _is_engine_dir(candidate) else None
     for parent in BASE_DIR.parents:
         if parent.name == "01-财税自动化":
             candidate = parent / _ENGINE_RELATIVE
             return candidate if _is_engine_dir(candidate) else None
     return None
+
+
+def _locate_bank_header_row(path: Path) -> int | None:
+    """定位银行明细账表头行（0-based）：前 25 行内找含「科目编码」且带「日期」「摘要」的行。
+
+    用友导出的元数据块行数不固定（本次实测 12 行），引擎的 bank_header_row 是固定
+    配置——由模块侧动态定位后覆盖，兼容不同导出版本（外部验证第 4 章 E1）。
+    """
+    import openpyxl
+
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return None
+    try:
+        for ws in wb.worksheets:
+            for i, row in enumerate(ws.iter_rows(min_row=1, max_row=25, values_only=True)):
+                cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                if "科目编码" in cells and any("日期" in c for c in cells) and any("摘要" in c for c in cells):
+                    return i
+        return None
+    finally:
+        wb.close()
+
+
+@contextmanager
+def _bank_header_override(engine: dict, row: int | None):
+    """read_bank_data 期间把引擎配置的 bank_header_row 覆盖为定位值（用后恢复）。
+
+    引擎 _cfg 在调用时读其配置（app_config 可能是 dict，也可能是引擎的 config
+    模块——FILE_FORMAT_CONFIG 为其中的 dict，直接改其键值即可）；并发分类请求
+    会争用同一份配置，故整段（覆盖+调用）持模块锁串行，恢复保证在 finally。
+    """
+    cfg = engine.get("app_config")
+    if isinstance(cfg, dict):
+        ff = cfg.get("FILE_FORMAT_CONFIG")
+    else:
+        ff = getattr(cfg, "FILE_FORMAT_CONFIG", None)
+    if row is None or not isinstance(ff, dict):
+        yield
+        return
+    original = ff.get("bank_header_row")
+    with _BANK_HEADER_LOCK:
+        ff["bank_header_row"] = row
+        try:
+            yield
+        finally:
+            ff["bank_header_row"] = original
 
 
 def _ensure_engine() -> dict[str, Any]:
@@ -274,8 +327,10 @@ def classify_file(db: Session, original_filename: str, stored_path: Path) -> Exp
     started = time.perf_counter()
     try:
         clf = engine["classifier_cls"]()
-        if clf.read_bank_data(str(stored_path)) is None:
-            raise ValueError(_BANK_READ_FAIL_DETAIL)
+        header_row = _locate_bank_header_row(stored_path)
+        with _bank_header_override(engine, header_row):
+            if clf.read_bank_data(str(stored_path)) is None:
+                raise ValueError(_BANK_READ_FAIL_DETAIL)
         if clf.integrate_data() is None:
             raise ValueError("数据整合失败")
         if clf.clean_data() is None:
