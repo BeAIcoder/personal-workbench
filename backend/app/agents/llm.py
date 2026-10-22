@@ -73,11 +73,23 @@ def _apply_reasoning(parameters_cls, cfg: dict, protocol: str, kwargs: dict) -> 
 def build_model(cfg: dict | None = None):
     """构造 AgentScope 模型实例；配置不完整或 base_url 未通过安全校验时返回 None。
 
-    agentscope 惰性导入；两种协议均带 120 秒显式 SDK 超时（client_kwargs 透传）。
+    agentscope 惰性导入；默认带 120 秒显式 SDK 超时（client_kwargs 透传），
+    cfg 传 client_timeout（秒，数字）可覆盖——连通性/多模态测试路径用 30s；
+    cfg 传 client_max_retries 可覆盖重试次数——测试路径用 0 次（快速失败），
+    聊天路径保留默认 2 次（网络抖动韧性）。
     """
     cfg = cfg or config_store.load()
     if not (cfg.get("api_key") and cfg.get("base_url") and cfg.get("model")):
         return None
+
+    try:
+        timeout = float(cfg.get("client_timeout") or LLM_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        timeout = LLM_TIMEOUT_SECONDS
+    try:
+        max_retries = int(cfg.get("client_max_retries", 2))
+    except (TypeError, ValueError):
+        max_retries = 2
 
     if cfg.get("protocol") == "anthropic":
         from agentscope.credential import AnthropicCredential
@@ -112,10 +124,10 @@ def build_model(cfg: dict | None = None):
             credential=credential,
             model=cfg["model"],
             stream=True,  # anthropic 网关要求流式；Agent 层自动聚合
-            max_retries=2,
+            max_retries=max_retries,
             context_size=cfg.get("context_size") or 200000,
             parameters=parameters,
-            client_kwargs={"timeout": LLM_TIMEOUT_SECONDS},
+            client_kwargs={"timeout": timeout, "max_retries": max_retries},
         )
 
     from agentscope.credential import OpenAICredential
@@ -151,8 +163,8 @@ def build_model(cfg: dict | None = None):
         credential=credential,
         model=cfg["model"],
         stream=False,
-        max_retries=2,
+        max_retries=max_retries,
         context_size=cfg.get("context_size") or 128000,
         parameters=parameters,
-        client_kwargs={"timeout": LLM_TIMEOUT_SECONDS},
+        client_kwargs={"timeout": timeout, "max_retries": max_retries},
     )

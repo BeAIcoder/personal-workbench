@@ -362,7 +362,7 @@ def test_skills_discover_without_saved_dir_prompts_to_save(client, tmp_path):
 # ---------------- 模型测试：密钥不借用 / base_url 校验 / provider_id 保持 ----------------
 
 def test_config_test_custom_masked_key_requires_explicit_new_key(client, monkeypatch):
-    """自定义配置带掩码 key（******** / ••••••后四位）：400 语义内拒绝，不借用激活真实密钥。"""
+    """自定义配置带掩码 key（******** / ••••••后四位）：400 拒绝，不借用激活真实密钥。"""
     pid = _mk_provider(client)
     mid = client.post(f"/api/assistant/providers/{pid}/models", json={"model": "m"}).json()["model"]["id"]
     assert client.post(f"/api/assistant/models/{mid}/activate").status_code == 200
@@ -373,15 +373,14 @@ def test_config_test_custom_masked_key_requires_explicit_new_key(client, monkeyp
             "/api/assistant/config/test",
             json={"config": {"base_url": "http://127.0.0.1:9/v1", "model": "m", "api_key": masked}},
         )
-        assert resp.status_code == 200, masked
-        body = resp.json()
-        assert body["text"]["ok"] is False and "API Key" in body["text"]["error"], masked
+        assert resp.status_code == 400, masked
+        assert "API Key" in resp.json()["detail"], masked
     assert seen == [], "掩码 key 不得触发连通性测试（更不得借用激活真实密钥）"
     assert config_store.current_api_key() == "sk-active-real-0001"
 
 
 def test_config_test_custom_empty_key_requires_explicit_new_key(client, monkeypatch):
-    """自定义配置缺 key：拒绝并要求显式提供；修复前会借用激活真实密钥发起测试。"""
+    """自定义配置缺 key：400 拒绝并要求显式提供；修复前会借用激活真实密钥发起测试。"""
     pid = _mk_provider(client)
     mid = client.post(f"/api/assistant/providers/{pid}/models", json={"model": "m"}).json()["model"]["id"]
     assert client.post(f"/api/assistant/models/{mid}/activate").status_code == 200
@@ -391,9 +390,8 @@ def test_config_test_custom_empty_key_requires_explicit_new_key(client, monkeypa
         "/api/assistant/config/test",
         json={"config": {"base_url": "http://127.0.0.1:9/v1", "model": "m"}},
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["text"]["ok"] is False and "API Key" in body["text"]["error"]
+    assert resp.status_code == 400
+    assert "API Key" in resp.json()["detail"]
     assert seen == [], "空 key 不得借用激活真实密钥"
 
 

@@ -43,6 +43,11 @@ _OUTPUT_PROMPT = "请输出一篇尽可能长的中文散文"
 # 上下文二分查找边界：最小 2000 tokens；上限取模型声明上下文与 100 万的较小值
 _CONTEXT_LO = 2000
 _CONTEXT_HI_CAP = 1000000
+
+# 限流（429）退避重试：厂商 TPM/RPM 窗口通常以分钟计，命中 429 后等待再重试，
+# 避免一次限流就把整个探测判成部分完成（外部验证实测：硅基 TPM 会截断二分与阶梯）。
+_RATE_LIMIT_MAX_RETRIES = 2
+_RATE_LIMIT_WAIT_SECONDS = 30.0
 # 单维探测最多请求次数（防止异常厂商耗光时间）
 _PROBE_MAX_REQUESTS = 6
 # 请求间隔（秒）：避免对厂商造成压力
@@ -133,9 +138,21 @@ def _chat_once(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(url, json=payload, headers=headers)
-    except httpx.HTTPError as exc:
+        retries = 0
+        while True:
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.post(url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:
+                out["error"] = f"{type(exc).__name__}: {exc}"[:200]
+                return out
+            if resp.status_code == 429 and retries < _RATE_LIMIT_MAX_RETRIES:
+                retries += 1
+                logger.info("探测命中限流（429），第 %d/%d 次退避 %.0fs 后重试", retries, _RATE_LIMIT_MAX_RETRIES, _RATE_LIMIT_WAIT_SECONDS)
+                time.sleep(_RATE_LIMIT_WAIT_SECONDS)
+                continue
+            break
+    except Exception as exc:  # 退避 sleep 被打断等异常：就地转 error，不逃逸
         out["error"] = f"{type(exc).__name__}: {exc}"[:200]
         return out
 
