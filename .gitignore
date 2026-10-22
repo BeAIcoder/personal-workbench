@@ -20,12 +20,13 @@ backend/tmp*
 *.db
 *.sqlite
 *.sqlite3
+*.db-journal
 
 # 对话记录（隐私）
 对话记录.md
 
-# 内部开发日志（隐私）
-progress.md
+# 内部开发日志（隐私；锚定根目录，勿误伤 dev/e2e/PROGRESS.md 等子目录报告）
+/progress.md
 
 # 备份
 backups/
@@ -74,8 +75,13 @@ dev/sanitize-map.local.json
 
 # e2e 运行产物（源码脚本入库，产物每次运行重建不入库）
 dev/e2e/probe_results/
-dev/e2e/finance_data_edge/
 dev/e2e/shots/
+# e2e 隔离目录（第一轮 e2e-isolation 新增）：财务数据与调试归档均在 dev/e2e 下各自独立，
+# 每次运行前重置重建；debug_data_ai_verify 为 ai_walkthrough 默认归档目录（二轮新增）
+dev/e2e/finance_data*/
+dev/e2e/debug_data*/
+# 三旧脚本运行互斥锁（OS 级文件锁，进程退出即释放；staging 子目录亦可能落同名锁）
+.e2e-run.lock
 dev/e2e/staging/**/data/
 dev/e2e/staging/**/shots/
 dev/e2e/staging/**/__pycache__/
@@ -86,3 +92,8 @@ dev/dev/
 # 深挖轮中间产物（scratch，保留现场可查但不入库）
 dev/e2e/staging/deep2-20261020/
 *.duckdb
+
+# 第三轮审计/冒烟遗留的未跟踪临时目录（内容未审定，暂不入库；确认无用后可删除）
+backend/teeth_debug/
+backend/xls_smoke__*/
+backend/xls_smoke_*/
