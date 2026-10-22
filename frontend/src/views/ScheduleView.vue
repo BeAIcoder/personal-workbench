@@ -54,7 +54,7 @@
               <el-tag v-if="ev.all_day" size="small" type="info">全天</el-tag>
             </div>
             <div class="event-meta">
-              {{ ev.all_day ? '全天' : fmtDT(ev.start_time) + ' - ' + timeOnly(ev.end_time) }}
+              {{ ev.all_day ? '全天' : formatEventTimeRange(ev.start_time, ev.end_time) }}
               <span v-if="ev.location"> · 📍{{ ev.location }}</span>
             </div>
           </div>
@@ -108,13 +108,42 @@
   </div>
 </template>
 
+<script>
+import dayjs from 'dayjs'
+
+// 跨天日程归日：按「开始日 → 结束日」展开覆盖的每一天，
+// 隔夜日程（23:00 → 次日 01:00）在月历两天都可见（旧代码只按 start_time 归一天）。
+// 结束时间缺失或早于开始时退回只落开始日，避免脏数据把日程铺到错误日期。
+export function scheduleDayKeys(startTime, endTime) {
+  const start = dayjs(startTime)
+  if (!start.isValid()) return []
+  const end = dayjs(endTime)
+  if (!end.isValid() || end.isBefore(start, 'day')) return [start.format('YYYY-MM-DD')]
+  const keys = []
+  for (let d = start; !d.isAfter(end, 'day'); d = d.add(1, 'day')) {
+    keys.push(d.format('YYYY-MM-DD'))
+  }
+  return keys
+}
+
+// 事件时间范围展示：无结束时间只显示开始（不出现悬空「 - 」）；
+// 跨天结束时带上月日，避免「23:00 - 01:00」被误读为时间倒挂。
+export function formatEventTimeRange(startTime, endTime) {
+  const start = dayjs(startTime)
+  if (!start.isValid()) return ''
+  const startText = start.format('YYYY-MM-DD HH:mm')
+  const end = dayjs(endTime)
+  if (!end.isValid() || end.isBefore(start)) return startText
+  if (end.isSame(start, 'day')) return `${startText} - ${end.format('HH:mm')}`
+  return `${startText} - ${end.format('MM-DD HH:mm')}`
+}
+</script>
+
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import dayjs from 'dayjs'
 import { scheduleApi } from '../api'
-import { fmtDT } from '../utils/format'
 import { monthRange } from '../utils/daterange'
 import { matchesScheduleQuery, parseSearchDate } from '../utils/search'
 
@@ -157,9 +186,10 @@ const visibleEvents = computed(() => {
 const eventsByDay = computed(() => {
   const map = {}
   for (const ev of visibleEvents.value) {
-    const key = dayjs(ev.start_time).format('YYYY-MM-DD')
-    if (!map[key]) map[key] = []
-    map[key].push(ev)
+    for (const key of scheduleDayKeys(ev.start_time, ev.end_time)) {
+      if (!map[key]) map[key] = []
+      map[key].push(ev)
+    }
   }
   return map
 })
@@ -277,16 +307,12 @@ async function remove(ev) {
 }
 
 function aiPrepare(ev) {
-  const time = ev.all_day ? '全天' : fmtDT(ev.start_time) + ' - ' + ev.end_time.slice(11, 16)
+  const time = ev.all_day ? '全天' : formatEventTimeRange(ev.start_time, ev.end_time)
   const prompt =
     `请为这个日程做会前准备：给出议程建议、需要准备的物料/资料清单，并整理成一条笔记（标签用「会前准备」）。` +
     `日程：「${ev.title}」，时间 ${time}${ev.location ? '，地点 ' + ev.location : ''}。` +
     (ev.description ? `备注：${ev.description}` : '')
   router.push({ path: '/assistant', query: { auto: prompt } })
-}
-
-function timeOnly(value) {
-  return value ? dayjs(value).format('HH:mm') : ''
 }
 
 function applyRouteQuery() {

@@ -40,7 +40,7 @@
       <el-form label-width="90px">
         <el-form-item label="输入文件">
           <input type="file" multiple accept=".xlsx,.xls,.zip" @change="onFiles" />
-          <div class="hint">SHOP 日对账单（zip/xlsx）+ 认领记录 + 辅助明细账 + 凭证列表；可打 ZIP</div>
+          <div class="hint">SHOP 日对账单（zip/xlsx）+ 认领记录 + 辅助明细账 + 凭证列表；可打 ZIP。单个文件不超过 50MB、全部文件合计不超过 100MB，超限文件会在上传前自动跳过。</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -75,6 +75,12 @@ const STATUS_TYPE = { uploaded: 'info', running: 'warning', ok: 'success', faile
 const statusText = (s) => STATUS_TEXT[s] || s
 const statusType = (s) => STATUS_TYPE[s] || 'info'
 
+// 与后端 service.MAX_UPLOAD_BYTES / MAX_BATCH_BYTES 对齐：上传前本地预检，
+// 超限文件直接跳过并提示，避免必然被后端 400 的无效上传
+const MAX_FILE_BYTES = 50 * 1024 * 1024
+const MAX_TOTAL_BYTES = 100 * 1024 * 1024
+const fmtMB = (bytes) => `${Math.round(bytes / 1024 / 1024)}MB`
+
 async function load() {
   loading.value = true
   try {
@@ -88,7 +94,22 @@ async function load() {
 }
 
 function onFiles(e) {
-  form.files = takeFiles(e)
+  const picked = takeFiles(e)
+  const accepted = []
+  let total = 0
+  for (const f of picked) {
+    if (f.size > MAX_FILE_BYTES) {
+      ElMessage.warning(`已跳过 ${f.name}：单个文件超过 ${fmtMB(MAX_FILE_BYTES)} 上限`)
+      continue
+    }
+    if (total + f.size > MAX_TOTAL_BYTES) {
+      ElMessage.warning(`已跳过 ${f.name}：本次上传合计超过 ${fmtMB(MAX_TOTAL_BYTES)} 上限`)
+      continue
+    }
+    total += f.size
+    accepted.push(f)
+  }
+  form.files = accepted
 }
 
 async function create() {

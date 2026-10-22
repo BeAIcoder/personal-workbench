@@ -30,13 +30,18 @@
         </el-table-column>
         <el-table-column prop="elapsed_sec" label="耗时(秒)" width="100" align="right" />
         <el-table-column prop="created_at" label="创建时间" width="180" />
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="170" fixed="right">
           <template #default="{ row }">
             <el-button size="small" link type="primary" :disabled="row.status !== 'ok'" @click="selected = row.id; loadHtml()">查看</el-button>
+            <el-button v-if="row.log_tail" size="small" link type="warning" @click="showLog(row)">日志</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
+
+    <el-dialog v-model="logDialog" title="运行日志" width="680px">
+      <pre class="log">{{ logContent }}</pre>
+    </el-dialog>
   </div>
 </template>
 
@@ -50,10 +55,19 @@ const loading = ref(false)
 const running = ref(false)
 const items = ref([])
 const selected = ref(null)
+const logDialog = ref(false)
+const logContent = ref('')
 
 const htmlUrl = computed(() => (selected.value ? `/api/finance/board/snapshots/${selected.value}/html` : ''))
 
 function loadHtml() { /* htmlUrl 计算属性自动刷新 iframe */ }
+
+// 失败快照的管线日志（log_tail，后端已按尾部有界截断）；空值给占位文案，
+// <pre> 纯文本插值自动转义，不渲染原始 HTML。
+function showLog(row) {
+  logContent.value = row.log_tail || '暂无日志'
+  logDialog.value = true
+}
 
 async function load() {
   loading.value = true
@@ -99,5 +113,12 @@ onMounted(load)
   height: 1200px;
   border: 1px solid #ebeef5;
   border-radius: 4px;
+}
+
+.log {
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
 }
 </style>

@@ -207,25 +207,35 @@ function abortStream() {
 // 图片缩略图用的 objectURL：移除附件或组件卸载时统一 revoke，避免内存泄漏
 const objectUrls = new Set()
 
+// objectURL 延迟回收：同一地址可能仍被气泡里的 <img> 引用，同步 revoke 会打断加载中的图片（破图）
+const REVOKE_DELAY_MS = 5000
+const revokeTimers = new Set()
+
 function createPreviewUrl(file) {
   const url = URL.createObjectURL(file)
   objectUrls.add(url)
   return url
 }
 
+function scheduleRevokeUrl(url) {
+  const timer = setTimeout(() => {
+    revokeTimers.delete(timer)
+    if (!objectUrls.has(url)) return
+    URL.revokeObjectURL(url)
+    objectUrls.delete(url)
+  }, REVOKE_DELAY_MS)
+  revokeTimers.add(timer)
+}
+
 function revokePreviewUrl(url) {
   if (!url || !objectUrls.has(url)) return
-  URL.revokeObjectURL(url)
-  objectUrls.delete(url)
+  scheduleRevokeUrl(url)
 }
 
 // 回收缩略图 objectURL；exceptUrls 中的地址保留（待发送附件的 previewUrl 是唯一显示源，不能连带回收）
 function releaseAllPreviewUrls(exceptUrls = []) {
   const { revoke } = splitPreviewUrls([...objectUrls], exceptUrls)
-  for (const url of revoke) {
-    URL.revokeObjectURL(url)
-    objectUrls.delete(url)
-  }
+  for (const url of revoke) scheduleRevokeUrl(url)
 }
 
 onBeforeUnmount(() => {
@@ -290,7 +300,8 @@ async function loadHistory(sid) {
     }))
     scrollBottom()
   } catch {
-    /* 忽略 */
+    // 历史加载失败：给明确反馈，不再静默忽略（否则切换会话后只剩空白）
+    ElMessage.error('历史消息加载失败，请检查后端服务后重试')
   }
 }
 
@@ -302,14 +313,19 @@ function clearMessages() {
 
 async function send(text) {
   const content = (text || draft.value).trim()
-  if (loading.value) return
+  if (loading.value) {
+    // 生成中再按 Enter / 点发送：明确提示，不静默吞掉
+    ElMessage.warning('正在生成回复，请等待当前回复结束后再发送')
+    return
+  }
   if (!canSend(content, attachments.value)) {
     // 空文本+附件：后端不支持只发附件，给明确提示而不是静默吞掉
     const hint = sendBlockHint(content, attachments.value)
     if (hint) ElMessage.warning(hint)
     return
   }
-  draft.value = ''
+  // 只有发送草稿本身才清空输入框；建议/auto 等显式文本发送不冲掉用户正在输入的内容
+  if (!text) draft.value = ''
   const sid = ensureSession()
   messages.value.push({ role: 'user', content, time: nowTime() })
 
@@ -411,8 +427,12 @@ async function send(text) {
       // 主动打断（切换/删除会话、发新消息、卸载），不算错误
       aiMsg.content = aiMsg.content || '（已停止生成）'
     } else {
-      aiMsg.error = true
-      aiMsg.content = aiMsg.content || err?.message || '请求失败，请确认后端服务正在运行。'
+      // 真失败：恢复草稿与待发附件（沿用原 previewUrl，不重复创建 objectURL），
+      // 并回滚这对乐观气泡，让输入区回到发送前状态可直接重试；失败原因走 toast。
+      // 请求期间用户新输入的草稿不能丢：与失败原文合并保留（原文在前），新附件同理保留
+      draft.value = draft.value ? content + '\n' + draft.value : content
+      if (atts.length) attachments.value.unshift(...atts)
+      messages.value = messages.value.filter((m) => m !== userMsg && m !== aiMsg)
       ElMessage.error(err?.message || '请求失败，请确认后端服务正在运行。')
     }
   } finally {

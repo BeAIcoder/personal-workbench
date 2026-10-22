@@ -81,6 +81,12 @@ export const STATIC_MENU_GROUPS = [
 
 // 渲染在静态分组之后的尾部一级菜单（定时任务保持原位）
 export const TAIL_MENUS = [{ path: '/jobs', title: '定时任务', icon: 'Timer' }]
+
+// Ctrl/Cmd+K 唤起全局搜索的判定：e.key 在部分输入法/合成态下可能缺失，
+// 不能直接 toLowerCase（旧代码遇缺 key 事件会抛 TypeError）
+export function isSearchHotkey(e) {
+  return !!(e && (e.ctrlKey || e.metaKey) && e.key?.toLowerCase() === 'k')
+}
 </script>
 
 <script setup>
@@ -114,7 +120,7 @@ const menuGroups = computed(() => {
 })
 
 function onKeydown(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+  if (isSearchHotkey(e)) {
     e.preventDefault()
     searchRef.value?.focus()
   }

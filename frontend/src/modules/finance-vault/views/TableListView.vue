@@ -17,7 +17,7 @@
         <el-table-column prop="updated_at" label="更新时间" width="170" />
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" link type="primary" @click="preview(row)">预览</el-button>
+            <el-button size="small" link type="primary" :loading="previewing" @click="preview(row)">预览</el-button>
             <el-button size="small" link type="primary" @click="useInQuery(row.table)">查询</el-button>
           </template>
         </el-table-column>
@@ -31,8 +31,8 @@
         </el-form-item>
         <el-form-item label="模式">
           <el-radio-group v-model="form.mode">
-            <el-radio value="replace">整表重建</el-radio>
             <el-radio value="append">追加</el-radio>
+            <el-radio value="replace">整表重建</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="文件">
@@ -56,7 +56,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import { takeFile } from '../../_shared/fileInput'
 import { toTableRows } from '../tableRows'
@@ -67,7 +67,8 @@ const items = ref([])
 
 const uploadDialog = ref(false)
 const submitting = ref(false)
-const form = reactive({ table: '', mode: 'replace', file: null })
+// 默认追加：整表重建会清空仓里已有的同名表，必须是用户的显式选择
+const form = reactive({ table: '', mode: 'append', file: null })
 
 const canSubmit = computed(() => form.table.trim() && form.file)
 
@@ -88,9 +89,17 @@ function onFile(e) {
 }
 
 async function submitUpload() {
-  if (!canSubmit.value) return
+  if (!canSubmit.value || submitting.value) return
   submitting.value = true
   try {
+    // 整表重建且仓里已有同名表时必须明确确认：取消则直接返回，不发上传请求
+    if (form.mode === 'replace' && items.value.some((t) => t.table === form.table.trim())) {
+      await ElMessageBox.confirm(
+        `表「${form.table.trim()}」已存在，整表重建将覆盖现有数据，确定继续吗？`,
+        '覆盖确认',
+        { type: 'warning' },
+      )
+    }
     const fd = new FormData()
     fd.append('file', form.file)
     const { data } = await api.post(
@@ -102,6 +111,9 @@ async function submitUpload() {
     uploadDialog.value = false
     form.table = ''
     form.file = null
+    // 模式随表单一并复位：否则下次打开弹窗仍预选破坏性 replace，
+    // 「整表重建必须是显式选择」的默认值只在组件生命周期内第一次生效
+    form.mode = 'append'
     await load()
   } catch {
     /* 拦截器已统一提示 */
@@ -112,19 +124,27 @@ async function submitUpload() {
 
 const previewDialog = ref(false)
 const previewData = reactive({ table: '', columns: [], rows: [] })
+const previewing = ref(false)
+// 预览请求序号：连点两行时丢弃慢的旧响应，避免对话框展示用户最后没有选择的数据集
+let previewSeq = 0
 
 // 预览行按列序扁平化为安全键：列名含点号时 el-table 的 prop 会被当作深层路径
 const previewRows = computed(() => toTableRows(previewData.columns, previewData.rows))
 
 async function preview(row) {
+  const seq = ++previewSeq
+  previewing.value = true
   try {
     const { data } = await api.get(`/finance/vault/tables/${encodeURIComponent(row.table)}/preview`)
+    if (seq !== previewSeq) return
     previewData.table = data.table
     previewData.columns = data.columns
     previewData.rows = data.rows
     previewDialog.value = true
   } catch {
     /* 拦截器已统一提示 */
+  } finally {
+    if (seq === previewSeq) previewing.value = false
   }
 }
 

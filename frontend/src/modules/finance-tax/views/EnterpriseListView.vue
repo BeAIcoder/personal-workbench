@@ -5,6 +5,14 @@
         <div class="card-head">
           <span>企业列表</span>
           <div>
+            <el-button
+              v-for="entry in taxPageEntries"
+              :key="entry.name"
+              size="small"
+              @click="$router.push({ name: entry.name })"
+            >
+              {{ entry.title }}
+            </el-button>
             <el-button size="small" @click="$router.push({ name: 'finance-tax-import' })">财报导入</el-button>
             <el-button size="small" type="primary" @click="$router.push({ name: 'finance-tax-enterprise-new' })">新建企业</el-button>
           </div>
@@ -38,6 +46,16 @@
   </div>
 </template>
 
+<script>
+// 税务统计/政策/教材页已有路由但侧栏不可见，在企业列表页提供可见入口（审计 F04）。
+// 入口按路由 name 跳转；name 由模块 manifest 注册，测试校验均指向已注册路由。
+export const TAX_PAGE_ENTRIES = [
+  { name: 'finance-tax-statistics', title: '统计分析' },
+  { name: 'finance-tax-policies', title: '政策管理' },
+  { name: 'finance-tax-textbook', title: '教材参考' },
+]
+</script>
+
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -47,6 +65,7 @@ import api from '../../../api'
 const router = useRouter()
 const loading = ref(false)
 const items = ref([])
+const taxPageEntries = TAX_PAGE_ENTRIES
 
 async function load() {
   loading.value = true

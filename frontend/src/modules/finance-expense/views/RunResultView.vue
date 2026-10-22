@@ -29,7 +29,7 @@
         </el-descriptions>
       </el-card>
 
-      <el-card v-if="detail.stats.length" shadow="never" class="block">
+      <el-card v-if="detail.stats?.length" shadow="never" class="block">
         <template #header>
           <span>分类金额占比（贷方本币合计 {{ totalAmount }} 元）</span>
         </template>
@@ -39,7 +39,7 @@
       <el-card shadow="never" class="block">
         <template #header>
           <div class="card-head">
-            <span>分类明细（{{ filteredRows.length }} / {{ detail.rows.length }} 行）</span>
+            <span>分类明细（{{ filteredRows.length }} / {{ detail.rows?.length || 0 }} 行）</span>
             <el-switch v-model="onlyUnmatched" active-text="只看未命中" />
           </div>
         </template>
@@ -47,7 +47,7 @@
           <el-table-column prop="row_no" label="行号" width="70" />
           <el-table-column prop="summary" label="摘要" min-width="260" show-overflow-tooltip />
           <el-table-column label="金额(元)" width="120" align="right">
-            <template #default="{ row }">{{ row.amount.toFixed(2) }}</template>
+            <template #default="{ row }">{{ fmtMoney(row.amount) }}</template>
           </el-table-column>
           <el-table-column label="命中分类" width="160">
             <template #default="{ row }">
@@ -67,6 +67,14 @@ import { useRoute } from 'vue-router'
 import api, { API_BASE } from '../../../api'
 import BaseChart from '../../../components/BaseChart.vue'
 
+// 金额统一安全格式化：后端字段可能为 null/undefined（未回填、导入失败行），
+// 直接 toFixed 会抛错导致整页渲染崩溃，统一显示「—」占位
+function fmtMoney(v) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toFixed(2) : '—'
+}
+
 const route = useRoute()
 const runId = route.params.id
 
@@ -77,8 +85,8 @@ const onlyUnmatched = ref(false)
 
 const filteredRows = computed(() => {
   if (!detail.value) return []
-  if (!onlyUnmatched.value) return detail.value.rows
-  return detail.value.rows.filter((r) => !r.hit)
+  if (!onlyUnmatched.value) return detail.value.rows || []
+  return (detail.value.rows || []).filter((r) => !r.hit)
 })
 
 const hitRate = computed(() => {
@@ -89,7 +97,7 @@ const hitRate = computed(() => {
 
 const totalAmount = computed(() => {
   if (!detail.value) return '0.00'
-  return detail.value.stats.reduce((sum, s) => sum + s.amount, 0).toFixed(2)
+  return (detail.value.stats || []).reduce((sum, s) => sum + (Number(s.amount) || 0), 0).toFixed(2)
 })
 
 const pieOption = computed(() => ({

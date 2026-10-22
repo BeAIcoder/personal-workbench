@@ -47,6 +47,14 @@ import { LocaleModule, PaginationModule } from 'ag-grid-community'
 import api from '../../../api'
 import { buildMonthOptions } from '../../_shared/dates'
 
+// 金额统一安全格式化：后端字段可能为 null/undefined（未回填、导入失败行），
+// 直接 toFixed 会抛错导致整页渲染崩溃，统一显示「—」占位
+function fmtMoney(v) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toFixed(2) : '—'
+}
+
 const loading = ref(false)
 const items = ref([])
 const total = ref(0)
@@ -74,7 +82,7 @@ const columnDefs = [
     headerName: '金额',
     width: 120,
     type: 'rightAligned',
-    valueFormatter: (p) => Number(p.value).toFixed(2),
+    valueFormatter: (p) => fmtMoney(p.value),
   },
   { field: 'note', headerName: '备注', minWidth: 160, flex: 1 },
 ]
@@ -83,12 +91,16 @@ const localeText = { noRowsToShow: '暂无流水', page: '页', of: '/', to: '�
 const getRowId = (p) => String(p.data.id)
 
 async function load() {
-  const [acc, cat] = await Promise.all([
-    api.get('/finance/ledger/personal/accounts'),
-    api.get('/finance/ledger/personal/categories'),
-  ])
-  accounts.value = acc.data
-  categories.value = cat.data
+  try {
+    const [acc, cat] = await Promise.all([
+      api.get('/finance/ledger/personal/accounts'),
+      api.get('/finance/ledger/personal/categories'),
+    ])
+    accounts.value = acc.data ?? []
+    categories.value = cat.data ?? []
+  } catch {
+    /* 拦截器已统一提示；筛选下拉留空即可，不阻塞 onMounted 继续加载流水 */
+  }
 }
 
 async function reload(page = 1) {
@@ -100,8 +112,8 @@ async function reload(page = 1) {
     if (filters.category_id) params.category_id = filters.category_id
     if (filters.keyword) params.keyword = filters.keyword
     const { data } = await api.get('/finance/ledger/personal/transactions', { params })
-    items.value = data.items
-    total.value = data.total
+    items.value = data.items ?? []
+    total.value = data.total ?? 0
   } catch {
     /* 拦截器已统一提示 */
   } finally {

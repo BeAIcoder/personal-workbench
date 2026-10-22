@@ -136,6 +136,10 @@ const drawerVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref(null)
 
+// 请求序号：连续打开不同运行的详情抽屉时丢弃过期响应，
+// 避免慢旧的详情覆盖新详情、旧请求的失败关掉用户新打开的抽屉
+let detailSeq = 0
+
 function kindLabel(kind) {
   return { recon: '页面侦察', interactions: '交互测试', edge: '边界测试' }[kind] || kind
 }
@@ -167,16 +171,19 @@ async function load() {
 }
 
 async function openDetail(row) {
+  const seq = ++detailSeq
   drawerVisible.value = true
   detailLoading.value = true
   detail.value = null
   try {
     const { data } = await debugApi.runs.get(row.id)
+    if (seq !== detailSeq) return  // 已有更新的请求发出，丢弃旧结果
     detail.value = data
   } catch {
+    if (seq !== detailSeq) return  // 过期请求的失败不关新抽屉
     drawerVisible.value = false
   } finally {
-    detailLoading.value = false
+    if (seq === detailSeq) detailLoading.value = false
   }
 }
 
