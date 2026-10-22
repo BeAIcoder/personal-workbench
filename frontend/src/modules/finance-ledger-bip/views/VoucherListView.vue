@@ -4,6 +4,14 @@
       <template #header>
         <div class="card-head">
           <span>凭证查询</span>
+          <el-button
+            v-for="entry in bipPageEntries"
+            :key="entry.name"
+            size="small"
+            @click="$router.push({ name: entry.name })"
+          >
+            {{ entry.title }}
+          </el-button>
           <el-button size="small" @click="$router.push({ name: 'finance-ledger-bip' })">去导入</el-button>
         </div>
       </template>
@@ -74,6 +82,12 @@
   </div>
 </template>
 
+<script>
+// 科目汇总页已有路由但侧栏不可见，在凭证查询页提供可见入口（审计 F04）。
+// 入口按路由 name 跳转；name 由模块 manifest 注册，测试校验均指向已注册路由。
+export const BIP_PAGE_ENTRIES = [{ name: 'finance-ledger-bip-summary', title: '科目汇总' }]
+</script>
+
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -86,11 +100,18 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 const filters = reactive({ period: '', ledger: '', voucher_no: '', keyword: '' })
+const bipPageEntries = BIP_PAGE_ENTRIES
 
 const detailVisible = ref(false)
 const detail = reactive({ voucher_no: '', entries: [] })
 
+// 请求序号：连续打开不同凭证的分录抽屉时丢弃过期响应，避免旧详情覆盖新详情
+let detailSeq = 0
+// 列表请求序号：快速翻页/筛选时丢弃慢的旧页，避免旧数据覆盖新页
+let loadSeq = 0
+
 async function reload() {
+  const seq = ++loadSeq
   loading.value = true
   try {
     const params = { page: page.value, page_size: pageSize }
@@ -98,12 +119,14 @@ async function reload() {
       if (filters[k]) params[k] = filters[k]
     }
     const { data } = await api.get('/finance/ledger/bip/vouchers', { params })
+    if (seq !== loadSeq) return
     items.value = data.items
     total.value = data.total
   } catch {
+    if (seq !== loadSeq) return
     items.value = []
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -112,8 +135,10 @@ function search() {
 }
 
 async function showDetail(id) {
+  const seq = ++detailSeq
   try {
     const { data } = await api.get(`/finance/ledger/bip/vouchers/${id}`)
+    if (seq !== detailSeq) return  // 已有更新的请求发出，丢弃旧结果
     Object.assign(detail, data)
     detailVisible.value = true
   } catch {

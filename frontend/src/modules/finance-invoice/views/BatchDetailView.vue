@@ -1,5 +1,6 @@
 <template>
   <div class="page" v-loading="loading">
+    <template v-if="!failed">
     <el-card shadow="never">
       <template #header>
         <div class="card-head">
@@ -22,7 +23,7 @@
         <el-descriptions-item label="重复">{{ batch.duplicate_count }}</el-descriptions-item>
         <el-descriptions-item label="红冲已配对">{{ batch.red_matched_count }}</el-descriptions-item>
         <el-descriptions-item label="红冲未配对">{{ batch.red_unmatched_count }}</el-descriptions-item>
-        <el-descriptions-item label="金额合计">{{ batch.total_amount?.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</el-descriptions-item>
+        <el-descriptions-item label="金额合计">{{ fmtAmount(batch.total_amount) }}</el-descriptions-item>
         <el-descriptions-item label="错误">{{ batch.error || '—' }}</el-descriptions-item>
       </el-descriptions>
     </el-card>
@@ -64,6 +65,8 @@
         </el-table-column>
       </el-table>
     </el-card>
+    </template>
+    <el-result v-else icon="error" title="批次不存在或加载失败" sub-title="请返回批次列表查看最新批次" />
   </div>
 </template>
 
@@ -77,8 +80,17 @@ import { isRedInvoice } from '../itemDisplay'
 const route = useRoute()
 const loading = ref(false)
 const exporting = ref(false)
+const failed = ref(false)
 const keyword = ref('')
 const batch = ref({ items: [] })
+
+// 金额合计可能为 null（解析未完成/失败批次）：直接 toLocaleString 会得到空白，
+// 统一用「—」占位；合法值保持既有千分位 + 两位小数口径
+function fmtAmount(v) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—'
+}
 
 const STATUS_TEXT = { uploaded: '待解析', parsed: '已解析', exported: '已导出', failed: '失败' }
 const STATUS_TYPE = { uploaded: 'info', parsed: 'success', exported: 'primary', failed: 'danger' }
@@ -96,11 +108,13 @@ const filteredItems = computed(() => {
 
 async function load() {
   loading.value = true
+  failed.value = false
   try {
     const { data } = await api.get(`/finance/invoice/batches/${route.params.id}`)
     batch.value = data
   } catch {
-    /* 拦截器已统一提示 */
+    // 加载失败：切到错误态，不再渲染详情壳（否则标题显示「批次详情 #undefined」）
+    failed.value = true
   } finally {
     loading.value = false
   }

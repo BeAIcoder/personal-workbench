@@ -44,7 +44,8 @@
                   <span v-if="m.probed_at" class="probe-at" :title="`探测时间：${m.probed_at}`">探测于 {{ probeAtShort(m.probed_at) }}</span>
                   <div class="spacer"></div>
                   <el-button size="small" link type="primary" @click="openModelForm(p, m)">编辑</el-button>
-                  <el-icon class="pill-x" @click="removeModel(p, m)"><Close /></el-icon>
+                  <el-icon v-if="removingModelId === m.id" class="pill-x is-loading" title="删除中"><Loading /></el-icon>
+                  <el-icon v-else class="pill-x" title="删除模型" @click="removeModel(p, m)"><Close /></el-icon>
                 </div>
                 <div class="model-row-ops">
                   <span class="ops-label">能力探测</span>
@@ -377,7 +378,7 @@ export function probeAllSummary(data) {
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Close, Plus } from '@element-plus/icons-vue'
+import { Close, Loading, Plus } from '@element-plus/icons-vue'
 import { assistantApi, modelProbeApi, providerPresetsApi } from '../../api'
 import AgentTeamPanel from './AgentTeamPanel.vue'
 
@@ -434,42 +435,82 @@ const skillsNames = ref([])
 const discoveringPlugins = ref(false)
 const pluginsFound = ref(null)
 
+// 目录检测前置：后端只探测已保存目录。输入框路径与已保存配置不一致时，
+// 弹确认「先保存再检测」；用户取消则放弃检测（不发任何请求），
+// 保存成功才继续检测；保存失败（拦截器已提示）同样不再检测。
+async function ensureDirSaved(dir, savedDir, label) {
+  if (dir === String(savedDir || '').trim()) return true
+  try {
+    await ElMessageBox.confirm(
+      `${label}尚未保存，检测仅对已保存的目录生效。是否先保存工作参数再检测？`,
+      '需要先保存',
+      { type: 'warning', confirmButtonText: '保存并检测', cancelButtonText: '取消' },
+    )
+  } catch {
+    return false  // 用户取消：不保存、不检测
+  }
+  savingCfg.value = true
+  try {
+    await assistantApi.config.saveGlobals({ ...globalsForm })
+    ElMessage.success('工作参数已保存并生效')
+    emit('refresh')
+    return true
+  } catch {
+    return false
+  } finally {
+    savingCfg.value = false
+  }
+}
+
 async function discoverSkillsCount() {
-  if (!globalsForm.skills_dir.trim()) {
+  const dir = globalsForm.skills_dir.trim()
+  if (!dir) {
     ElMessage.warning('请先填写技能池目录')
     return
   }
+  if (discoveringSkills.value) return  // 忙态防连点
   discoveringSkills.value = true
   try {
-    const { data } = await assistantApi.config.discoverSkills(globalsForm.skills_dir.trim())
+    if (!(await ensureDirSaved(dir, props.teamConfig?.skills_dir, '技能池目录'))) return
+    const { data } = await assistantApi.config.discoverSkills(dir)
     skillsFound.value = data.count
     skillsNames.value = (data.names || []).slice(0, 8)
+  } catch {
+    /* 拦截器已提示后端 detail；失败不清空上次检测结果 */
   } finally {
     discoveringSkills.value = false
   }
 }
 
 async function discoverPluginsCount() {
-  if (!globalsForm.plugins_dir.trim()) {
+  const dir = globalsForm.plugins_dir.trim()
+  if (!dir) {
     ElMessage.warning('请先填写插件目录')
     return
   }
+  if (discoveringPlugins.value) return  // 忙态防连点
   discoveringPlugins.value = true
   try {
-    const { data } = await assistantApi.config.discoverPlugins(globalsForm.plugins_dir.trim())
+    if (!(await ensureDirSaved(dir, props.teamConfig?.plugins_dir, '插件目录'))) return
+    const { data } = await assistantApi.config.discoverPlugins(dir)
     pluginsFound.value = data
+  } catch {
+    /* 拦截器已提示后端 detail；失败不清空上次检测结果 */
   } finally {
     discoveringPlugins.value = false
   }
 }
 
 async function saveGlobals() {
+  if (savingCfg.value) return  // 忙态防连点
   savingCfg.value = true
   try {
     await assistantApi.config.saveGlobals({ ...globalsForm })
     ElMessage.success('工作参数已保存并生效')
     emit('refresh')
     emit('update:visible', false)
+  } catch {
+    /* 拦截器已提示后端 detail；保存失败不关闭抽屉、不伪成功 */
   } finally {
     savingCfg.value = false
   }
@@ -580,6 +621,7 @@ async function runProbeAll(m) {
 const probingProviderId = ref(null)
 
 async function runProbeAllModels(p) {
+  if (probingProviderId.value) return  // 忙态防连点
   const targets = (p.models || []).filter((m) => m.enabled !== false)
   if (!targets.length) {
     ElMessage.warning(`供应商「${p.name}」下没有启用中的模型`)
@@ -606,6 +648,10 @@ async function runProbeAllModels(p) {
         failed.push(m.model)  // 单个模型失败不中断其余（拦截器已提示后端 detail）
       }
     }
+  } catch {
+    // 兜底：循环体意外异常（如探测响应结构异常）不伪成功，锁由 finally 复位
+    ElMessage.error('批量探测意外中断，请重试')
+    return
   } finally {
     probingId.value = null
     probingProviderId.value = null
@@ -697,6 +743,7 @@ function applyPresetFill(name) {
 }
 
 async function saveProvider() {
+  if (provDialog.saving) return  // 忙态防连点
   if (!provDialog.name.trim()) {
     ElMessage.warning('请填写供应商名称')
     return
@@ -728,6 +775,8 @@ async function saveProvider() {
     emit('refresh')
     provDialog.visible = false
     ElMessage.success('供应商已保存')
+  } catch {
+    /* 拦截器已提示后端 detail；保存失败不关对话框、不伪成功 */
   } finally {
     provDialog.saving = false
   }
@@ -804,6 +853,7 @@ function openModelForm(p, m) {
 }
 
 async function saveModel() {
+  if (modelDialog.saving) return  // 忙态防连点
   if (!modelDialog.model.trim()) {
     ElMessage.warning('请填写模型名')
     return
@@ -829,21 +879,38 @@ async function saveModel() {
     emit('refresh')
     modelDialog.visible = false
     ElMessage.success('模型已保存')
+  } catch {
+    /* 拦截器已提示后端 detail；保存失败不关对话框、不伪成功 */
   } finally {
     modelDialog.saving = false
   }
 }
 
+// 删除模型：破坏性操作，先弹可取消确认（取消 = 零请求）；
+// 忙态在确认前生效，连点不会重复占锁/重复删除
+const removingModelId = ref(null)
+
 async function removeModel(p, m) {
+  if (removingModelId.value) return  // 忙态防连点
+  removingModelId.value = m.id
+  try {
+    await ElMessageBox.confirm(`确定删除模型「${m.model}」吗？删除后可在供应商「${p.name}」下重新添加。`, '删除确认', { type: 'warning' })
+  } catch {
+    removingModelId.value = null
+    return  // 用户取消：零请求、零刷新
+  }
   try {
     await assistantApi.providers.removeModel(p.id, m.id)
   } catch {
-    /* 拦截器已提示 */
+    /* 拦截器已提示后端 detail */
+  } finally {
+    removingModelId.value = null
   }
-  emit('refresh')  // 失败也要刷新，拿到后端真实的模型列表
+  emit('refresh')  // 与既有口径一致：失败也刷新，拉取后端真实模型列表
 }
 
 async function testProvider(p, kind) {
+  if (testingProvId.value) return  // 忙态防连点
   const key = p.id + ':' + kind
   testingProvId.value = key
   try {
@@ -866,6 +933,8 @@ async function testProvider(p, kind) {
       else lines.push(img.ok ? `图片识别 ✅ ${img.latency_ms}ms · 识别：${img.reply}` : `图片识别 ❌ ${img.error || '模型不支持或无法识别'}`)
     }
     provTestResult.value[p.id] = { ok: lines.every((l) => l.includes('✅')), lines }
+  } catch {
+    /* 拦截器已提示后端 detail；失败不写检测结果 */
   } finally {
     testingProvId.value = null
   }
@@ -986,6 +1055,11 @@ async function testProvider(p, kind) {
 
 .pill-x:hover {
   color: #f56c6c;
+}
+
+.pill-x.is-loading {
+  color: #409eff;
+  cursor: default;
 }
 
 .prov-ops {

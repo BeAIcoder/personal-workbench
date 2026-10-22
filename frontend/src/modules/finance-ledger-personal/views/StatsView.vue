@@ -20,7 +20,7 @@
       <el-table :data="expenseStats" size="small" empty-text="当月无支出">
         <el-table-column prop="name" label="分类" min-width="140" />
         <el-table-column label="金额" width="140" align="right">
-          <template #default="{ row }">{{ row.amount.toFixed(2) }}</template>
+          <template #default="{ row }">{{ fmtMoney(row.amount) }}</template>
         </el-table-column>
         <el-table-column label="占比" width="140" align="right">
           <template #default="{ row }">{{ formatPercent(row.percent) }}%</template>
@@ -32,9 +32,9 @@
         </el-table-column>
       </el-table>
       <div class="summary">
-        收入 <b class="income">{{ stats.income?.toFixed(2) }}</b> ｜
-        支出 <b class="expense">{{ stats.expense?.toFixed(2) }}</b> ｜
-        结余 <b>{{ stats.balance?.toFixed(2) }}</b>
+        收入 <b class="income">{{ fmtMoney(stats.income) }}</b> ｜
+        支出 <b class="expense">{{ fmtMoney(stats.expense) }}</b> ｜
+        结余 <b>{{ fmtMoney(stats.balance) }}</b>
       </div>
     </el-card>
   </div>
@@ -46,6 +46,14 @@ import * as echarts from 'echarts'
 import api from '../../../api'
 import { localMonth } from '../../_shared/dates'
 import { expenseCategories, formatPercent } from '../utils'
+
+// 金额统一安全格式化：后端字段可能为 null/undefined（未回填、导入失败行），
+// 直接 toFixed 会抛错导致整页渲染崩溃，统一显示「—」占位
+function fmtMoney(v) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toFixed(2) : '—'
+}
 
 const loading = ref(false)
 const months = ref(6)

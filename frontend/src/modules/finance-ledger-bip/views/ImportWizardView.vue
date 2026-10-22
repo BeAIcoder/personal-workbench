@@ -103,6 +103,8 @@ const loading = ref(false)
 const submitting = ref(false)
 const step = ref(0)
 const preview = ref(null)
+// 文件预览序号：连选两个文件时，慢的旧文件不得覆盖用户最后一次选择
+let previewSeq = 0
 const confirmResult = ref(null)
 const batches = ref([])
 
@@ -126,6 +128,7 @@ async function onFile(e) {
   const file = takeFile(e)
   if (!file) return
   form.file = file
+  const seq = ++previewSeq
   loading.value = true
   try {
     const fd = new FormData()
@@ -133,6 +136,7 @@ async function onFile(e) {
     const { data } = await api.post('/finance/ledger/bip/imports/preview', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
+    if (seq !== previewSeq) return
     preview.value = data
     form.file_type = data.file_type === 'unknown' ? '' : data.file_type
     form.mapping = { ...(data.mapping || {}) }
@@ -141,7 +145,7 @@ async function onFile(e) {
   } catch {
     /* 拦截器已统一提示 */
   } finally {
-    loading.value = false
+    if (seq === previewSeq) loading.value = false
   }
 }
 

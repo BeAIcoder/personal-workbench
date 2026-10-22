@@ -246,22 +246,25 @@ async function complete(row) {
 }
 
 async function remove(row) {
-  try {
-    await ElMessageBox.confirm(`确定删除任务「${row.title}」吗？删除后不可恢复。`, '删除确认', { type: 'warning' })
-  } catch {
-    return  // 用户取消
-  }
+  // 先判忙再确认：确认框弹出期间忙态尚未上锁，连点会绕过守卫把同一行删两次
   if (rowBusy) return
   rowBusy = true
   try {
-    await taskApi.remove(row.id)
-  } catch {
-    return  // 删除失败：行仍在列表里（拦截器已提示）
+    try {
+      await ElMessageBox.confirm(`确定删除任务「${row.title}」吗？删除后不可恢复。`, '删除确认', { type: 'warning' })
+    } catch {
+      return  // 用户取消
+    }
+    try {
+      await taskApi.remove(row.id)
+    } catch {
+      return  // 删除失败：行仍在列表里（拦截器已提示）
+    }
+    ElMessage.success('已删除')
+    load()
   } finally {
     rowBusy = false
   }
-  ElMessage.success('已删除')
-  load()
 }
 
 function aiAnalyze(row) {

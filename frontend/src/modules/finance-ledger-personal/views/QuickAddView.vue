@@ -55,7 +55,7 @@
         <el-table-column label="金额" width="120" align="right">
           <template #default="{ row }">
             <span :class="row.kind === 'income' ? 'income' : 'expense'">
-              {{ row.kind === 'income' ? '+' : '-' }}{{ row.amount?.toFixed(2) }}
+              {{ row.kind === 'income' ? '+' : '-' }}{{ fmtMoney(row.amount) }}
             </span>
           </template>
         </el-table-column>
@@ -67,7 +67,7 @@
       <h4>账户</h4>
       <div v-for="a in accounts" :key="a.id" class="manage-row">
         <span>{{ a.name }}</span>
-        <el-button size="small" link type="danger" @click="deleteAccount(a)">删除</el-button>
+        <el-button size="small" link type="danger" :loading="deleting" @click="deleteAccount(a)">删除</el-button>
       </div>
       <el-input v-model="newAccount" placeholder="新账户名" size="small" style="width: 200px; margin-top: 8px">
         <template #append><el-button size="small" @click="addAccount">添加</el-button></template>
@@ -76,7 +76,7 @@
       <div v-for="c in categories" :key="c.id" class="manage-row">
         <el-tag :type="c.kind === 'income' ? 'success' : 'info'" size="small">{{ c.kind === 'income' ? '收' : '支' }}</el-tag>
         <span style="flex: 1">{{ c.parent_id ? '　└ ' : '' }}{{ c.name }}</span>
-        <el-button size="small" link type="danger" @click="deleteCategory(c)">删除</el-button>
+        <el-button size="small" link type="danger" :loading="deleting" @click="deleteCategory(c)">删除</el-button>
       </div>
       <div class="add-category">
         <el-select v-model="newCategory.kind" size="small" style="width: 88px">
@@ -92,13 +92,14 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import { localMonth, localToday } from '../../_shared/dates'
 import { categoryMatchesKind } from '../utils'
 
 const loading = ref(false)
 const submitting = ref(false)
+const deleting = ref(false)
 const accounts = ref([])
 const categories = ref([])
 const todayItems = ref([])
@@ -152,6 +153,8 @@ async function submit() {
     ElMessage.warning('请填写金额、账户和分类')
     return
   }
+  // 重入守卫：在途提交不重复记账（校验分支提前返回，不会误锁）
+  if (submitting.value) return
   submitting.value = true
   try {
     await api.post('/finance/ledger/personal/transactions', {
@@ -185,12 +188,26 @@ async function addAccount() {
   }
 }
 
+// 金额统一安全格式化：后端字段可能为 null/undefined（未回填、导入失败行），
+// 直接 toFixed 会抛错导致整页渲染崩溃，统一显示「—」占位
+function fmtMoney(v) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toFixed(2) : '—'
+}
+
 async function deleteAccount(a) {
+  // 判忙锁先于确认框：连点删除只开一个确认框，也不会并发发多个删除请求
+  if (deleting.value) return
+  deleting.value = true
   try {
+    await ElMessageBox.confirm(`确定删除账户「${a.name}」吗？删除后不可恢复。`, '删除确认', { type: 'warning' })
     await api.delete(`/finance/ledger/personal/accounts/${a.id}`)
     await load()
   } catch {
-    /* 拦截器已统一提示 */
+    /* 用户取消或请求失败（拦截器已统一提示） */
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -207,11 +224,16 @@ async function addCategory() {
 }
 
 async function deleteCategory(c) {
+  if (deleting.value) return
+  deleting.value = true
   try {
+    await ElMessageBox.confirm(`确定删除分类「${c.name}」吗？删除后不可恢复。`, '删除确认', { type: 'warning' })
     await api.delete(`/finance/ledger/personal/categories/${c.id}`)
     await load()
   } catch {
-    /* 拦截器已统一提示 */
+    /* 用户取消或请求失败（拦截器已统一提示） */
+  } finally {
+    deleting.value = false
   }
 }
 

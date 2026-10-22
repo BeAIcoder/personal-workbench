@@ -54,7 +54,7 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { assistantApi } from '../api'
@@ -243,18 +243,37 @@ function openSettings(tab = 'providers') {
 
 // ---------------- 初始化 ----------------
 let lastAutoPrompt = ''
+let pendingAuto = ''
 
 async function tryAutoRun() {
   const auto = route.query.auto
-  if (!auto || chatRef.value?.loading) return
+  if (!auto) {
+    pendingAuto = ''  // URL 上的指令被清掉时，放弃保留
+    return
+  }
   const prompt = String(auto)
   if (prompt === lastAutoPrompt) return  // 防同一条指令重复执行（刷新/回退）
+  if (chatRef.value?.loading) {
+    // 流式生成中：不静默丢弃——给明确提示，并保留指令到生成结束后自动重试
+    if (pendingAuto !== prompt) {
+      pendingAuto = prompt
+      const short = prompt.length > 20 ? prompt.slice(0, 20) + '…' : prompt
+      ElMessage.warning(`正在生成回复，指令「${short}」已保留，将在当前回复结束后自动执行`)
+    }
+    return
+  }
   lastAutoPrompt = prompt
-  // 清掉 URL 上的 auto 参数，避免刷新页面重复发送
-  router.replace({ path: '/assistant' })
-  await nextTick()
+  pendingAuto = ''
+  // 先真正发出、再清 URL：两步之间无异步窗口，不会出现「URL 已清、指令尚未发出就被
+  // loading 守卫吞掉且无人补跑」的静默丢失；发送进入后 URL 已清，刷新也不会重复发送
   chatRef.value?.send(prompt)
+  router.replace({ path: '/assistant' })
 }
+
+// 当前回复结束（loading → false）后，补跑保留的 auto 指令
+watch(() => chatRef.value?.loading, (v) => {
+  if (v === false && pendingAuto) tryAutoRun()
+})
 
 watch(() => route.query.auto, () => tryAutoRun())
 

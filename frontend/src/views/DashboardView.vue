@@ -101,6 +101,9 @@
             <span class="mini-title">{{ s.title }}</span>
             <span class="mini-time">{{ s.all_day ? '全天' : fmtTime(s.start_time) }}</span>
           </div>
+          <div v-if="data?.schedule?.today_schedules_truncated" class="mini-more">
+            今日日程较多，仅显示前 {{ data.schedule.today_count }} 条（共 {{ data.schedule.today_schedule_total }} 条），点「查看全部」看完整列表。
+          </div>
         </el-card>
       </el-col>
 
@@ -341,6 +344,13 @@ function aiBrief() {
   color: #909399;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.mini-more {
+  margin-top: 8px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .bar {

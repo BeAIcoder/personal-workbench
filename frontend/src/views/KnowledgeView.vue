@@ -95,11 +95,14 @@ async function doSearch() {
 }
 
 async function doRebuild() {
+  if (rebuilding.value) return  // 忙态防连点
   rebuilding.value = true
   try {
     await api.post('/knowledge/rag/rebuild')
     ElMessage.success('索引已重建')
     await loadStats()
+  } catch {
+    /* 拦截器已提示后端 detail；重建失败不提示成功、不刷新统计 */
   } finally {
     rebuilding.value = false
   }

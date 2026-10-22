@@ -108,6 +108,8 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 10
 const loadingRuns = ref(false)
+// 运行列表请求序号：快速翻页时丢弃慢的旧页，避免旧运行覆盖新页
+let loadSeq = 0
 
 function onFileChange(uploadFile) {
   selectedFile.value = uploadFile.raw
@@ -129,15 +131,18 @@ async function loadRules() {
 }
 
 async function loadRuns() {
+  const seq = ++loadSeq
   loadingRuns.value = true
   try {
     const { data } = await api.get('/finance/expense/runs', { params: { page: page.value, page_size: pageSize } })
+    if (seq !== loadSeq) return
     runs.value = data.items
     total.value = data.total
   } catch {
+    if (seq !== loadSeq) return
     runs.value = []
   } finally {
-    loadingRuns.value = false
+    if (seq === loadSeq) loadingRuns.value = false
   }
 }
 

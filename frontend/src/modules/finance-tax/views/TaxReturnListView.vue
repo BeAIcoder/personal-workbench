@@ -4,6 +4,14 @@
       <template #header>
         <div class="card-head">
           <span>申报记录</span>
+          <el-button
+            v-for="entry in taxPageEntries"
+            :key="entry.name"
+            size="small"
+            @click="$router.push({ name: entry.name })"
+          >
+            {{ entry.title }}
+          </el-button>
           <el-select v-model="enterpriseId" placeholder="全部企业" size="small" clearable style="width: 220px" @change="reload">
             <el-option v-for="e in enterprises" :key="e.id" :label="e.name" :value="e.id" />
           </el-select>
@@ -46,6 +54,12 @@
   </div>
 </template>
 
+<script>
+// 统计分析页已有路由但侧栏不可见，在申报记录页提供可见入口（审计 F04）。
+// 入口按路由 name 跳转；name 由模块 manifest 注册，测试校验均指向已注册路由。
+export const TAX_PAGE_ENTRIES = [{ name: 'finance-tax-statistics', title: '统计分析' }]
+</script>
+
 <script setup>
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -55,6 +69,7 @@ const loading = ref(false)
 const items = ref([])
 const enterprises = ref([])
 const enterpriseId = ref(undefined)
+const taxPageEntries = TAX_PAGE_ENTRIES
 
 const enterpriseName = (id) => enterprises.value.find((e) => e.id === id)?.name || `#${id}`
 
