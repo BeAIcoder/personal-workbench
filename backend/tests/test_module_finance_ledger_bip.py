@@ -530,3 +530,65 @@ def test_locate_header_row_two_level_header():
             ["", "", "", "方向", "本币金额", "借方本币", "贷方本币", "借方本币", "贷方本币", "方向", "本币金额"]]
     raw = pd.DataFrame(meta)
     assert svc._locate_header_row(raw) == 15  # 0-based：第 16 行主表头
+
+
+# ---------- 真实用友凭证列表格式（外部验证第 3 章 B1 缺口修复回归） ----------
+
+def test_detect_file_type_real_voucher_and_aux_shapes():
+    """真实用友导出形状：凭证列表（科目列+分录摘要+制单人，无账簿列）→ voucher；
+    辅助明细账（对方科目列）→ aux。修复前凭证列表落入 aux。"""
+    real_voucher_cols = ["期间", "凭证日期", "凭证号", "分录摘要", "科目", "辅助核算", "币种",
+                         "借方金额", "贷方金额", "制单人", "审批人", "记账人", "凭证状态"]
+    real_aux_cols = ["科目编码", "科目名称", "日期", "核算账簿", "凭证号", "摘要",
+                     "对方科目编码", "对方科目名称", "借方本币", "贷方本币", "方向", "本币余额"]
+    assert svc.detect_file_type(real_voucher_cols) == "voucher"
+    assert svc.detect_file_type(real_aux_cols) == "aux"
+    # 无对方科目也无分录摘要/制单人的旧形状仍保守判 aux
+    assert svc.detect_file_type(["科目编码", "日期", "凭证号", "借方本币"]) == "aux"
+
+
+def test_import_real_voucher_multisheet_sheet_name_as_ledger(client, bip_dir, tmp_path):
+    """端到端：真实凭证列表格式（多 sheet 按账簿分、无核算账簿列、续行不重复凭证号）
+    预览识别 voucher 且账簿映射取 sheet 名（合成列），确认入库后续行进组、sheet 名落账。"""
+    import openpyxl
+    header = ["期间", "凭证日期", "凭证号", "分录摘要", "科目", "借方金额", "贷方金额", "制单人"]
+    sheets = {
+        "脱敏单位A": [
+            header,
+            ["2026-01", "2026-01-05", "记-1", "支付办公用品", "1001 库存现金", 100.0, None, "员工001"],
+            ["", "", "", "支付办公用品", "6601 销售费用", None, 100.0, ""],  # 续行：凭证号空
+        ],
+        "脱敏单位B": [
+            header,
+            ["2026-01", "2026-01-06", "记-1", "收到服务费", "1002 银行存款", 200.0, None, "员工002"],
+            ["", "", "", "收到服务费", "6001 主营业务收入", None, 200.0, ""],
+        ],
+    }
+    wb = openpyxl.Workbook()
+    for name, rows in sheets.items():
+        ws = wb.create_sheet(name)
+        for r in rows:
+            ws.append(r)
+    wb.remove(wb.active)
+    path = tmp_path / "real-vouchers.xlsx"
+    wb.save(path)
+
+    prev = _preview(client, path).json()
+    assert prev["file_type"] == "voucher", prev
+    assert prev["mapping"]["ledger"] == svc.SHEET_LEDGER_COL
+    assert prev["row_count"] == 4  # 两个 sheet 各 2 行（含续行）
+
+    resp = _confirm(client, prev["token"])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["inserted_vouchers"] == 2  # 两账簿各 1 张（凭证号同名但账簿不同不去重）
+    assert body["inserted_entries"] == 4   # 续行分录计入
+    assert body["skipped_rows"] == 0
+
+    vs = client.get("/api/finance/ledger/bip/vouchers", params={"size": 50}).json()
+    ledgers = sorted(v["ledger"] for v in vs["items"])
+    assert ledgers == ["脱敏单位A", "脱敏单位B"]
+    # 重复导入：相同（账簿+凭证号）跳过
+    prev2 = _preview(client, path).json()
+    body2 = _confirm(client, prev2["token"]).json()
+    assert body2["inserted_vouchers"] == 0 and body2["skipped_vouchers"] == 2

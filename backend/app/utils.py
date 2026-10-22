@@ -1,4 +1,5 @@
 """通用工具函数。"""
+from __future__ import annotations
 import json
 from datetime import date, datetime, time
 from typing import Annotated
@@ -49,3 +50,24 @@ def tag_like_pattern(tag: str) -> str:
     """
     encoded = json.dumps(tag, ensure_ascii=False)
     return f"%{escape_like(encoded)}%"
+
+
+def resolve_engine_root(configured: str | None):
+    """引擎/数据源路径解析：**接受目录或单一文件**（外部验证第 4 章需求）。
+
+    - 配置为空 → None（调用方走默认推导）；
+    - 已配置且是目录 → 原样返回；
+    - 已配置且是文件 → 返回其父目录（用户直指引擎入口文件/脚本时，
+      引擎根取其所在目录，各模块再按自身必需文件校验）；
+    - 已配置但路径不存在 → 原样返回（交由调用方校验并给出中文不可用提示，
+      不在这里静默改判，避免掩盖配置错误）。
+    """
+    from pathlib import Path as _Path
+
+    raw = (configured or "").strip()
+    if not raw:
+        return None
+    p = _Path(raw)
+    if p.is_file():
+        return p.parent
+    return p

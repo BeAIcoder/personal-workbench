@@ -19,6 +19,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
+from ...utils import resolve_engine_root
 from ...database import SessionLocal
 from .models import BoardSnapshot
 
@@ -47,7 +48,8 @@ class PipelineBusyError(RuntimeError):
 def pipeline_dir() -> Path:
     """微信报表监控项目目录：配置优先，否则按AssetLib默认相对位置推导。"""
     if settings.finance_board_pipeline_path:
-        return Path(settings.finance_board_pipeline_path)
+        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
+        return resolve_engine_root(settings.finance_board_pipeline_path)
     # backend/app/modules/finance_board/service.py → AssetLib/01-财税自动化/微信报表监控
     base = Path(__file__).resolve()
     for parent in base.parents:

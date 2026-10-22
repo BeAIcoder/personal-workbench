@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ...config import settings
+from ...utils import resolve_engine_root
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,8 @@ def default_engine_root() -> Path:
 def engine_root() -> Path:
     """引擎根目录：配置优先，空则默认推导。"""
     raw = (settings.finance_invoice_engine_path or "").strip()
-    return Path(raw) if raw else default_engine_root()
+    # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
+    return resolve_engine_root(raw) if raw else default_engine_root()
 
 
 def _load(root: Path) -> EngineHandle:

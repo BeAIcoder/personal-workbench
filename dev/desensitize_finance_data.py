@@ -351,25 +351,28 @@ PERSON_STOPLIST = {"保证金", "税率", "到内部", "收到", "关于", "内�
 
 
 def collect_person_names(files: dict[str, Path]) -> set[str]:
-    """人员名全集：(a) 凭证列表制单/审批/记账人列；(b) 各文件摘要列上下文正则候选（去停用词）。"""
+    """人员名全集：(a) 凭证列表制单/审批/记账人列（如有）；(b) 摘要列上下文候选（去停用词）。"""
     persons: set[str] = set()
     # (a) 人员列
-    wb = openpyxl.load_workbook(files["vouchers"], data_only=True)
-    for ws in wb.worksheets:
-        rows = list(ws.iter_rows(values_only=True))
-        header = rows[1]
-        col = {n: i for i, n in enumerate(header) if isinstance(n, str)}
-        for i in (col.get("制单人"), col.get("审批人"), col.get("记账人")):
-            if i is None:
-                continue
-            for r in rows[2:]:
-                v = r[i] if i < len(r) else None
-                if isinstance(v, str) and v.strip():
-                    persons.add(v.strip())
-    wb.close()
+    if "vouchers" in files:
+        wb = openpyxl.load_workbook(files["vouchers"], data_only=True)
+        for ws in wb.worksheets:
+            rows = list(ws.iter_rows(values_only=True))
+            header = rows[1]
+            col = {n: i for i, n in enumerate(header) if isinstance(n, str)}
+            for i in (col.get("制单人"), col.get("审批人"), col.get("记账人")):
+                if i is None:
+                    continue
+                for r in rows[2:]:
+                    v = r[i] if i < len(r) else None
+                    if isinstance(v, str) and v.strip():
+                        persons.add(v.strip())
+        wb.close()
     # (b) 摘要列上下文候选
-    pat = re.compile(r"(?:人力资源部|行政部|财务部|调整|收到)([\u4e00-\u9fa5]{2,4})(?:关于|固定|的|，|,|$)")
+    pat = re.compile(r"(?:人力资源部|行政部|财务部|调整|收到)([一-龥]{2,4})(?:关于|固定|的|，|,|$)")
     for kind in ("vouchers", "aux"):
+        if kind not in files:
+            continue
         wb = openpyxl.load_workbook(files[kind], data_only=True)
         for ws in wb.worksheets:
             rows = list(ws.iter_rows(values_only=True))
@@ -553,6 +556,23 @@ def run_cash():
     return {"files": n}
 
 
+def run_expense():
+    """费用分类样本：银行辅助明细账（1002 过滤导出）脱敏。
+    与 BIP 辅助明细账同格式（元数据块+表头+数据），复用 aux 脱敏逻辑（余额链保持）。"""
+    att = _find_attachments()
+    OUT_DIR.mkdir(exist_ok=True)
+    fname = next(f for f in os.listdir(att) if "1002辅助明细账" in f and f.endswith(".xlsx"))
+    m = re.match(r"^f_[0-9a-fA-F-]+-(.+)$", fname)
+    orig_name = m.group(1) if m else fname
+    ledger_map: dict[str, str] = {}
+    persons = collect_person_names({"aux": att / fname})
+    name_map = {p: f"员工{n:03d}" for n, p in enumerate(sorted(persons), 1)}
+    stats = desensitize_aux_ledger(att / fname, OUT_DIR / f"脱敏数据{orig_name}", ledger_map, name_map)
+    print(f"  ✓ 脱敏数据{orig_name}  ({stats})")
+    print(f"账簿映射：{ledger_map}")
+    return stats
+
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "bip"
     if mode == "bip":
@@ -561,5 +581,7 @@ if __name__ == "__main__":
         run_pos()
     elif mode == "cash":
         run_cash()
+    elif mode == "exp":
+        run_expense()
     else:
         raise SystemExit(__doc__)

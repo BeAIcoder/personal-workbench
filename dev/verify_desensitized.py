@@ -75,7 +75,16 @@ def check_vouchers():
 
 
 def check_aux_ledger():
-    f = next(OUT.glob("脱敏数据*辅助明细账*.xlsx"))
+    aux_files = sorted(OUT.glob("脱敏数据*辅助明细账*.xlsx"))
+    assert aux_files, "未找到辅助明细账脱敏文件"
+    total_bad = 0
+    for f in aux_files:
+        total_bad += _check_one_aux(f)
+    print(f"V2 明细账余额链：{len(aux_files)} 个文件，断链 {total_bad} 处")
+    return total_bad == 0
+
+
+def _check_one_aux(f):
     wb = openpyxl.load_workbook(f, data_only=True)
     ws = wb.worksheets[0]
     rows = [list(r) for r in ws.iter_rows(values_only=True)]
@@ -101,8 +110,8 @@ def check_aux_ledger():
             if bad <= 3:
                 fails.append(f"V2 余额链断裂 {key} r: {r[i_bal]}/{r[i_dir]} vs 计算 {bal}")
     wb.close()
-    print(f"V2 明细账余额链：{len(chains)} 条链，断链 {bad} 处")
-    return bad == 0
+    print(f"  {f.name}: {len(chains)} 条链，断链 {bad} 处")
+    return bad
 
 
 def check_balance(pattern):
@@ -165,18 +174,25 @@ def check_sensitive():
 
 def check_originals():
     manifest = ROOT / "dev" / "verify-original-manifest.sha256"
-    lines = []
-    for f in sorted(ATTACH.glob("*.xlsx")):
-        lines.append(f"{sha256(f)}  {f.name}\n")
+    current = {f.name: sha256(f) for f in sorted(ATTACH.glob("*.xlsx"))}
     if manifest.exists():
-        old = manifest.read_text(encoding="utf-8")
-        same = old == "".join(lines)
-        print(f"V5 原始附件未改动：{'是' if same else '否（清单已刷新）'}")
-        if not same:
-            fails.append("V5 原始附件校验和变化！")
-        return same
-    manifest.write_text("".join(lines), encoding="utf-8")
-    print(f"V5 原始附件清单已记录（{len(lines)} 个）")
+        old = {}
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                h, n = line.split("  ", 1)
+                old[n] = h
+        # 子集校验：此前记录的原始文件必须一个未变（新增附件不视为改动）
+        changed = [n for n, h in old.items() if current.get(n) != h]
+        added = [n for n in current if n not in old]
+        if not changed:
+            manifest.write_text("".join(f"{h}  {n}\n" for n, h in current.items()), encoding="utf-8")
+        print(f"V5 原始附件未改动：{'是' if not changed else '否'}"
+              + (f"（新增 {len(added)} 个附件已入清单）" if added else ""))
+        for n in changed[:3]:
+            fails.append(f"V5 原始附件校验和变化：{n}")
+        return not changed
+    manifest.write_text("".join(f"{h}  {n}\n" for n, h in current.items()), encoding="utf-8")
+    print(f"V5 原始附件清单已记录（{len(current)} 个）")
     return True
 
 

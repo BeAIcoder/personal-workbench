@@ -255,15 +255,13 @@ def _locate_header_row(raw: pd.DataFrame) -> int:
     return best
 
 
-def read_bip_excel(path: Path) -> pd.DataFrame:
-    """读取 BIP 导出 Excel：自动定位表头行、归一化/去重列名、剔除全空行与空名列。
+# 多 sheet 上传（用友凭证列表按账簿分 sheet）时，以 sheet 名合成的账簿列名；
+# 用英文名避免命中表头关键词（_locate_header_row 评分），也不与真实列名冲突。
+SHEET_LEDGER_COL = "__sheet_ledger__"
 
-    行数防护：解析完成后按共享上限 MAX_IMPORT_ROWS 检查，超限抛
-    BipRowLimitExceeded（ValueError 子类，预览/确认入口映射 400），
-    避免超大表无界进入内存后续的入库流程。
-    """
-    engine = "xlrd" if path.suffix.lower() == ".xls" else "openpyxl"
-    raw = pd.read_excel(path, header=None, dtype=object, engine=engine)
+
+def _read_one_sheet(raw: pd.DataFrame) -> pd.DataFrame:
+    """单 sheet：定位表头行 → 归一化列名 → 剔空行空列 → 返回数据框。"""
     if raw.empty:
         return pd.DataFrame()
     hdr = _locate_header_row(raw)
@@ -271,7 +269,42 @@ def read_bip_excel(path: Path) -> pd.DataFrame:
     df.columns = _uniquify([_norm_col(c) for c in raw.iloc[hdr].tolist()])
     df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
     keep = [c for c in df.columns if c and c.lower() != "nan" and not c.lower().startswith("unnamed")]
-    df = df[keep].reset_index(drop=True)
+    return df[keep].reset_index(drop=True)
+
+
+def read_bip_excel(path: Path) -> pd.DataFrame:
+    """读取 BIP 导出 Excel：自动定位表头行、归一化/去重列名、剔除全空行与空名列。
+
+    多 sheet 文件（用友凭证列表按账簿分 sheet，无核算账簿列）：逐 sheet 定位表头后
+    合并，并追加 SHEET_LEDGER_COL 列承载 sheet 名（= 核算账簿），供无账簿列的
+    凭证列表入库（外部验证第 3 章 B1 缺口修复）。
+
+    行数防护：解析完成后按共享上限 MAX_IMPORT_ROWS 检查（合并后总行数），
+    超限抛 BipRowLimitExceeded（ValueError 子类，预览/确认入口映射 400），
+    避免超大表无界进入内存后续的入库流程。
+    """
+    engine = "xlrd" if path.suffix.lower() == ".xls" else "openpyxl"
+    sheets = pd.read_excel(path, sheet_name=None, header=None, dtype=object, engine=engine)
+    if not sheets:
+        return pd.DataFrame()
+    frames: list[pd.DataFrame] = []
+    multi = len(sheets) > 1
+    for name, raw in sheets.items():
+        df = _read_one_sheet(raw)
+        if df.empty:
+            continue
+        if multi:
+            df[SHEET_LEDGER_COL] = str(name)
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    if len(frames) == 1:
+        df = frames[0]
+    else:
+        df = pd.concat(frames, ignore_index=True, sort=False)
+        if SHEET_LEDGER_COL in df.columns:  # 合成账簿列移到末尾，避免 NaN 列插在中间
+            cols = [c for c in df.columns if c != SHEET_LEDGER_COL] + [SHEET_LEDGER_COL]
+            df = df[cols]
     if MAX_IMPORT_ROWS is None:
         raise BipRowLimitExceeded("导入行数上限服务暂不可用，请稍后重试")
     if len(df) > MAX_IMPORT_ROWS:
@@ -283,9 +316,11 @@ def read_bip_excel(path: Path) -> pd.DataFrame:
 
 def detect_file_type(columns: list[str]) -> str:
     """按列签名识别文件类型（列签名为 BIP 实测契约）：
-    - aux：有科目列且有日期+凭证号 → 辅助明细账；
-    - voucher：有日期+凭证号+账簿（无科目列）→ 凭证列表；
-    - balance：有科目列但无日期/凭证号，且出现期初/本期/期末 → 科目余额表；
+    - aux：有科目列 + 日期 + 凭证号；判别特征为「对方科目」列（辅助明细账独有）；
+    - voucher：日期 + 凭证号，且带「分录摘要/凭证摘要」或制单/审批/记账人列
+      （凭证列表独有——用友凭证列表导出按账簿分 sheet，没有核算账簿列，
+      旧契约要求账簿列导致真实导出落入 aux，见外部验证第 3 章 B1）；
+    - balance：有科目列但无日期/凭证号，且出现期初/本期/期末；
     - 其余 → unknown（进入人工列映射）。
     """
     cols = list(columns)
@@ -294,10 +329,18 @@ def detect_file_type(columns: list[str]) -> str:
     has_vno = "凭证号" in cols
     has_ledger = any("账簿" in c for c in cols)
     has_period_words = any(("期初" in c or "期末" in c or "本期" in c) for c in cols)
-    if has_subject and has_date and has_vno:
-        return TYPE_AUX
-    if has_date and has_vno and has_ledger:
-        return TYPE_VOUCHER
+    has_counter = any("对方科目" in c for c in cols)  # 辅助明细账独有
+    has_entry_summary = any(c in ("分录摘要", "凭证摘要") for c in cols)  # 凭证列表独有
+    has_maker = any(c in ("制单人", "审批人", "记账人") for c in cols)  # 凭证列表独有
+    if has_date and has_vno:
+        if has_entry_summary or has_maker:
+            return TYPE_VOUCHER  # 分录摘要/制单人是凭证列表独有列（最可靠判别）
+        if has_counter:
+            return TYPE_AUX  # 对方科目是辅助明细账独有列
+        if has_subject:
+            return TYPE_AUX  # 保守回退：旧契约形状（科目+日期+凭证号）
+        if has_ledger:
+            return TYPE_VOUCHER  # 旧契约凭证列表形状（账簿列+无科目列）
     if has_subject and not has_date and not has_vno and has_period_words:
         return TYPE_BALANCE
     return TYPE_UNKNOWN
@@ -338,6 +381,9 @@ def suggest_mapping(file_type: str, columns: list[str]) -> dict[str, str]:
     if file_type in (TYPE_VOUCHER, TYPE_AUX):
         put("date", _match_col(cols, exact=("日期", "凭证日期", "制单日期"), all_of=("日期",)))
         put("ledger", _match_col(cols, exact=("核算账簿", "账簿"), all_of=("账簿",)))
+        if file_type == TYPE_VOUCHER and "ledger" not in m and SHEET_LEDGER_COL in cols:
+            # 用友凭证列表按账簿分 sheet、无核算账簿列：账簿取 sheet 名（合成列）
+            m["ledger"] = SHEET_LEDGER_COL
         put("voucher_no", _match_col(cols, exact=("凭证号",), all_of=("凭证号",), exclude=("会计",)))
         put("voucher_full_no", _match_col(cols, exact=("会计凭证号", "凭证编号"), all_of=("会计", "凭证")))
         put("summary", _match_col(cols, exact=("摘要",), all_of=("摘要",)))
@@ -489,6 +535,14 @@ def _import_voucher_like(
     debit_c, credit_c = mapping.get("debit"), mapping.get("credit")
     full_c = mapping.get("voucher_full_no")
     scode_c, sname_c = mapping.get("subject_code"), mapping.get("subject_name")
+
+    if file_type == TYPE_VOUCHER:
+        # 用友凭证列表的续行不重复凭证日期/凭证号（仅首行填写）：按账簿分组前向填充，
+        # 否则续行分录会被当作无效行跳过（外部验证第 3 章 B1 缺口修复的一部分）
+        df = df.copy()
+        df[[date_c, vno_c]] = df.groupby(ledger_c, dropna=False)[[date_c, vno_c]].ffill()
+        if full_c:
+            df[full_c] = df.groupby(ledger_c, dropna=False)[full_c].ffill()
 
     existing = {(l, n) for l, n in db.query(BipVoucher.ledger, BipVoucher.voucher_no).all()}
     groups: dict[tuple[str, str], dict[str, Any]] = {}

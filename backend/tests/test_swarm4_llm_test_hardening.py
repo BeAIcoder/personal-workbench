@@ -176,3 +176,22 @@ def test_chat_once_rate_limit_exhausted_returns_error(monkeypatch):
     # 首次 + 2 次重试 = 3 次，仍 429 → error 字段，绝不抛异常
     assert len(calls) == 3
     assert out["ok"] is False and out["status_code"] == 429 and out["error"]
+
+
+# ---------- 引擎/数据路径：目录或单一文件（外部验证第 4 章需求） ----------
+
+def test_resolve_engine_root_accepts_dir_or_file(tmp_path):
+    from app.utils import resolve_engine_root
+
+    d = tmp_path / "engine"
+    d.mkdir()
+    f = d / "entry.py"
+    f.write_text("# entry", encoding="utf-8")
+
+    assert resolve_engine_root("") is None
+    assert resolve_engine_root(None) is None
+    assert resolve_engine_root(str(d)) == d            # 目录原样返回
+    assert resolve_engine_root(str(f)) == d            # 单一文件 → 父目录
+    assert resolve_engine_root("  " + str(d) + "  ") == d  # 首尾空白归一
+    missing = tmp_path / "nope"
+    assert resolve_engine_root(str(missing)) == missing  # 不存在 → 原样返回，交由调用方校验

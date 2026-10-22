@@ -13,7 +13,8 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **第 0 章 通用前置 G1–G9**：✅ 完成。代码冻结基线 `6f64572`；`backend/data` 备份在 `backups/verify-20261022-pre/`（115 文件 + sha256，恢复演练通过）；验证期间真实数据零写入（每章结束字节级复核）。
 - **第 1 章 真实付费 LLM**：✅ 基本完成（硅基 SiliconFlow，Key 经界面录入）。L1–L7、L10、L12–L14 通过；**L8/L9 部分完成**（DeepSeek context 完整 126032；GLM/Qwen 被硅基 TPM 429 截断；output 探测三模型未建立——DeepSeek 生成 1024 tokens >30s）。记录的问题（错误中文化、30s 超时、400 守卫、停止按钮、429 重试）已全部修复并线上复测。
 - **第 2 章 真实 MCP**：✅ 完成（M1–M9 全过）。真实 server 用本机 kimi-datasource 插件（`node plugins/managed/kimi-datasource/bin/kimi-datasource.mjs`）；只读判定以 annotations.readOnlyHint 为唯一依据。
-- **第 3 章 用友 BIP**：✅ 10/11 完成。修 B2 表头定位（窗口 25 行 + 关键词类别数评分）；aux/balance 识别入库去重汇总入仓全过；**凭证列表格式缺口已记录（P1）**——真实导出（科目列/无账簿列/多 sheet）误判 aux，待修检测签名与多 sheet 入库。脱敏数据在 `脱敏数据/`（生成器 `dev/desensitize_finance_data.py`，校验器 `dev/verify_desensitized.py`）。
+- **第 3 章 用友 BIP**：✅ 11/11 完成（凭证缺口 2026-10-23 修复：检测签名「分录摘要/制单人→voucher、对方科目→aux」+ 多 sheet 以 sheet 名为账簿 + 续行 ffill；原稿 13001 行全导入）。脱敏数据在 `脱敏数据/`（生成器 `dev/desensitize_finance_data.py`，校验器 `dev/verify_desensitized.py`）。
+- **第 4 章 外部财务引擎/管线**：🔜 费用分类主链已过（669 行/657 命中，与引擎独立运行对拍一致）；发票 ZIP 批次冒烟通过；POS/现金流/报表看板待逐管线对拍。引擎路径支持**目录或单一文件**（`utils.resolve_engine_root`，文件取父目录）。
 - **第 4 章 外部财务引擎/管线**：🔜 数据就绪（POS 8 日包 + 现金流 5 文件已脱敏）；费用分类/发票真实样本待用户提供；引擎本机已定位 5 个。第 5 章微信报表监控、第 6 章真人可用性随后。
 - 证据归档：`backend/.pytest_tmp/verify-20261022-{general,llm,mcp,bip}/`（result.json + report.md + 日志）。
 
