@@ -2,6 +2,8 @@
 
 首次请求时确保种子问题已写入（ensure_seed_issues 幂等，同时挂在 main.py lifespan）。
 """
+import json
+
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
@@ -9,6 +11,10 @@ from . import service
 from .schemas import IssueCreate, IssueUpdate
 
 router = APIRouter(tags=["调试中心"])
+
+# client-errors 上报体的局部上限（审计 A05）：全局 ASGI 限额之外的端点级护栏，
+# 超出即 400；解析保持宽容——非法 JSON 一律归一记录，绝不 500
+CLIENT_ERROR_MAX_BODY_BYTES = 1 * 1024 * 1024
 
 
 # ---------- 问题记录 ----------
@@ -93,11 +99,24 @@ def list_client_errors(limit: int = Query(200, ge=1, le=1000)):
     return {"total": len(items), "items": items}
 
 
-@router.post("/client-errors", status_code=status.HTTP_201_CREATED, summary="追加一条前端报错（宽容解析）")
+@router.post("/client-errors", status_code=status.HTTP_201_CREATED, summary="追加一条前端报错（有界宽容解析）")
 async def append_client_error(request: Request):
+    buf = bytearray()
     try:
-        payload = await request.json()
-    except Exception:  # noqa: BLE001  报错采集绝不能 500：非法 body 也归一记录
+        async for chunk in request.stream():
+            buf.extend(chunk)
+            if len(buf) > CLIENT_ERROR_MAX_BODY_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"请求体超过 {CLIENT_ERROR_MAX_BODY_BYTES} 字节上限",
+                )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001  读取失败（如连接中断）也归一记录，绝不能 500
+        buf = bytearray()
+    try:
+        payload = json.loads(bytes(buf)) if buf else None
+    except ValueError:  # 含 UnicodeDecodeError：非法 JSON/编码同样归一记录
         payload = None
     return service.append_client_error(payload)
 

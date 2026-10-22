@@ -1,7 +1,9 @@
 """AI 助手接口：/api/assistant"""
+import asyncio
 import csv as _csv
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -22,6 +24,23 @@ from ..utils import DbId
 router = APIRouter(prefix="/assistant", tags=["AI 助手"])
 
 logger = logging.getLogger(__name__)
+
+# 共享上传读取器与导入行数上限由 core 任务提供（backend/app/upload.py、import_limits.py）。
+# 缺失时相关端点明确 503 失败关闭：绝不退回无界 file.read()，也不放行无上限转换。
+try:
+    from ..upload import read_upload_limited
+except ImportError as _exc:  # 集成窗口期 core 尚未落地
+    read_upload_limited = None
+    logger.warning("共享上传模块暂不可用，上传接口将返回 503：%s", _exc)
+
+try:
+    from ..import_limits import MAX_IMPORT_ROWS
+except ImportError as _exc:
+    MAX_IMPORT_ROWS = None
+    logger.warning("共享导入行数上限暂不可用，Excel 转换将返回 503：%s", _exc)
+
+# 聊天附件大小上限：路由级限额（全局请求体限额见 ASGI 中间件）
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 # 会话 ID 由前端生成（s_ + base36），仅允许字母/数字/下划线/连字符，防止路径穿越
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{6,64}")
@@ -133,7 +152,24 @@ async def test_config(payload: TestRequest):
             raise HTTPException(status_code=400, detail=str(exc))
     else:
         cfg = payload.config or config_store.load()
-        if (cfg.get("api_key") or "").strip() == config_store.MASK or not (cfg.get("api_key") or "").strip():
+        if payload.config:
+            # 自定义候选配置：空/掩码 key 必须显式提供新值，绝不借用当前激活模型的真实密钥
+            # （否则等于把激活密钥发往任意自定义 base_url）；base_url 走共享网关校验。
+            # config 为自由 dict：非字符串入参（JSON 数字/列表/字典/布尔）先按字符串口径
+            # 归一再走同一套校验——真值视为显式新 key，非法 base_url 400，守卫内绝不 500。
+            key_in = str(cfg.get("api_key") or "").strip()
+            if not key_in or key_in == config_store.MASK or key_in.startswith(config_store.MASK_PREFIX):
+                return {"text": {"ok": False, "error": "请填写新的 API Key：测试自定义配置不会沿用当前激活模型的密钥"}}
+            # 归一化后的显式新 key 回写 cfg：下游各测试（SDK/工具/图片）拿到的与守卫校验过的同一字符串
+            cfg = {**cfg, "api_key": key_in}
+            base_url = str(cfg.get("base_url") or "").strip()
+            if base_url:
+                try:
+                    config_store._safe_gateway_url(base_url, "/chat/completions")
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+        elif (cfg.get("api_key") or "").strip() == config_store.MASK or not (cfg.get("api_key") or "").strip():
+            # 测试当前激活模型：掩码/空 key 回填真实密钥（既有行为）
             cfg = {**cfg, "api_key": config_store.current_api_key()}
 
     text_result = await config_store.test_connection(cfg)
@@ -214,12 +250,43 @@ def get_models():
     return {"models": config_store.models_flat()}
 
 
-@router.get("/skills/discover", summary="扫描技能池目录（SKILL.md 格式）")
-async def discover_skills(dir: str = Query(..., max_length=300, alias="dir")):
-    from pathlib import Path
+def _normalize_dir(raw: str) -> str:
+    """目录规范化：展开 ~、解析符号链接与相对段、统一大小写/分隔符（Windows 大小写不敏感）。"""
+    try:
+        return os.path.normcase(str(Path(raw).expanduser().resolve()))
+    except OSError:
+        return os.path.normcase(str(Path(raw).expanduser().absolute()))
 
+
+def _is_saved_dir(requested: str, saved: str) -> bool:
+    """请求目录必须是配置中显式保存且规范化相等的目录。
+
+    发现接口只允许已保存目录：任意目录不得触发 load_qwenpaw_plugin
+    （会执行插件后端代码）；合法的外部保存目录（非仓库内）同样可用。
+    """
+    requested = (requested or "").strip()
+    saved = (saved or "").strip()
+    if not requested or not saved:
+        return False
+    return _normalize_dir(requested) == _normalize_dir(saved)
+
+
+def _saved_config_dir(key: str) -> str:
+    """config_store.load() 中显式保存的目录（skills_dir/plugins_dir）；未保存返回空串。"""
+    try:
+        return str(config_store.load().get(key) or "").strip()
+    except Exception:
+        logger.warning("读取已保存目录失败（%s）", key, exc_info=True)
+        return ""
+
+
+@router.get("/skills/discover", summary="扫描技能池目录（SKILL.md 格式；仅限已保存目录）")
+async def discover_skills(dir: str = Query(..., max_length=300, alias="dir")):
     from agentscope.skill import LocalSkillLoader
 
+    if not _is_saved_dir(dir, _saved_config_dir("skills_dir")):
+        # 安全边界：仅配置中显式保存的目录可扫描，未保存先提示保存
+        return {"count": 0, "names": [], "error": "目录未保存：请先在设置中保存该技能池目录再检测"}
     path = Path(dir)
     if not path.is_dir():
         return {"count": 0, "names": [], "error": "目录不存在"}
@@ -228,12 +295,13 @@ async def discover_skills(dir: str = Query(..., max_length=300, alias="dir")):
     return {"count": len(skills), "names": [getattr(s, "name", "?") for s in skills][:30]}
 
 
-@router.get("/plugins/discover", summary="扫描 QwenPaw 插件目录（工具型插件兼容层）")
+@router.get("/plugins/discover", summary="扫描 QwenPaw 插件目录（工具型插件兼容层；仅限已保存目录）")
 def discover_plugins(dir: str = Query(..., max_length=300, alias="dir")):
-    from pathlib import Path
-
     from ..agents.qwenpaw_compat import load_qwenpaw_plugin
 
+    if not _is_saved_dir(dir, _saved_config_dir("plugins_dir")):
+        # 安全边界：load_qwenpaw_plugin 会执行插件后端代码，仅已保存目录可触发
+        return {"loadable": 0, "plugins": [], "error": "目录未保存：请先在设置中保存该插件目录再检测"}
     path = Path(dir)
     if not path.is_dir():
         return {"loadable": 0, "plugins": [], "error": "目录不存在"}
@@ -260,6 +328,43 @@ _UPLOAD_SUFFIXES = {
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
+class _RowLimitExceeded(ValueError):
+    """Excel 首表行数超过 MAX_IMPORT_ROWS：上传整体拒绝并清理，不遗留半成品。"""
+
+
+def _remove_quietly(*paths: Path) -> None:
+    """尽力删除上传残留文件（失败仅记日志，不掩盖原始错误）。"""
+    for p in paths:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("清理上传残留文件失败：%s", p, exc_info=True)
+
+
+def _xlsx_first_sheet_to_csv(src: Path, dst: Path, max_rows: int) -> int:
+    """把 xlsx 第一张工作表流式写为 CSV（utf-8-sig），返回写入行数。
+
+    同步函数：经 asyncio.to_thread 卸载，避免慢转换阻塞事件循环；
+    行数（含表头）超过 max_rows 立即中止，不产出巨型/半成品 CSV。
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
+    written = 0
+    try:
+        ws = wb.active
+        with open(dst, "w", newline="", encoding="utf-8-sig") as f:
+            writer = _csv.writer(f)
+            for row in ws.iter_rows(values_only=True):
+                written += 1
+                if written > max_rows:
+                    raise _RowLimitExceeded(f"工作表行数超过上限（{max_rows} 行）")
+                writer.writerow(["" if c is None else c for c in row])
+    finally:
+        wb.close()
+    return written
+
+
 @router.post("/upload", summary="上传聊天附件（图片/文本/Excel；xlsx 自动转 CSV；上限 10MB）")
 async def upload_attachment(
     session_id: str = Form(...),
@@ -277,33 +382,47 @@ async def upload_attachment(
             detail=f"不支持的文件类型：{suffix}（支持：{', '.join(sorted(_UPLOAD_SUFFIXES))}）",
         )
     dest_dir = UPLOAD_DIR / session_id
-    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / safe_name
     if dest.resolve().parent != dest_dir.resolve():
         raise HTTPException(status_code=400, detail="非法的文件名")
 
-    content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="文件超过 10MB 上限")
+    # 共享限额读取（分块、有界）：失败/超限发生在落盘之前，不遗留任何文件
+    if read_upload_limited is None:
+        raise HTTPException(status_code=503, detail="上传读取服务暂不可用，请稍后重试")
+    try:
+        content = await read_upload_limited(file, _MAX_UPLOAD_BYTES)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("上传读取失败或超限：session_id=%s", session_id, exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件读取失败或超过 {_MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限",
+        )
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(content)
 
     kind, note = "file", ""
     if suffix in _IMAGE_SUFFIXES:
         kind = "image"
     elif suffix in (".xlsx", ".xls"):
+        if MAX_IMPORT_ROWS is None:
+            _remove_quietly(dest)
+            raise HTTPException(status_code=503, detail="Excel 行数上限服务暂不可用，请稍后重试")
+        csv_path = dest.with_suffix(".csv")
         try:
-            import openpyxl
-
-            wb = openpyxl.load_workbook(dest, read_only=True, data_only=True)
-            ws = wb.active
-            csv_path = dest.with_suffix(".csv")
-            with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = _csv.writer(f)
-                for row in ws.iter_rows(values_only=True):
-                    writer.writerow(["" if c is None else c for c in row])
+            # 慢转换卸载到线程（事件循环不被阻塞）；行数超限即中止，不产出半成品
+            await asyncio.to_thread(_xlsx_first_sheet_to_csv, dest, csv_path, MAX_IMPORT_ROWS)
             dest = csv_path
             kind, note = "csv_converted", f"已转换第一张工作表为 CSV：{dest.name}"
+        except _RowLimitExceeded as exc:
+            # 行数超限：上传整体拒绝，xlsx 与半成品 CSV 一并清理
+            _remove_quietly(dest, csv_path)
+            raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
+            # 转换失败降级：清半成品 CSV，保留 xlsx 本体与说明（既有契约）
+            _remove_quietly(csv_path)
             note = f"Excel 转 CSV 失败：{exc}"
 
     return {"name": dest.name, "path": str(dest), "kind": kind, "size": dest.stat().st_size, "note": note}
