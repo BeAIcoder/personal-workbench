@@ -4,15 +4,28 @@
 - 数据格式：JSON（UTF-8）；时间一律 ISO 8601（如 `2026-09-08T09:30:00`，也接受 `2026-09-08` 日期形式）
 - 在线调试：启动后访问 <http://127.0.0.1:8000/docs>（Swagger UI）
 - 错误约定：参数校验失败返回 `422`（body 含 `detail`；**日期查询参数格式错误也返回 422**，不穿透成 500）；**路径 `{id}` 超过 SQLite int64 范围同样返回 422**（`utils.DbId` 入口拦截 + 全局 `OverflowError` 兜底，不出 500 堆栈）；资源不存在返回 `404`（`{"detail": "..."}`）；删除成功返回 `204` 无内容（例外：AI 助手的 sessions/agents、知识与记忆的 memories、MCP 的 servers 删除返回 200 + JSON，如 `{"ok": true}`）
+- 安全护栏（无鉴权本机工作台的统一口径，详见下文「安全护栏」一节）：全局请求体上限 `128MB` 超限返回 `413`；`/api` 状态变更方法与 discover 类 GET 的 Origin 不可信返回 `403`；上传超限/行数超限统一返回 `400`，均带中文 `detail`
 - 分页约定：列表接口统一返回 `{"items": [...], "total": 总数, "page": 页码, "page_size": 每页条数}`
 
 ## 系统
 
 ### GET /api/health
-健康检查。
+健康检查。同时支持 `HEAD`（供容器/负载均衡探活，无响应体）。
 ```json
 { "status": "ok", "app": "个人工作台", "version": "1.16.1" }
 ```
+
+## 安全护栏（全局中间件，先于路由生效）
+
+| 护栏 | 触发条件 | 行为 |
+|------|----------|------|
+| 全局请求体上限 | 任何请求体超过 `128MB`（`MAX_REQUEST_BODY_BYTES`） | 声明超大 `Content-Length` 的请求进路由前直接 `413`；chunked 请求体在 receive 侧累计，超限即 `413` 并中断读取（`{"detail": "请求体超过 … 字节上限"}`） |
+| Origin 校验 | `/api` 下状态变更方法（`POST`/`PUT`/`PATCH`/`DELETE`）与路径含 `discover` 段的 GET，且带了 Origin | Origin 属于 `settings.cors_origins` 配置 / 回环开发来源（localhost·127.0.0.1·::1 任意端口）/ 运维配置 `HOST`（端口与 `PORT` 一致）的同源来源 → 放行；其余 `403` `{"detail": "请求来源不被信任"}`。不再用「Origin 与请求 Host 自证同源」放行（避免 DNS rebinding 绕过）；无 Origin 的 CLI/探针放行；CORS 预选（OPTIONS）不拦 |
+| 上传限额 | 各上传路由经共享 `read_upload_limited` 分块读取，超端点限额即中断 | `400`（`UploadTooLargeError` 全局收口），落盘前拒绝、不留半成品 |
+| 导入行数护栏 | Excel/CSV 类导入的数据行数超过 `MAX_IMPORT_ROWS = 200000` | `400`，解析阶段即中止，不落库、不留半成品 |
+| int64 ID 兜底 | 任意 `/{id}` 路径越界 | `422` `{"detail": "ID 超出可接受范围"}` |
+
+> 模型调用（openai / anthropic 双协议）统一显式 `120` 秒 SDK 超时（`LLM_TIMEOUT_SECONDS`），单用户工作台下避免一次挂起长时间占住请求。
 
 ## 任务管理 /api/tasks
 
@@ -129,7 +142,8 @@ GET /api/schedules?start=2026-09-01&end=2026-09-30
   "schedule": { "today_count": 2, "upcoming_7d": 5 },
   "note":   { "total": 5, "week_added": 5 },
   "upcoming_tasks":  [ /* 未完成任务，按截止时间升序，最多 6 条，结构同 TaskOut */ ],
-  "today_schedules": [ /* 今天有交集的日程，按开始时间升序 */ ],
+  "today_schedules": [ /* 今天有交集的日程，按开始时间升序；默认最多 100 条 */ ],
+  "schedule": { "today_count": 2, "today_schedule_total": 138, "today_schedules_truncated": true, "upcoming_7d": 5 },
   "recent_notes":    [ /* 最近更新的 5 条笔记 */ ],
   "trend_7d": [ { "date": "2026-09-01", "count": 0 }, … ]
 }
@@ -245,7 +259,13 @@ route-test 入参与返回：
 ```json
 { "config": { /* 可选候选配置 */ }, "provider_id": 1, "include_image": true, "test_tools": true }
 ```
-返回 `{ "text": {ok, latency_ms, reply, usage}, "tools": {...}, "image": {...} }`；`provider_id` 表示测试该供应商第一个启用模型。api_key 留空或传掩码哨兵 `********` 时自动回填现值。
+返回 `{ "text": {...}, "tools": {...}, "image": {...} }`（后两项仅在 `text.ok` 为真且对应开关打开时出现）。
+
+- `provider_id`：测试该供应商第一个启用模型
+- **测试当前激活模型**（不传 `config`）：`api_key` 留空或传掩码哨兵 `********`（`••••••` 开头的回显掩码同）时自动回填现值
+- **测试自定义候选配置**（传 `config`）：必须显式填写**新的** API Key——空/掩码不会借用当前激活模型的真实密钥，返回 `200` + `{"text": {"ok": false, "error": "请填写新的 API Key：测试自定义配置不会沿用当前激活模型的密钥"}}`；`base_url` 经共享网关校验，非法返回 `400`
+- `text` 结构：成功 `{ok: true, latency_ms, reply, usage: {input_tokens, output_tokens}}`；失败 `{ok: false, latency_ms, error}`
+- `image`：`include_image=true` 时按协议走 openai 兼容或 anthropic 图片识别测试（红色图片问答，判定回答含「红/red」）
 
 #### 供应商 / 模型（两级管理）
 | 接口 | 说明 |
@@ -261,13 +281,16 @@ route-test 入参与返回：
 ### 附件与扩展
 
 #### POST /api/assistant/upload
-multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超限 400）。扩展名白名单：文本/数据类 `.txt .md .csv .json .log .py .html .xml .yaml .yml .sql`、Excel `.xlsx/.xls`（自动把第一张工作表转 CSV）、图片 `.png .jpg .jpeg .webp .gif`；白名单外返回 400。返回 `{ "name", "path", "kind"("file"/"csv_converted"/"image"), "size", "note" }`。
+multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超限 400）。扩展名白名单：文本/数据类 `.txt .md .csv .json .log .py .html .xml .yaml .yml .sql`、Excel `.xlsx/.xls`（自动把第一张工作表转 CSV）、图片 `.png .jpg .jpeg .webp .gif`；白名单外返回 400，无扩展名按普通文件放行。返回 `{ "name", "path", "kind"("file"/"csv_converted"/"image"), "size", "note" }`。
+- 读取经共享分块限额（`read_upload_limited`）：超限在落盘前即 400，不留任何文件
+- xlsx 首表行数（含表头）超过导入行数上限 `200000` 行：上传整体拒绝并清理 xlsx 与半成品 CSV，返回 `400`
+- Excel 转 CSV 失败时降级：保留 xlsx 本体，`note` 说明失败原因（既有契约）
 
 #### GET /api/assistant/skills/discover?dir=...
-扫描技能池目录（SKILL.md 格式）：`{ "count", "names" }`；目录不存在返回 `error`。
+扫描技能池目录（SKILL.md 格式）：`{ "count", "names" }`（names 最多 30 条）。**安全边界：仅允许配置中已保存的 `skills_dir`**——未保存时返回 `{"count": 0, "names": [], "error": "目录未保存：请先在设置中保存该技能池目录再检测"}`；目录不存在返回 `{"count": 0, "names": [], "error": "目录不存在"}`。
 
 #### GET /api/assistant/plugins/discover?dir=...
-扫描 QwenPaw 插件目录：`{ "loadable", "plugins": [ {name, ok, tools / error} ] }`。
+扫描 QwenPaw 插件目录：`{ "loadable", "plugins": [ {name, ok, tools / error} ] }`（plugins 最多 30 条）。**安全边界：`load_qwenpaw_plugin` 会执行插件后端代码，仅允许配置中已保存的 `plugins_dir`**——未保存时返回 `{"loadable": 0, "plugins": [], "error": "目录未保存：请先在设置中保存该插件目录再检测"}`；目录不存在返回 `{"loadable": 0, "plugins": [], "error": "目录不存在"}`。
 
 ## 定时任务 /api/jobs
 
@@ -374,7 +397,7 @@ RAG 笔记检索（BM25 + 中文 bigram 分词，零外部依赖离线可用；�
 
 ## MCP 工具 /api/mcp
 
-MCP（Model Context Protocol）服务器管理：仅支持 **stdio** 传输（本地命令起的 MCP Server；HTTP/SSE 预留）。连接成功后服务器工具自动注册为 `mcp_<服务器名>__<工具名>` 进入 Agent 工具白名单（是否只读按工具名启发式推断）；服务启动时自动拉起全部启用中的服务器，单服务器失败不影响宿主。
+MCP（Model Context Protocol）服务器管理：仅支持 **stdio** 传输（本地命令起的 MCP Server；HTTP/SSE 预留）。连接成功后服务器工具自动注册为 `mcp_<服务器名>__<工具名>` 进入 Agent 工具白名单（是否只读以工具自带 `annotations.readOnlyHint` 为唯一依据，缺省视为可写）；服务启动时自动拉起全部启用中的服务器，单服务器失败不影响宿主。服务器 `env` 落库前经 DPAPI 密封，接口只回显键名与 `***`；存量明文会在启动时自动迁移。
 
 服务器字段：`name` 服务器名（必填唯一，≤50 字，即工具前缀）、`command` 启动命令（如 `npx` / `python` / `uv`）、`args` 命令参数数组、`env` 环境变量（敏感值只存本机库，**回显一律脱敏为 `***`**）、`enabled`、`status`（`stopped` / `connected` / `error`）、`last_error`、`tools`（已发现的工具清单）。
 
@@ -442,9 +465,24 @@ name 重复或必填缺失返回 400。
 | finance_ledger_personal 个人记账 | `/api/finance/ledger/personal` | 账户/分类/交易 CRUD、`GET /stats/monthly`、`GET /stats/trend`、`GET/PUT /budgets`、`POST /import/csv`、`GET /export/csv` |
 | finance_ledger_bip 企业记账 | `/api/finance/ledger/bip` | `POST /imports/preview`、`POST /imports/confirm`、`GET /imports`、`GET /vouchers`、`GET /vouchers/{id}`、`GET /entries`、`GET /balances/summary`、`POST /vouchers/export-to-vault` |
 | finance_tax 企业所得税 | `/api/finance/tax` | `/enterprises`（CRUD）、`/financial-import`（导入+模板下载）、`/policies`（政策库）、`/tax-returns`（申报 CRUD/提交/计算/导出 Excel·PDF）、`/textbook-reference`（教材对照） |
-| finance_board 报表看板 | `/api/finance/board` | `GET /snapshots`、`POST /run`（触发管线）、`GET /latest`、`GET /snapshots/{id}/html`（iframe 嵌入） |
-| finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行）、`POST /runs/{id}/execute`、`GET /runs`、`GET /runs/{id}`（运行详情）、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP） |
+| finance_board 报表看板 | `/api/finance/board` | `GET /snapshots`（快照列表，最多 50 条，时间倒序）、`POST /run`（触发管线）、`GET /latest`、`GET /snapshots/{id}/html`（iframe 嵌入） |
+| finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行，表单必填 `actual_month` 1~12）、`POST /runs/{id}/execute`、`GET /runs`（分页）、`GET /runs/{id}`（运行详情）、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP） |
 | finance_pos POS 对账 | `/api/finance/pos` | 同上（无 actual_month 参数），含 `GET /runs/{id}` 运行详情 |
+
+### 财务模块上传与行数护栏
+
+各财务导入路由共用两道路栏：上传大小（分块限额读取，超限 `400`）与导入行数（超过 `MAX_IMPORT_ROWS = 200000` 行即 `400` 中止，不落库、不留半成品）。
+
+| 模块 | 上传上限 | 备注 |
+|------|----------|------|
+| finance_expense `POST /classify` | 20MB | 仅 `.xlsx/.xls`，空文件 400；引擎不可用 503 |
+| finance_invoice `POST /batches` | 单批次 100MB（ZIP 按解压后口径） | PDF/ZIP 批次上传 |
+| finance_vault `POST /ingest/file` | 20MB | 入仓数据行数超 200000 行 400 |
+| finance_ledger_bip `POST /imports/preview` | 10MB | xlsx/xls；解析阶段即做行数护栏 |
+| finance_cashflow `POST /runs` | 50MB | ZIP 解压后总量上限 200MB（防解压炸弹） |
+
+- **现金流 `GET /runs` 分页**：`page`（默认 1）与 `page_size`（默认 20，1~100），返回 `{total, items, page, page_size}`，`total` 为 COUNT(*) 全量计数；`GET /runs/{id}/download` 无产物时返回 `409`
+- **看板快照 `log_tail`**：入库截断至 4000 字符，列表/详情读取时仅返回**尾部 500 字符**（有界暴露，不整文件无界返回）；`POST /run` 管线繁忙返回 `409`、引擎不可用返回 `503`；`GET /latest` 无成功快照返回 `404`；`GET /snapshots/{id}/html` 仅允许读取看板快照目录内文件（越界 `403`），响应带 `Content-Security-Policy: frame-ancestors 'self'` 与 `X-Content-Type-Options: nosniff`
 
 ### 定时任务扩展（v1.11.0）
 
@@ -452,7 +490,7 @@ name 重复或必填缺失返回 400。
 - 定时任务（`POST /api/jobs`）新增字段：`cron_expr`（schedule_type=cron 时必填，五段表达式）、`action`（模块动作名，空 = Agent 对话任务）
 - 调度语义：cron 同自然分钟不重复触发；模块动作任务走线程池执行、不写笔记
 
-> 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级。
+> 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级；入仓取数阶段即受 200,000 行上限约束，超限返回 400，不会先全量组装数据。
 
 ## 调试中心 /api/debug（v1.16.0）
 
@@ -488,7 +526,7 @@ run_id 形如 `20261013-153000_recon`；有错误的页面/失败用例自动建
 | 端点 | 说明 |
 |------|------|
 | `GET /api/debug/client-errors?limit=200` | 尾部读取最近 limit 条（1-1000），返回 `{total, items}`（按写入顺序） |
-| `POST /api/debug/client-errors` | 追加一条（返回 201）；**宽容解析**——非 JSON body/数组/字符串/缺字段一律归一记录为 `{ts, page, message, stack, ua}`，绝不 500。文件**有界**：超过 10MB 自动裁剪为仅保留最近 1000 条（逐行仍是合法 JSON）。前端 `main.js` 全局 errorHandler/error/unhandledrejection 自动上报（裸 axios、同消息 5 秒去重） |
+| `POST /api/debug/client-errors` | 追加一条（返回 201）；**请求体上限 1MB**（`CLIENT_ERROR_MAX_BODY_BYTES`，全局 128MB 之外的端点级护栏），超限即 `400`；**宽容解析**——非 JSON body/数组/字符串/缺字段一律归一记录为 `{ts, page, message, stack, ua}`，绝不 500。文件**有界**：超过 10MB 自动裁剪为仅保留最近 1000 条（逐行仍是合法 JSON）。前端 `main.js` 全局 errorHandler/error/unhandledrejection 自动上报（裸 axios、同消息 5 秒去重） |
 | `DELETE /api/debug/client-errors` | 清空，返回 `{"ok": true}` |
 
 ### GET /api/debug/summary
@@ -533,7 +571,7 @@ run_id 形如 `20261013-153000_recon`；有错误的页面/失败用例自动建
 | `POST /api/models/{id}/probe/output` | 最大输出长度阶梯探测（1024→131072） |
 | `POST /api/models/{id}/probe/all` | 三连探测，汇总写 probe_result + probed_at |
 | `GET /api/models/{id}/probe` | 当前探测状态（只读） |
-| `GET /api/providers/presets` · `POST /api/providers/presets/reload` | 厂商预设（provider_presets.json，18 家） |
+| `GET /api/providers/presets` · `POST /api/providers/presets/reload` | 厂商预设（provider_presets.json，18 家）；另挂 `/api/models/providers/presets` 别名（兼容「router prefix=/models」的路径解读） |
 
 - 探测直连厂商 `/chat/completions`（openai 兼容），失败=200+error（不可达≠不支持，supports_thinking 保持 -1）
 - 模型级自定义配置：temperature（空=跟随）、note、supports_thinking/thinking_levels 手动覆盖；temperature 已接入 build_model 运行时（openai/anthropic 双协议）

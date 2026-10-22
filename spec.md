@@ -5,6 +5,12 @@
 > 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → v1.15.0 会话归档与导出 + 聊天传图多模态理解 → **v1.15.1 复核加固轮（三路并行审计驱动：zip-slip 同前缀绕过 / 解压总量上限 / 事件循环阻塞 / MCP 超时失效等中危全修，前端 sandbox 与 SSE 防御等 23 项修复）** → v1.16.0 调试中心（问题记录 + E2E 运行归档 + 前端报错采集）→ v1.16.1 体验修复十一项（技能包停用对 Agent 生效、env 兜底来源标识、专家包导入确认、AI 配置子菜单收纳等）。
 >
 > 权威 as-built 快照：`20261012New/REVERSE_02-SPEC重构.md`；接口细节：`API.md`；架构决策：`20261012New/adr/ADR-001~005`。
+>
+> 本版为**文档校准轮**（2026-10-22，版本号仍为 v1.16.1）：按当前工作区实现校正运行环境与安全规格细节
+> （Node 22+ / Origin 守卫（不再用 Host 自证，保留配置 HOST 同源）/ MCP `readOnlyHint` 缺省拒绝与 env DPAPI 密封 /
+> 上传有界读取与分模块限额 / 模型 URL 校验 /
+> 超时口径 / 导入行数上限 / 现金流分页 / 看板日志 / E2E 隔离与构建检测）。第 13 节测试数字为
+> **2026-10-20 历史快照**，第二轮 Swarm 后的全量实测值待统一测试完成后回填，本文不预填。
 
 ## 1. 定位与硬约束（不可违反）
 
@@ -16,7 +22,7 @@
 | --- | --- |
 | 部署形态 | 仅监听 `127.0.0.1`、无登录鉴权、数据不出本机；启动时对非回环 HOST 打印醒目告警 |
 | 存储 | SQLite 单文件 `backend/data/workbench.db`，零外部数据库依赖；不允许 Docker 与外部独立数据库 |
-| 运行环境 | Windows 11 · Python 3.12+ · Node 18+ |
+| 运行环境 | Windows 11 · Python 3.12+ · Node 22+ |
 | 依赖红线 | 仅 MIT / Apache-2.0 / BSD；新增依赖需锁版本（`requirements-lock.txt`） |
 | 业务值外置 | 真实业务数据放各引擎 `local_business.json` / `config.local.yaml`；**现金流 V1 数据永不推远端** |
 | Agent 权限边界 | 删除类操作不开放给 Agent（仅页面物理删除；任务可由 Agent 标记完成） |
@@ -38,7 +44,8 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
 ```
 
 前端 10 个静态页（概览 / 任务 / 日程 / 笔记 / AI 助手 / 定时任务 / 知识与记忆 / MCP 工具 /
-技能包管理 / 专家团文件）+ 财务分组菜单（由前端模块 manifest 自动生成，路由 `/finance/<name>/...` 懒加载）。
+技能包管理 / 专家团文件）+ 调试中心 3 页（模块路由）+ 财务分组菜单（由前端模块 manifest 自动生成，
+路由 `/finance/<name>/...` 懒加载）。
 
 ## 3. 模块机制（Module Registry）
 
@@ -148,9 +155,10 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
 
 **扩展能力（默认关闭）**
 
-本地技能池（`data/skills/<name>/SKILL.md`）、Bash 工具（自带危险文件黑名单）、QwenPaw 插件兼容层，
-均有独立开关；技能池经 AgentScope `LocalSkillLoader` 注入（已停用的包在 loader 侧过滤，停用对 Agent 生效），
-专家级 `skills` 为空列表时显式关闭。
+本地技能池（`backend/data/skills/<name>/SKILL.md`；设置项名为「**技能池目录**」，单个 SKILL.md
+目录称「**技能包**」，首次启动从 `backend/seed_skills/` 播种）、Bash 工具（自带危险文件黑名单）、
+QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSkillLoader` 注入
+（已停用的包在 loader 侧过滤，停用对 Agent 生效），专家级 `skills` 为空列表时显式关闭。
 
 ### 4.3 定时任务（`routers/jobs.py` + `app/scheduler.py` + `JobsView.vue`）
 
@@ -179,14 +187,23 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
 | finance_ledger_personal 个人记账 | 全新 | 两级账户/分类/交易/预算，CSV 导入导出 |
 | finance_ledger_bip 企业记账 | 全新 | BIP 三类导出列签名识别 + 人工映射，借贷平衡 warning，export-to-vault |
 | finance_tax 企业所得税 | 整体迁入 | 原项目 5 routers + 10 services 零改动移植，`mod_tax_` 表前缀，迁移脚本幂等 |
-| finance_board 报表看板 | L2 | m01–m04 管线子进程触发，HTML 快照归档，iframe 嵌入 |
-| finance_pos POS 对账 | L1 | 台账 + 差异分析两步执行，产物差集归集 |
-| finance_cashflow 现金流填报（本地专用） | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护，**整目录 gitignore** |
+| finance_board 报表看板 | L2 | m01–m04 管线子进程触发（单步 600s 超时），HTML 快照归档 + 管线日志尾部（入库截断至 4000 字符、读取只暴露末 500 字符），iframe 嵌入（响应带 CSP `frame-ancestors 'self'`） |
+| finance_pos POS 对账 | L1 | 台账 + 差异分析两步执行（单步 900s 超时），产物差集归集，上传 50MB |
+| finance_cashflow 现金流填报（本地专用） | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护，**整目录 gitignore**；运行记录列表分页（`page` ≥ 1、`page_size` 1–100，返回 `{total, items, page, page_size}`，按 id 倒序），上传 50MB |
 | finance_hello 模块示例 | 机制实证 | 连通性自检 + 样例表 `mod_hello_entry` + 只读工具 `hello_ping`（财税专员白名单内） |
 
 跨项目引擎路径（费用分类 / 发票工具）经 `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH`
 配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。
 BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级。
+
+**上传限额与导入行数（分模块口径，as-built）**：聊天附件 10MB；费用分类 / 发票 / 数据仓 / 税务
+各 20MB；BIP 10MB；个人记账 CSV 5MB；POS 与现金流各 50MB。所有上传路由统一走共享有界读取
+`app.upload.read_upload_limited`（1MB 分块、累计超限即中断读取，抛 `UploadTooLargeError` 由
+`main.py` 全局映射 400），不裸 `file.read()`；宿主另有全局 ASGI 请求体上限 128MB
+（Content-Length 早拒 + chunked 累计，超限 413，宽容路由吞异常也照发）。
+导入类（Excel/CSV）共享行数上限 `app.import_limits.MAX_IMPORT_ROWS = 200000`（缺失即失败关闭）；
+费用分类在引擎执行与写库前按该上限护栏（openpyxl 只读流式迭代 + `reset_dimensions()`，
+口径为各工作表非空行合计含表头，超限早停于 limit+1 行）。
 
 各模块 HTTP 接口清单见 `API.md`「财务模块接口（/api/finance/*）」一节。
 
@@ -216,7 +233,11 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
   → `tools/list` → `tools/call`；协议版本 `2024-11-05`。
 - 每个 Server 一个子进程，同步请求/响应带超时（调用 30s / 握手 15s / 消息 4MB）；
   暴露给 Agent 的工具为 async 包装（`asyncio.to_thread`），不阻塞事件循环。
-- 工具注册为 `mcp_<srv>__<tool>`；Server 清单持久化在 `mcp_servers` 表（env 含敏感值，仅本机库）。
+- 工具注册为 `mcp_<srv>__<tool>`；Server 清单持久化在 `mcp_servers` 表（env 含敏感值，仅本机库）；
+  连接/断开/更新/删除服务器时经 `_unregister_server_tools()` 注销其旧工具注册，不残留。
+- **只读判定（readOnlyHint 缺省拒绝）**：只读咨询模式下，以工具自带的 `annotations.readOnlyHint`
+  为**唯一放行依据**——显式 `true` 才放行；**无注解/缺省一律视为可写（默认拒绝，宁可少用不可越权）**；
+  名称启发式（write/create 之类）可被任意命名绕过，不作放行依据（v1.16.1 起唯一口径）。
 - 端点：`GET/POST /api/mcp/servers`、`PUT/DELETE /api/mcp/servers/{id}`、
   `POST /api/mcp/servers/{id}/connect|disconnect|test-call`；启动时自动拉起启用的服务器。
 
@@ -258,8 +279,10 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
   清单详见 `API.md`「调试中心 /api/debug」一节。
 - **E2E 接入**：`dev/e2e/debug_reporter.py` 的 `save_run(kind, ...)` 以同一文件格式
   直接落库（不经 HTTP）；`e2e_recon.py`（kind=recon，含截图）、`e2e_interactions.py`
-  （kind=interactions）、`e2e_edge.py`（kind=edge）跑完自动归档，并保留原有独立
-  测试库/独立财务目录隔离。有错误的页面/失败用例自动建/更新问题（source=e2e、P1：
+  （kind=interactions）、`e2e_edge.py`（kind=edge）跑完自动归档。三脚本**固定端口 8123/8124**，
+  经 `acquire_run_lock` 运行互斥（并行会互踩端口/目录），各自使用**独立测试库 / 独立财务目录 /
+  独立调试归档目录**（均在 `dev/e2e` 下，绝不指向 `backend/data` 真实数据）。
+  有错误的页面/失败用例自动建/更新问题（source=e2e、P1：
   同 title+page 且 open/in_progress 已存在则只刷 updated_at 与 evidence=run_id，
   否则新建；全绿不写 issues.json，不做自动关闭）。
 - **AI 验收层**：`dev/e2e/ai_walkthrough.py` + `dev/e2e/AI-WALKTHROUGH.md`——
@@ -277,7 +300,7 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 
 ## 5. Agent 团队与四级路由
 
-### 5.1 专家团队（表驱动，13 位）
+### 5.1 专家团队（表驱动，8 位内置出厂 + 5 位 QwenPaw 导入，合计 13 位）
 
 专家 = `agent_specs` 行；`TEAM` 代码内置 8 位出厂专家（seed 数据源），
 `seed_agent_specs()` 按 **增量 upsert**（缺谁补谁，ADR-005）灌入，绝不覆盖用户改动。
@@ -293,11 +316,11 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 | it_finance | 信息化财务分析师 | 5 | 内置 | 财务、报表、凭证、分录、报销、预算、税、发票、对账、信息化 |
 | realestate | 商业地产管家 | 6 | 内置（默认兜底） | 商业地产、综合体、购物中心、资产管理、日程、待办 |
 | finance_specialist | 财税专员 | 7 | 内置（预置全部财务模块工具） | 发票、税、凭证、台账、记账、报销、费用、财税、现金流 |
-| cre_gm | 商业地产总经理 | 7 | QwenPaw 导入 | 随导入文件 |
-| cloud_orchestrator | CloudPaw 主控编排 | 8 | QwenPaw 导入 | 随导入文件 |
-| cloud_verifier | CloudPaw 验证器 | 9 | QwenPaw 导入 | 随导入文件 |
-| cloud_executor | CloudPaw 执行器 | 10 | QwenPaw 导入 | 随导入文件 |
-| datapaw | DataPaw 数据分析 | 11 | QwenPaw 导入 | 随导入文件 |
+| cre_gm | 商业地产总经理 | 随导入文件 | QwenPaw 导入 | 随导入文件 |
+| cloud_orchestrator | CloudPaw 主控编排 | 随导入文件 | QwenPaw 导入 | 随导入文件 |
+| cloud_verifier | CloudPaw 验证器 | 随导入文件 | QwenPaw 导入 | 随导入文件 |
+| cloud_executor | CloudPaw 执行器 | 随导入文件 | QwenPaw 导入 | 随导入文件 |
+| datapaw | DataPaw 数据分析 | 随导入文件 | QwenPaw 导入 | 随导入文件 |
 
 > 具体关键词清单以 `agent_specs.keywords`（界面可改）为准；`sort` 即路由优先级，小者优先（先专后宽）。
 
@@ -470,6 +493,8 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **上传**：`session_id` 白名单正则校验（防路径穿越；v1.15.1 起 rename/delete/archive/unarchive/export/history 等路径参数端点同口径校验）；文件名取 `Path(name).name` 去目录并做包含校验；
   扩展名白名单外返回 400（中文提示列出支持类型）；10MB 上限（超限 400）；
   落盘到 `data/uploads/{session_id}/`；xlsx/xls 用 openpyxl 读第一张工作表转 CSV（`utf-8-sig`）。
+  读取统一走共享分块限流 `read_upload_limited`（1MB 分片、超限即抛 `UploadTooLargeError`，全局映射 400），
+  不再裸 `file.read()`；宿主全局请求体上限 128MB（见第 10 节）。
 - **注入**：对话时对每个附件路径做 `resolve() + relative_to(UPLOAD_DIR)` 校验，越界路径直接忽略；
   仅白名单文本后缀（txt/md/csv/json/log/py/html/xml/yaml/yml/sql）且 ≤300KB 的附件按文本注入消息
   （截断至 8 万字符）；其余仅告知路径，提示 Agent 用 Bash 工具处理（Bash 默认关闭）。
@@ -523,8 +548,11 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | 面 | 措施 |
 | --- | --- |
 | API Key 静态加密 | DPAPI（`dpapi:<base64>`，绑定本机 + 当前用户）；缺 pywin32 **拒绝启动，绝不降级明文**；回传前端脱敏 `••••••xxxx`，掩码哨兵 `********` 或脱敏值原样回传均表示保留现值 |
-| SSRF 防护 | 网关/供应商地址协议白名单 http/https，禁内嵌凭据 |
-| 上传安全 | 扩展名白名单 + 大小限制（10MB）+ 文件名包含校验 + `session_id` 白名单正则（防路径穿越） |
+| SSRF 防护 | 网关/供应商地址校验（`validate_base_url` / `_check_http_url`，SDK 构造 / 网关探测 / httpx 测试同口径）：仅 http(s)、需有主机名、禁内嵌用户名密码与控制字符；本机单用户场景允许 127.0.0.1/内网（如 Ollama 本地网关），不封禁私网段；错误信息不回显 URL 主体 |
+| 上传安全 | 扩展名白名单 + 分模块大小限制（聊天 10MB；费用/发票/数据仓/税务 20MB；BIP 10MB；个人 CSV 5MB；POS/现金流 50MB）+ 文件名包含校验 + `session_id` 白名单正则（防路径穿越）；读取统一共享分块限流 `read_upload_limited`（1MB 分块、超限即断 → 400）；宿主全局请求体上限 128MB（Content-Length 早拒 + chunked 累计 → 413）；导入类共享行数上限 `MAX_IMPORT_ROWS=200000`（失败关闭） |
+| Origin 防护 | `OriginGuardMiddleware`：`/api` 状态变更方法（POST/PUT/PATCH/DELETE）与 `discover` 类 GET 校验 Origin——无 Origin 的 CLI/探针、回环开发来源、`CORS_ORIGINS` 配置项、运维配置 `HOST`（端口与 `PORT` 一致）的同源来源放行，其余 403；不再用「Origin 与请求 Host 自证同源」放行（避免 DNS rebinding 绕过）；普通 `/api` 读取不硬拦（跨站读取已由 CORS 兜底）；OPTIONS 预选不拦 |
+| MCP env 保护 | `mcp_servers.env` 值落库前逐个 DPAPI 密封，连接/读取时还原；接口只回显键名与 `***`；存量明文在启动时由 `migrate_env_secrets()` 一次性迁移，DPAPI 不可用拒绝降级 |
+| 超时口径 | LLM 客户端 120s；MCP 调用 30s / 握手 15s / 单条消息 4MB；模型探测 httpx 30s；DuckDB 查询 5s `interrupt()`；看板管线单步 600s、POS 单步 900s（超时落快照日志） |
 | ZIP 安全 | zip-slip 防护：`is_relative_to` 判定拒绝越界与绝对路径条目 + 解压后总量上限 200MB（finance_cashflow / finance_pos / finance_invoice） |
 | 数据仓 SQL | SELECT-only + 表名白名单 + 强制 LIMIT + 独立线程 `interrupt()` 超时；去注释后执行 |
 | 执行面 | Bash 工具默认关闭且自带危险文件/目录黑名单；QwenPaw 插件默认关闭且只读模式跳过 |
@@ -561,7 +589,12 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 ## 13. 测试与验证
 
-- **后端 pytest**：`backend/tests/` 共 **505 例全绿**（2026-10-20 实测，约 3 分 30 秒）。conftest 临时库隔离、
+> 本节数字分为两类：**2026-10-20 历史快照**与 **2026-10-22 第三轮实测**。第三轮实测：
+> 后端 pytest 888/888、前端 vitest 44 文件 648/648、生产构建通过、17 区探针 656/656、
+> 旧 E2E 三脚本通过、性能探针最慢 p95 76.68ms（`/api/health` p95 21.81ms 越 20ms 预算，未改阈值）。
+> 真实 LLM/外部引擎/真人可用性未验证。
+
+- **后端 pytest（2026-10-22 第三轮实测）**：`backend/tests/` **888/888 通过**（257.75 秒；4 条上游弃用警告）。conftest 临时库隔离、
   引擎对拍、monkeypatch 探测/LLM，全部离线可重复。
   覆盖业务 CRUD/筛选/统计/搜索 + Agent 路由/工具/配置脱敏/供应商模型 CRUD/专家团队 CRUD 与恢复出厂/
   连通性测试 + 定时任务 + QwenPaw 导入静态校验 + RAG/记忆/MCP/技能包/专家团文件 +
@@ -581,7 +614,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
   + 2026-10-20 加固轮回归（超 int64 路径 ID 入口拦截 `utils.DbId` 与全局
   `OverflowError`→422 兜底、调试中心 `client_errors.jsonl` 按大小裁剪有界且逐行仍可解析、
   ID 越界不泄露堆栈、深翻页 `PRAGMA temp_store=2`、conftest 钉 `tempfile.tempdir` 防临时件落进仓库）。
-- **前端 vitest**：`frontend/tests/` 共 **352 例全绿**（34 个文件）：注册断言 + 纯逻辑 + setup 级组件测试
+- **前端 vitest（2026-10-22 第三轮实测）**：`frontend/tests/` **44 个文件、648/648 通过**（3.51 秒）：注册断言 + 纯逻辑 + setup 级组件测试
   （格式化/日历范围/Agent 工具函数/定时任务展示/模型探测交互/各财务模块/调试中心三模块）
   + 审计修复回归（`bugfix-frontend-*.test.js` 两件 36 例：笔记新建定位/记忆表单重置/highlight 参数/
   MCP env 保护/附件-only 发送/会话切换不破图/全部导入确认/拦截器去重/本地时区日期/月份下拉/
@@ -592,17 +625,26 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
   + 未捕获 rejection 守卫（`no-unhandled-request.test.js`：**扫描 `src` 全部 86 个 .vue/.js**，
   函数顶层直接发请求的 `await` 必须同行带 `.catch`，新增页面自动纳管）
   + 提交竞态回归（`interaction-submit-race.test.js`：连点单次提交、失败后锁复位）。
-- **E2E 区域探针**：`dev/e2e/probes/*.py` **17 区 656/656**（各区独立端口 + 独立库/数据目录隔离，
-  结果归档 `dev/e2e/probe_results/`）；其中 `interaction-ux` 为**自动化交互走查**，
+- **E2E 区域探针（2026-10-22 第三轮实测）**：`dev/e2e/probes/*.py` **17 区 656/656 通过**（各区固定端口
+  8201–8221 + 独立库 `dev/e2e/probe_results/<area>.db`（每次运行重建）+ 独立 `FINANCE_DATA_DIR` /
+  `DEBUG_DATA_DIR`（`<area>-fin` 等），不触碰真实 `backend/data/`；结果归档 `dev/e2e/probe_results/`）。
+  2026-10-22 第三轮已把原先缺 `DEBUG_DATA_DIR` 的 12 个探针补齐，并以
+  `backend/tests/test_swarm3_probes_isolation.py` + `test_swarm_probe_contracts.py` 静态守护
+  （合计 78 通过）；首轮实跑的 12 个失败经根因分析确认是探针口径滞后，修正后复跑通过。
+  其中 `interaction-ux` 为**自动化交互走查**，
   不等同于真人可用性测试（不含访谈、原话与主观评分）。
-- **性能基线**：`dev/e2e/perf_probe.py`（播种 tasks 5000 / notes 2000 / schedules 1000 /
-  sessions 200 / messages 4000 / transactions 20000，预热 5 次取 30 次）——18 接口 p95 最慢 67.0ms
+- **性能基线（2026-10-22 第三轮实测）**：`dev/e2e/perf_probe.py`（播种 tasks 5000 / notes 2000 / schedules 1000 /
+  sessions 200 / messages 4000 / transactions 20000，预热 5 次取 30 次）——18 接口 p95 最慢 76.68ms
   （`stats/trend?months=24`），预算 health 20 / list 120 / aggregate 250；真实浏览器首屏
-  DOMContentLoaded 201ms、资源 2.70MB、0 page error；唯一越线为 `/api/health` p95 21.67ms
-  （静态字典端点，两次实测 19.25/21.67ms 落在阈值噪声带，记录不掩盖）。
+  DOMContentLoaded 207ms、资源 2.705MB、0 page error；唯一越线为 `/api/health` p95 21.81ms
+  （静态字典端点，判为本机噪声，记录不掩盖、未改阈值）。
 - **冒烟**：uvicorn 真实端点 + 冒烟数据清理。
-- **构建**：`npm run build` 通过（8.56s；各视图独立 chunk，两个 index chunk 1.28MB + 1.03MB 为
+- **构建**：`npm run build` 通过（8.56s，2026-10-20 历史快照；各视图独立 chunk，两个 index chunk 1.28MB + 1.03MB 为
   Element Plus / ECharts 全量引入的大头，分包留作专项）。
+  **构建检测**：`frontend/scripts/needs-build.js` 比较 `src/`、`index.html`、`vite.config.js`、
+  `package.json`、`package-lock.json` 与 `dist/index.html` 的修改时间——产物缺失或任一源更新即判定
+  需要构建（退出码 1，打印原因）；`启动工作台.bat` 每次启动先调用它，按需才执行 `npm run build`。
+  `prebuild` 的 `clean-dist.js` 手动递归清空 dist（规避本机 Node 24 `rmSync` 静默失效，见 R-11）。
 - **手动验收**：十个静态页 + 设置抽屉 + 专家团队 tab + 技能包/专家团文件页 + 知识与记忆页 + MCP 页
   + 财务分组菜单 + SSE 对话流 + 路由测试工具 + 会话归档/导出 + 聊天传图。
 
