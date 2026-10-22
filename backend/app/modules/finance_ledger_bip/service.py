@@ -226,18 +226,32 @@ def _cell(v: Any) -> Any:
 # ---------------- 表头定位与文件类型识别 ----------------
 
 def _locate_header_row(raw: pd.DataFrame) -> int:
-    """在前 10 行里定位表头行：命中 >=2 个表头关键词的第一行（兼容顶部标题行）。"""
-    best, best_hits = 0, 0
-    for i in range(min(10, len(raw))):
+    """在前 25 行里定位表头行：命中关键词类别最多且 >=2 类的行。
+
+    评分用「不同关键词类别数」而非总命中数：
+    - 用友元数据块可达 16 行，其中「对方科目/显示对方科目」一行即 2 个「科目」命中；
+    - 余额表是两级表头：子表头行（借方本币×4/贷方本币×4）总命中更高，但只涉及
+      借/贷 2 类；主表头行（科目/账簿/期初/本期/期末）覆盖 5 类，才是真表头。
+    """
+    best, best_score = 0, (0, 0)
+    for i in range(min(25, len(raw))):
+        cats: set[str] = set()
         hits = 0
         for v in raw.iloc[i].tolist():
             s = _norm_col(v)
             if not s or s.lower() == "nan":
                 continue
-            if s in _HEADER_EXACT or any(h in s for h in _HEADER_FUZZY):
+            if s in _HEADER_EXACT:
+                cats.add(s)
                 hits += 1
-        if hits >= 2 and hits > best_hits:
-            best, best_hits = i, hits
+            else:
+                for h in _HEADER_FUZZY:
+                    if h in s:
+                        cats.add(h)
+                        hits += 1
+                        break
+        if len(cats) >= 2 and (len(cats), hits) > best_score:
+            best, best_score = i, (len(cats), hits)
     return best
 
 
@@ -602,8 +616,11 @@ def confirm_import(
     if eff_type not in (TYPE_VOUCHER, TYPE_AUX, TYPE_BALANCE):
         raise ValueError("无法识别文件类型，请指定文件类型（voucher/aux/balance）并完善列映射")
     mapping = _merge_mapping(eff_type, columns, user_mapping)
-    if eff_type == TYPE_BALANCE and not (period and PERIOD_RE.fullmatch(period)):
-        raise ValueError("科目余额表导入必须提供期间 period（格式 YYYY-MM）")
+    if eff_type == TYPE_BALANCE:
+        if not period:
+            raise ValueError("科目余额表导入必须提供期间 period（格式 YYYY-MM）")
+        if not PERIOD_RE.fullmatch(period):
+            raise ValueError("期间格式应为 YYYY-MM（如 2026-09）")
 
     name_file = path.with_name(path.name + ".name")
     orig_name = name_file.read_text(encoding="utf-8").strip() if name_file.is_file() else token

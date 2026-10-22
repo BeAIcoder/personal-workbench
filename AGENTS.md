@@ -6,15 +6,16 @@
 
 Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLite / Vue 3 + Vite + Element Plus）。开发进度与验证史见 `progress.md`（本地文件，gitignore 管理，不入库）。
 
-## 外部验证计划执行状态（2026-10-22）
+## 外部验证计划执行状态（2026-10-23）
 
 依据 `20261022-外部验证计划与Checklist.md`：
 
 - **第 0 章 通用前置 G1–G9**：✅ 完成。代码冻结基线 `6f64572`；`backend/data` 备份在 `backups/verify-20261022-pre/`（115 文件 + sha256，恢复演练通过）；验证期间真实数据零写入（每章结束字节级复核）。
 - **第 1 章 真实付费 LLM**：✅ 基本完成（硅基 SiliconFlow，Key 经界面录入）。L1–L7、L10、L12–L14 通过；**L8/L9 部分完成**（DeepSeek context 完整 126032；GLM/Qwen 被硅基 TPM 429 截断；output 探测三模型未建立——DeepSeek 生成 1024 tokens >30s）。记录的问题（错误中文化、30s 超时、400 守卫、停止按钮、429 重试）已全部修复并线上复测。
 - **第 2 章 真实 MCP**：✅ 完成（M1–M9 全过）。真实 server 用本机 kimi-datasource 插件（`node plugins/managed/kimi-datasource/bin/kimi-datasource.mjs`）；只读判定以 annotations.readOnlyHint 为唯一依据。
-- **第 3 章 用友 BIP、第 4 章 外部财务引擎/管线**：⏸ **待办**——需要用户提供真实样本/业务数据副本后才能继续（见清单第 3/4 章样本要求）。第 5 章微信报表监控、第 6 章真人可用性随后。
-- 证据归档：`backend/.pytest_tmp/verify-20261022-{general,llm,mcp}/`（result.json + report.md + 日志）。
+- **第 3 章 用友 BIP**：✅ 10/11 完成。修 B2 表头定位（窗口 25 行 + 关键词类别数评分）；aux/balance 识别入库去重汇总入仓全过；**凭证列表格式缺口已记录（P1）**——真实导出（科目列/无账簿列/多 sheet）误判 aux，待修检测签名与多 sheet 入库。脱敏数据在 `脱敏数据/`（生成器 `dev/desensitize_finance_data.py`，校验器 `dev/verify_desensitized.py`）。
+- **第 4 章 外部财务引擎/管线**：🔜 数据就绪（POS 8 日包 + 现金流 5 文件已脱敏）；费用分类/发票真实样本待用户提供；引擎本机已定位 5 个。第 5 章微信报表监控、第 6 章真人可用性随后。
+- 证据归档：`backend/.pytest_tmp/verify-20261022-{general,llm,mcp,bip}/`（result.json + report.md + 日志）。
 
 ## 验证环境约定（重要）
 
@@ -27,3 +28,4 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - git 提交经 clean/smudge 脱敏过滤器（本机路径/公司名/昵称 → 占位符）；反向恢复钥匙 `dev/sanitize-map.local.json` 不入库，丢失无法自动还原（机制见 `dev/SANITIZE.md`）。
 - 提交信息用中文 conventional commits（`fix(assistant): …` / `docs: …` / `test: …`）。
 - 测试：后端 `cd backend && PYTHONIOENCODING=utf-8 venv/Scripts/python.exe -m pytest tests -q`；前端 `cd frontend && npm test` + `npm run build`。
+- **脱敏数据管线**（外部验证数据准备）：生成 `python dev/desensitize_finance_data.py {bip|pos|cash}`，校验 `python dev/verify_desensitized.py`（需 `VERIFY_ATTACH_DIR` 指向会话附件目录）。产物在 `脱敏数据/`（gitignore）。规则：保勾稽随机数（凭证借=贷、明细账余额链、余额表配平）；泛化命名**避开 BIP 表头关键词**（账簿/科目/日期/凭证号/借方/贷方/期初/期末/本期/摘要），否则污染 `_locate_header_row`。
