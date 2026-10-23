@@ -71,3 +71,40 @@ def resolve_engine_root(configured: str | None):
     if p.is_file():
         return p.parent
     return p
+
+
+def engine_subprocess_env() -> dict:
+    """引擎子进程环境：显式指定可用的 TEMP/TMP/TMPDIR。
+
+    服务经 Git Bash 等非 Windows 原生气壳启动时，继承的 TEMP/TMP 可能指向
+    Windows Python 无法创建文件的位置，引擎内 openpyxl 等库创建临时文件时
+    tempfile.gettempdir() 会因全部候选目录失败而抛
+    「No usable temporary directory found」。这里固定到应用自建临时目录。
+    """
+    import os
+
+    from .config import get_finance_data_dir
+
+    tmp = get_finance_data_dir() / "_engine_tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp)
+    return env
+
+
+def repair_upload_mojibake(name: str) -> str:
+    """修复上传文件名的 mojibake：GBK 字节被 HTTP 层按 Latin-1 解码所致。
+
+    curl 等客户端以 GBK 编码发送 multipart 文件名时，Starlette 按 Latin-1
+    解码 header，中文名会变成「ÃÍÑÃô…」形态的乱码，导致依赖中文文件名的
+    引擎匹配失败（如 POS 对账按「*辅助明细账*.xlsx」找文件）。
+    """
+    if not name or not any("\u0080" <= c <= "\u00ff" for c in name):
+        return name
+    try:
+        fixed = name.encode("latin-1").decode("gbk")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return name
+    if any("\u4e00" <= c <= "\u9fff" for c in fixed):
+        return fixed
+    return name

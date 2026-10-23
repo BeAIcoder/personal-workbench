@@ -14,7 +14,7 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **第 1 章 真实付费 LLM**：✅ 基本完成（硅基 SiliconFlow，Key 经界面录入）。L1–L7、L10、L12–L14 通过；**L8/L9 部分完成**（DeepSeek context 完整 126032；GLM/Qwen 被硅基 TPM 429 截断；output 探测三模型未建立——DeepSeek 生成 1024 tokens >30s）。记录的问题（错误中文化、30s 超时、400 守卫、停止按钮、429 重试）已全部修复并线上复测。
 - **第 2 章 真实 MCP**：✅ 完成（M1–M9 全过）。真实 server 用本机 kimi-datasource 插件（`node plugins/managed/kimi-datasource/bin/kimi-datasource.mjs`）；只读判定以 annotations.readOnlyHint 为唯一依据。
 - **第 3 章 用友 BIP**：✅ 11/11 完成（凭证缺口 2026-10-23 修复：检测签名「分录摘要/制单人→voucher、对方科目→aux」+ 多 sheet 以 sheet 名为账簿 + 续行 ffill；原稿 13001 行全导入）。脱敏数据在 `脱敏数据/`（生成器 `dev/desensitize_finance_data.py`，校验器 `dev/verify_desensitized.py`）。
-- **第 4 章 外部财务引擎/管线**：🔜 费用分类主链已过（669 行/657 命中，与引擎独立运行对拍一致）；发票 ZIP 批次冒烟通过；POS/现金流/报表看板待逐管线对拍。引擎路径支持**目录或单一文件**（`utils.resolve_engine_root`，文件取父目录）。
+- **第 4 章 外部财务引擎/管线**：✅ 五管线全部完成——费用分类（对拍一致）、发票（ZIP+冲红配对）、POS（四源对拍一致，7.59s）、现金流（1.13s）、报表看板（快照+CSP+nosniff，2.48s）；E4 超限 400 全过。引擎路径支持**目录或单一文件**（`utils.resolve_engine_root`）。修复：TEMP 环境变量、上传文件名 mojibake、POS analyze --pos/--project（`utils.engine_subprocess_env` / `repair_upload_mojibake`）。
 - **第 4 章 外部财务引擎/管线**：🔜 数据就绪（POS 8 日包 + 现金流 5 文件已脱敏）；费用分类/发票真实样本待用户提供；引擎本机已定位 5 个。第 5 章微信报表监控、第 6 章真人可用性随后。
 - 证据归档：`backend/.pytest_tmp/verify-20261022-{general,llm,mcp,bip,exp}/`（result.json + report.md + 日志）。
 - **第 4 章已验项**：费用分类（对拍一致）、发票（ZIP 批次 + 冲红配对）、E4 边界（三管线超限 400）、E9 基线（首轮建立）、报表监控源数据脱敏（`dev/desensitize_board_data.py`）。
