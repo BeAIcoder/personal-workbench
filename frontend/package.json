@@ -3,6 +3,9 @@
   "version": "1.16.1",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24.22.1"
+  },
   "scripts": {
     "dev": "vite",
     "prebuild": "node scripts/clean-dist.js",

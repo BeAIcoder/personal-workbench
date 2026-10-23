@@ -30,6 +30,7 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - 隔离服务模板见清单 0.1 节；**路径必须用 `D:/…` Windows 风格**——Git Bash 的 `$PWD`（`/d/…`）会被 SQLAlchemy 在 Windows 上误解析成 `D:\d\…`（2026-10-22 踩过，已清理）。
 - 真实 Key 只经界面/环境变量输入，禁止写入文档、日志、提交、截图；证据目录内只放合成值与脱敏记录。
 - 请求预算：首轮单主题 ≤50 次真实供应商请求（含 SDK 重试），达到即停。
+- **Node 运行时 ≥ v24.22.1**（2026-10-21 官方安全更新：CVE-2026-111497 Brotli 解码器越界写 RCE 等共 10 项，22.x/24.x/26.x 低于修复版均受影响）。本机两处 Node 安装（DevEnv 运行时目录与 Program Files）都须 ≥ 该版本；`frontend/.nvmrc` 与 `frontend/package.json` 的 `engines` 为权威约束。PHP 本项目零使用（2026-10-23 排查确认：无 .php 文件、未安装、无容器），无需维护。
 
 ## 工程约定
 
