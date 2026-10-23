@@ -51,6 +51,9 @@ COMPANY_TOKENS = {
     "平安银行": "脱敏银行",
     "中国建设银行": "脱敏银行",
     "商业管理有限公司": "脱敏公司",
+    "茶马": "脱敏街区",
+    "园城": "脱敏街区",
+    "金阶": "脱敏街区",
     "云泰": "脱敏单位",  # 最短片段放最后，避免长词被拆后重复替换
 }
 
@@ -100,19 +103,32 @@ def split_total(total: float, k: int) -> list[float]:
     return parts
 
 
+def _init_cache():
+    if not hasattr(genericize_text, "_name_cache"):
+        genericize_text._name_cache = {}
+
+
 def genericize_text(text: str, name_map: dict[str, str]) -> str:
+    """自由文本泛化（公司/人名/辅助核算令牌/长数字）。令牌名同一原名稳定映射。"""
+    _init_cache()
     """摘要/辅助核算等自由文本：替换已知人名/公司名，泛化【类型:编码/名称】与长数字串。"""
     if not isinstance(text, str) or not text:
         return text
     out = text
     for real, fake in name_map.items():
         out = out.replace(real, fake)
-    # 【类型:编码/名称】【类型:编码】→ 编码等长随机、名称泛化
+    # 【类型:编码/名称】【类型:编码】→ 编码等长随机、名称泛化（同一原名稳定映射，保勾稽）
+    cache = genericize_text._name_cache
+
     def _tok(m):
         kind, code, name = m.group(1), m.group(2), m.group(3)
         new_code = "".join(rng.choice("0123456789") for _ in code) if code else ""
-        new_name = f"脱敏{kind}{rng.randint(1, 99)}" if name else ""
-        return f"【{kind}:{new_code}/{new_name}】" if name else f"【{kind}:{new_code}】"
+        if not name:
+            return f"【{kind}:{new_code}】"
+        key = (kind, name)
+        if key not in cache:
+            cache[key] = f"脱敏{kind}{len(cache) + 1}"
+        return f"【{kind}:{new_code}/{cache[key]}】"
     out = re.sub(r"【([^：:【】]{1,12}):([0-9A-Za-z./_-]{1,40})/([^【】]{1,40})】", _tok, out)
     out = re.sub(r"【([^：:【】]{1,12}):([0-9A-Za-z./_-]{1,40})】",
                  lambda m: f"【{m.group(1)}:{''.join(rng.choice('0123456789') for _ in m.group(2))}】", out)

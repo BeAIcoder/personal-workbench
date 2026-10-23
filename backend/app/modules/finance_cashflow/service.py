@@ -22,7 +22,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
-from ...utils import resolve_engine_root
+from ...utils import engine_subprocess_env, repair_upload_mojibake, resolve_engine_root
 from .models import CashflowRun
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ def _safe_name(filename: str) -> str:
     仅取末段（防路径穿越），替换 Windows 非法字符与控制字符，去掉首尾点/空格，
     规避设备保留名，并对超长词干截断。返回的是展示名，也是磁盘名的主体。
     """
-    raw = (filename or "").replace("\\", "/").split("/")[-1]
+    raw = repair_upload_mojibake(filename or "").replace("\\", "/").split("/")[-1]
     raw = "".join("_" if ch in _WIN_ILLEGAL or ord(ch) < 32 else ch for ch in raw)
     raw = raw.strip(" .")
     if raw in ("", ".", ".."):
@@ -246,6 +246,7 @@ def execute_run(db: Session, run_id: int) -> dict:
         proc = subprocess.run(
             args, cwd=str(edir), capture_output=True, text=True,
             timeout=STEP_TIMEOUT, encoding="utf-8", errors="replace",
+            env=engine_subprocess_env(),
         )
 
         run.elapsed_sec = round(time.perf_counter() - t0, 2)

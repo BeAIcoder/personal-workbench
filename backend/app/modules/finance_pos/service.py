@@ -20,7 +20,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
-from ...utils import resolve_engine_root
+from ...utils import engine_subprocess_env, repair_upload_mojibake, resolve_engine_root
 from .models import PosRun
 
 logger = logging.getLogger(__name__)
@@ -48,10 +48,12 @@ class EngineUnavailableError(RuntimeError):
 def _safe_name(filename: str) -> str:
     """把用户上传的文件名转成 Windows/Linux 都能落盘的安全单段名（保留扩展名）。
 
+    入口先修复 HTTP 头 Latin-1 解码导致的 mojibake（curl 以 GBK 发送中文名时），
+    否则依赖中文文件名的引擎匹配（如 POS 对账找「*辅助明细账*.xlsx」）会失败。
     仅取末段（防路径穿越），替换 Windows 非法字符与控制字符，去掉首尾点/空格，
     规避设备保留名，并对超长词干截断。返回的是展示名，也是磁盘名的主体。
     """
-    raw = (filename or "").replace("\\", "/").split("/")[-1]
+    raw = (repair_upload_mojibake(filename or "")).replace("\\", "/").split("/")[-1]
     raw = "".join("_" if ch in _WIN_ILLEGAL or ord(ch) < 32 else ch for ch in raw)
     raw = raw.strip(" .")
     if raw in ("", ".", ".."):
@@ -219,14 +221,19 @@ def _run_script(script: str, args: list[str], cwd: Path) -> str:
         [sys.executable, script, *args], cwd=str(cwd),
         capture_output=True, text=True, timeout=STEP_TIMEOUT,
         encoding="utf-8", errors="replace",
+        env=engine_subprocess_env(),
     )
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, script, proc.stdout, proc.stderr)
     return ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
 
 
-def execute_run(db: Session, run_id: int) -> dict:
-    """执行：先台账后差异分析；产物 = output/* + input 下新生成的文件。"""
+def execute_run(db: Session, run_id: int, project: str | None = None) -> dict:
+    """执行：先台账后差异分析；产物 = output/* + input 下新生成的文件。
+
+    project：可选，透传引擎 analyze --project（引擎按 POS 终端号硬编码映射项目名，
+    脱敏数据的账簿名对不上时用于显式指定）。
+    """
     run = db.get(PosRun, run_id)
     if run is None:
         raise LookupError("运行记录不存在")
@@ -251,8 +258,11 @@ def execute_run(db: Session, run_id: int) -> dict:
             ["--root", str(input_dir), "--output", str(out_dir / "POS项目台账.xlsx")],
             edir,
         ))
+        analyze_args = ["--root", str(input_dir), "--pos", str(out_dir / "POS项目台账.xlsx")]
+        if project and project.strip():
+            analyze_args += ["--project", project.strip()]
         logs.append(f"== {ANALYZE_SCRIPT} ==\n" + _run_script(
-            ANALYZE_SCRIPT, ["--root", str(input_dir)], edir,
+            ANALYZE_SCRIPT, analyze_args, edir,
         ))
 
         run.elapsed_sec = round(time.perf_counter() - t0, 2)

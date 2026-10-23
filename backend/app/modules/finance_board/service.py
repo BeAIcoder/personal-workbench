@@ -19,7 +19,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
-from ...utils import resolve_engine_root
+from ...utils import engine_subprocess_env, resolve_engine_root
 from ...database import SessionLocal
 from .models import BoardSnapshot
 
@@ -74,6 +74,7 @@ def _run_step(script: Path) -> str:
         timeout=STEP_TIMEOUT,
         encoding="utf-8",
         errors="replace",
+        env=engine_subprocess_env(),
     )
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, script.name, proc.stdout, proc.stderr)

@@ -3,7 +3,7 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import Query, APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
@@ -60,9 +60,9 @@ def run_detail(run_id: int, db: Session = Depends(get_db)):
 
 @router.post("/runs/{run_id}/execute", response_model=PosRunOut,
              summary="执行运行（台账生成 + 四源差异分析）")
-def execute_run(run_id: int, db: Session = Depends(get_db)):
+def execute_run(run_id: int, project: str | None = None, db: Session = Depends(get_db)):
     try:
-        return service.execute_run(db, run_id)
+        return service.execute_run(db, run_id, project=project)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except service.EngineUnavailableError as exc:
