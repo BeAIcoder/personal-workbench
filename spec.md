@@ -12,6 +12,13 @@
 > 超时口径 / 导入行数上限 / 现金流分页 / 看板日志 / E2E 隔离与构建检测）。第 13 节测试数字已回填
 > **2026-10-22 第三轮实测**；第 15 节补充算法设计逻辑、模块实现状态与验证情况。
 > 详细修复与验收记录见 `20261022-修复与验收报告.md`。
+>
+> **2026-10-23 外部验证轮（as-built 追平，版本号仍为 v1.16.1）**：依据 `20261022-外部验证计划与Checklist.md`
+> 完成第 0–6 章验证——BIP 凭证列表缺口修复（列签名识别 + 多 sheet 合成账簿列 + 续行 ffill + 表头定位关键词类别数评分）、
+> 五引擎路径配置（`FINANCE_{EXPENSE,INVOICE,POS,CASHFLOW,BOARD}_*_PATH`，目录或单一文件）、
+> 引擎子进程 TEMP 显式化与上传文件名 mojibake 修复、POS `--pos`/`--project` 透传、
+> 财务数据脱敏保勾稽随机（`dev/desensitize_finance_data.py`）。算法细节与功能拓扑另见
+> `算法实现逻辑.md` 与 `功能模块拓扑图.md`。第 6 章可用性为自动化代行，真人阈值待复测。
 
 ## 1. 定位与硬约束（不可违反）
 
@@ -193,8 +200,13 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 | finance_cashflow 现金流填报 | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护；运行记录列表分页（`page` ≥ 1、`page_size` 1–100，返回 `{total, items, page, page_size}`，按 id 倒序），上传 50MB |
 | finance_hello 模块示例 | 机制实证 | 连通性自检 + 样例表 `mod_hello_entry` + 只读工具 `hello_ping`（财税专员白名单内） |
 
-跨项目引擎路径（费用分类 / 发票工具）经 `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH`
-配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。
+跨项目引擎/数据路径（费用分类 / 发票 / POS / 现金流 / 报表看板）经
+`FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` / `FINANCE_POS_ENGINE_PATH` /
+`FINANCE_CASHFLOW_ENGINE_PATH` / `FINANCE_BOARD_PIPELINE_PATH` 配置项解析，默认按AssetLib相对位置推导；
+**路径接受目录或单一文件**（`utils.resolve_engine_root`：文件取其父目录，不存在原样返回交由调用方校验）；
+引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。引擎子进程统一经
+`utils.engine_subprocess_env()` 显式指定 TEMP/TMP/TMPDIR（修 Git Bash 继承破损 TEMP 导致引擎临时文件失败），
+上传文件名经 `utils.repair_upload_mojibake()` 修复 GBK/Latin-1 乱码（依赖中文文件名的引擎匹配）。
 BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级。
 
 **上传限额与导入行数（分模块口径，as-built）**：聊天附件 10MB；费用分类 / 发票 / 数据仓 / 税务
@@ -583,17 +595,18 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 空 | AI 助手模型兜底配置；填齐三项即激活。界面配置优先于它 |
 | `FINANCE_DATA_DIR` | 空（→ `backend/data/finance`） | 财务模块数据目录 |
 | `DEBUG_DATA_DIR` | 空（→ `backend/data/debug`） | 调试中心数据目录（运行时读取，测试隔离用） |
-| `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` | 空（按AssetLib相对位置推导） | 跨项目引擎路径 |
+| `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` / `FINANCE_POS_ENGINE_PATH` / `FINANCE_CASHFLOW_ENGINE_PATH` / `FINANCE_BOARD_PIPELINE_PATH` | 空（按AssetLib相对位置推导） | 跨项目引擎/管线路径；**接受目录或单一文件**（文件取父目录，`utils.resolve_engine_root`）；缺失时对应接口 503 中文，不影响其他模块 |
 
 其余运行时配置（供应商、模型、激活模型、Agent 工作参数、技能/Bash/插件开关、MCP 服务器）
 全部走界面存库（`agent_settings` 单行 + 各配置表），无需手改 `.env`。
 
 ## 13. 测试与验证
 
-> 本节数字分为两类：**2026-10-20 历史快照**与 **2026-10-22 第三轮实测**。第三轮实测：
-> 后端 pytest 888/888、前端 vitest 44 文件 648/648、生产构建通过、17 区探针 656/656、
-> 旧 E2E 三脚本通过、性能探针最慢 p95 76.68ms（`/api/health` p95 21.81ms 越 20ms 预算，未改阈值）。
-> 真实 LLM/外部引擎/真人可用性未验证。
+> 本节数字分为三类：**2026-10-20 历史快照**、**2026-10-22 第三轮实测**与 **2026-10-23 外部验证轮实测**。
+> 2026-10-23 外部验证轮：后端 pytest **908/908**、前端 vitest **651/651（45 文件）**、生产构建通过、
+> 17 区探针 656/656 沿用第三轮口径（外部验证轮未重跑探针，回归以 pytest/vitest/build 为准）。
+> **真实 LLM / 外部引擎 / 真实 MCP / 用友 BIP 原稿已于外部验证轮完成实测**（第 1–4 章，硅基 TPM 限流与
+> 真人可用性为外部约束，见 `AGENTS.md` 验证状态节）；第 6 章可用性为自动化代行，真人阈值待复测。
 
 - **后端 pytest（2026-10-22 第三轮实测）**：`backend/tests/` **888/888 通过**（257.75 秒；4 条上游弃用警告）。conftest 临时库隔离、
   引擎对拍、monkeypatch 探测/LLM，全部离线可重复。
@@ -673,24 +686,31 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **CSV 公式注入防护**：用户可控文本以 `=`、`+`、`-`、`@` 开头时前置单引号。
 - **前端竞态守卫**：列表/预览/详情统一请求序号，迟到响应丢弃，失败清理与 loading 复位只对最新请求生效。
 - **概览截断**：今日日程有界读取，截断时返回总数与布尔截断标记，不静默丢数据。
+- **BIP 表头定位**（`_locate_header_row`）：前 25 行内按「关键词类别数」评分（≥2 类候选），不用总命中数——用友元数据行「对方科目×2」与余额表两级表头都会骗过总命中评分（2026-10-23 外部验证修复）。
+- **BIP 列签名识别**（`detect_file_type`）：分录摘要/制单人 → voucher（凭证列表独有，按账簿分 sheet 无账簿列）；对方科目 → aux；期初/本期/期末 → balance；unknown 进人工映射。多 sheet 以 sheet 名合成 `__sheet_ledger__` 账簿列；续行按账簿分组 ffill（凭证日期/凭证号不重复）。
+- **引擎路径解析**（`utils.resolve_engine_root`）：目录原样 / 文件取父目录 / 不存在原样返回交由调用方 503；覆盖五模块。
+- **引擎子进程环境**（`utils.engine_subprocess_env`）：TEMP/TMP/TMPDIR 显式钉到应用自建临时目录，修 Git Bash 继承破损 TEMP；上传文件名 mojibake 修复（`repair_upload_mojibake`，latin-1→gbk 回转，回转含中文才采纳）。
+- **探测 429 退避**（`model_probe._chat_once`）：429 等 30s 重试至多 2 次，避免厂商 TPM 窗口把探测判成部分完成。
+- **财务数据脱敏**（`dev/desensitize_finance_data.py`）：金额随机 + 勾稽重算（凭证借=贷、明细账余额链、余额表配平、报表合计行），泛化命名避开 BIP 表头关键词（防污染表头定位评分）；`dev/verify_desensitized.py` V1–V5 断言。
 
 ### 15.2 模块功能需求实现情况
 
 | 模块 | 实现状态 | 验证状态 |
 |---|---|---|
-| 任务 / 日程 / 笔记 / 概览 / 搜索 | 已实现 | 后端 + 前端 + E2E 通过 |
-| AI 助手 / Agent 团队 / 模型探测 | 已实现 | 离线降级与契约通过；真实 LLM 未验证 |
-| 知识与记忆 / MCP / 技能包 / 专家团文件 | 已实现 | 合成外部依赖通过；真实外部系统未验证 |
+| 任务 / 日程 / 笔记 / 概览 / 搜索 | 已实现 | 后端 + 前端 + E2E + 可用性代行通过 |
+| AI 助手 / Agent 团队 / 模型探测 | 已实现 | 真实 LLM 实测（硅基三模型；L8/L9 完全体经 Step5 适配补上）；GLM/Qwen 受硅基 TPM 429 截断记录在案 |
+| 知识与记忆 / MCP / 技能包 / 专家团文件 | 已实现 | 真实 MCP（kimi-datasource）+ 本地 mock 实测通过 |
 | 定时任务 / 调试中心 | 已实现 | E2E 通过 |
-| 费用 / 发票 / POS / 现金流 / 报表看板 | 已实现 | 合成 fixture 与降级通过；真实引擎业务数据未验证 |
-| 数据仓 / BIP / 个人记账 / 企业所得税 | 已实现 | 本地数据库与导入导出边界通过 |
+| 费用 / 发票 / POS / 现金流 / 报表看板 | 已实现 | 真实引擎 + 脱敏数据实测（对拍一致、E4 边界、E9 ±20% 复跑、W1–W9 全过） |
+| 数据仓 / BIP / 个人记账 / 企业所得税 | 已实现 | BIP 原稿 13001 行实测入库；其余本地数据库与导入导出边界通过 |
+| 可用性（第 6 章） | — | U1–U10 自动化代行完成；真人阈值（≥80% 无协助）待招募复测 |
 
 ### 15.3 已验证运行情况
 
-- 后端 pytest：`888/888`。
-- 前端 vitest：`44 文件、648/648`。
-- 生产构建：通过。
-- E2E：17 区探针 `656/656`；旧 E2E 三脚本通过。
+- 后端 pytest：`908/908`（2026-10-23 外部验证轮）。
+- 前端 vitest：`45 文件、651/651`；生产构建通过（9.58s）。
+- E2E：17 区探针 `656/656`（2026-10-22 第三轮口径）；旧 E2E 三脚本通过。
 - 性能：最慢 p95 `76.68ms`；`/api/health` p95 `21.81ms` 越 20ms 预算，未改阈值。
 - 真实浏览器：临时数据库下完成主要菜单与新增入口验收。
+- 外部验证（2026-10-23，隔离服务 + 脱敏数据，真实 `backend/data` 字节级零改动）：第 0 章 G1–G9、第 1 章 LLM、第 2 章 MCP、第 3 章 BIP 11/11、第 4 章五管线 + E4/E9、第 5 章 W1–W9、第 6 章 U1–U10 代理走查。
 - 完整记录见 `20261022-修复与验收报告.md`。
