@@ -16,7 +16,7 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **第 3 章 用友 BIP**：✅ 11/11 完成（凭证缺口 2026-10-23 修复：检测签名「分录摘要/制单人→voucher、对方科目→aux」+ 多 sheet 以 sheet 名为账簿 + 续行 ffill；原稿 13001 行全导入）。脱敏数据在 `脱敏数据/`（生成器 `dev/desensitize_finance_data.py`，校验器 `dev/verify_desensitized.py`）。
 - **第 4 章 外部财务引擎/管线**：✅ 五管线全部完成——费用分类（对拍一致）、发票（ZIP+冲红配对）、POS（四源对拍一致）、现金流、报表看板（快照+CSP+nosniff）；E4 超限 400 全过；**E9 ±20% 同数据复跑判定通过**（expense +4~12%、POS +18.8%、现金流 +0.9%、看板 +8.5%，均在噪声带内）。引擎路径支持**目录或单一文件**（`utils.resolve_engine_root`）。修复：TEMP 环境变量、上传文件名 mojibake、POS analyze --pos/--project（`utils.engine_subprocess_env` / `repair_upload_mojibake`）。
 - **第 5 章 报表看板 W1–W9**：✅ 全过（多次 run 200 / iframe 真实渲染 27,531.6 万元 / log_tail 有界 500 字符 / failed 快照可见 / 目录改名 503 中文 / 并行双 run A200-B409 / 路径安全单测覆盖 / CSP+nosniff / 脱敏源 14 文件 sha256 零改动）。证据：`backend/.pytest_tmp/verify-20261022-exp/board-w1-w9-e9rerun.json`。
-- **第 6 章 真人可用性 U1–U10**：🔶 自动化代行完成（U1–U10 流程可达性全过；U10 ≥80% 无协助阈值**待真人复测**——需另招募 3–5 名真实用户）。任务脚本与记录表：`backend/.pytest_tmp/verify-20261022-exp/usability-task-script.md`。
+- **第 6 章 真人可用性 U1–U10**：🔶 三档证据完成——① API 级代行（U1–U10 流程可达性）；② **browser-use 轮**（Kimi Code Desktop 内置浏览器真实点击/文件对话框/确认框：U2 新建、U3 月历+误操作 422、U4 笔记+搜索、U5 设置抽屉、U6 真实上传分类 98.2%、U7 取消零请求/确认 204）；③ U5/U6/U9/U10 引用第 1/4 章实证。browser-use 轮发现并修复 P3（缺 Key 时「当前生效模型」文案误导，前端 652/652）。U10 ≥80% 无协助阈值**仍待真人复测**（browser-use 不能替代真人迷路/主观评分）。记录表：`backend/.pytest_tmp/verify-20261022-exp/usability-task-script.md`。
 - 证据归档：`backend/.pytest_tmp/verify-20261022-{general,llm,mcp,bip,exp}/`（result.json + report.md + 日志）。
 
 ## 架构与算法文档（2026-10-23 新建）

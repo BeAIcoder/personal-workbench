@@ -230,6 +230,18 @@ describe('当前生效模型与供应商状态（P0-2 / P1-7）', () => {
     expect(effectiveModelText(null)).toContain('未配置')
   })
 
+  it('缺 Key 的生效模型不得宣称可用（env 兜底无 Key 时明示不可用）', () => {
+    // browser-use 走查发现：env 兜底有模型名但无 Key 时，抽屉仍显示「当前生效模型」，
+    // 与对话区「尚未配置模型 API」矛盾——缺 Key 必须明示对话不可用
+    expect(effectiveModelText({ model: 'Qwen/Qwen3.5', provider_name: 'env兜底', api_key_set: false }))
+      .toBe('当前生效模型：Qwen/Qwen3.5（来源：.env 兜底，未配置 Key，对话不可用）')
+    expect(effectiveModelText({ model: 'glm-5.2', provider_name: '智谱', api_key_set: false }))
+      .toBe('当前生效模型：glm-5.2（来源：供应商「智谱」，未配置 Key，对话不可用）')
+    // api_key_set 为 true 或缺省（旧形态）时维持原文案
+    expect(effectiveModelText({ model: 'Qwen/Qwen3.5', provider_name: 'env兜底', api_key_set: true }))
+      .toBe('当前生效模型：Qwen/Qwen3.5（来源：.env 兜底）')
+  })
+
   it('供应商 Key 徽标：停用不显示「已配置」', () => {
     expect(providerKeyBadge({ enabled: true, api_key_set: true })).toEqual({ text: '已配置', type: 'success' })
     expect(providerKeyBadge({ enabled: true, api_key_set: false })).toEqual({ text: '未配置 Key', type: 'info' })

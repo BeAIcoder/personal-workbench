@@ -303,12 +303,17 @@ export function probeAtShort(v) {
 }
 
 // 当前生效模型文案（供应商页顶部展示）：来源=界面供应商激活模型 / .env 兜底
-// teamConfig 为脱敏后的 config（含 model/provider_name）；未配置时引导去下方添加
+// teamConfig 为脱敏后的 config（含 model/provider_name/api_key_set）；未配置时引导去下方添加
+// 缺 Key 的生效模型（env 兜底未填 Key、供应商 Key 被清空）不得宣称可用——
+// 与对话区「尚未配置模型 API」口径对齐，明示对话不可用（browser-use 走查发现）
 export function effectiveModelText(cfg) {
   const model = String((cfg && cfg.model) || '').trim()
   const provider = String((cfg && cfg.provider_name) || '').trim()
   if (!model) return '当前生效模型：未配置（可在下方添加供应商并激活模型）'
   const source = provider === 'env兜底' ? '.env 兜底' : `供应商「${provider}」`
+  if (cfg && cfg.api_key_set === false) {
+    return `当前生效模型：${model}（来源：${source}，未配置 Key，对话不可用）`
+  }
   return `当前生效模型：${model}（来源：${source}）`
 }
 
