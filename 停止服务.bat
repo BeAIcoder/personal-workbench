@@ -4,7 +4,7 @@ chcp 936 >nul
 title 个人工作台 - 停止服务
 
 set "pid="
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /i ":8000 .*LISTENING"') do set "pid=%%a"
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /i ":8000.*LISTENING"') do set "pid=%%a"
 
 if not defined pid (
     echo 没有发现正在运行的服务。

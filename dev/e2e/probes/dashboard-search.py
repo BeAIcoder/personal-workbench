@@ -574,8 +574,11 @@ try:
                 f"今日日程计数与列表不一致: {summary['schedule']}"
             assert "DS概览-午夜整结束" not in titles, "今天 00:00 整结束的日程被误计入今日日程"
             assert "DS概览-明日会议" not in titles, "明日日程被误计入今日日程"
-            assert summary["schedule"]["upcoming_7d"] == 1, \
-                f"未来 7 天日程计数异常: {summary['schedule']['upcoming_7d']}"
+            # 未来 7 天：明日会议恒为 1；今日 09:00 会议是否已发生取决于执行时刻。
+            # 原断言写死为 1，导致 09:00 前运行探针时误报（后端按 start_time >= now 返回 2）。
+            expected_upcoming = 1 + (1 if datetime.now().hour < 9 else 0)
+            assert summary["schedule"]["upcoming_7d"] == expected_upcoming, \
+                f"未来 7 天日程计数异常: {summary['schedule']['upcoming_7d']}，预期 {expected_upcoming}"
 
             upcoming = summary["upcoming_tasks"]
             assert [t["title"] for t in upcoming] == ["DS概览-逾期", "DS概览-今日到期"], \
