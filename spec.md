@@ -46,7 +46,7 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
    ├── 静态路由 ×12：tasks / schedules / notes / search / dashboard / assistant
    │                  / jobs / knowledge / mcp / skills / experts / model_probe（探测 + 厂商预设别名）
    ├── Module Registry（app/modules/）：目录扫描 manifest → 挂载路由/表/工具/预置
-   ├── Agent 团队（agents/）：team 表驱动 + orchestrator 四级路由 + tools 白名单
+   ├── Agent 团队（agents/）：team 表驱动 + orchestrator 五级路由 + tools 白名单
    ├── 知识与记忆（rag BM25 / memory 召回注入 / mcp stdio 客户端）
    └── SQLite（35 张表：宿主 12 + 模块 22 + v1.2.0 遗留 1）
 ```
@@ -153,6 +153,13 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
   模型整体未配置时不拦截（走既有 `need_llm_config` 引导）。
 - 单张图片上限与上传一致（10MB），越界路径与不存在的文件直接忽略并在文本中说明。
 
+**聊天文档分析与多入口上传（2026-10-27）**
+
+- 白名单新增 `.pdf .doc .docx .ppt .pptx`，文件选择、聊天区拖放、输入框剪贴板粘贴共用前端 `uploadFiles`；保留单文件 10MB、并发 loading、图片预览和普通文字粘贴行为。
+- 上传保留原件并返回 `kind="document_text"` 与原文件 `name/path/size`；服务端在同会话 `.extracted/` 写 UTF-8 sidecar，编排层校验原路径与 sidecar 均在 `UPLOAD_DIR` 后把正文直接注入消息，普通文本模型即可分析。
+- PDF 由 pdfplumber 分页提取；DOCX/PPTX 由 python-docx/python-pptx 提取段落、表格、幻灯片与已有备注；DOC/PPT 经 LibreOffice 隔离无界面转换后复用新版解析。解析/转换在线程执行，失败清理并返回中文 400。
+- 每附件正文最多 80,000 字符，PDF 前 300 页、PPT 前 500 页，截断显式标注；OOXML 成员数/解压大小与旧版转换时间均有限额。扫描件和文档内图片不做 OCR，无文字时明确拒绝而非假成功。
+
 **供应商 / 模型两级管理**
 
 - 一家供应商一张卡片（协议 openai/anthropic、base_url、api_key、启停），下挂多个模型
@@ -178,6 +185,10 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 - **执行链路**：复用 `orchestrator.chat`——路由（指定专家 > 关键词 > LLM 结构化调度）→ 专用会话 `job-{id}`
   → 回复写成笔记并回填 `last_status/last_error/recent_runs/last_note_id`；
   `POST /{id}/run` 立即执行与调度循环共用同一入口。
+- **套餐边界**（Task 5）：`job-*` 会话选中 `usage_scope=plan_interactive_only`（仅限交互式使用的套餐）的
+  生效模型（专家绑定或全局激活）时，聊天与流式同口径返回中文拒绝、不发起推理；**自动路由**在路由前
+  预检全局模型（路由本身可能调用全局模型仲裁），**明确指定专家**不预检（路由不触碰全局模型），
+  两种情况都由路由后的专家绑定模型复核兜底；普通聊天会话不受影响。
 - **模块动作任务**：`action` 非空时到点执行注册的模块动作（`JOB_ACTIONS`，如 `finance_board.run`）而非 LLM 对话，
   走线程池执行、不写笔记；`GET /api/jobs/actions` 列出已注册动作。
 - **并发与异常**：调度循环每 20s 检查一次；同一任务串行执行（上次未结束则本轮跳过）；
@@ -367,14 +378,18 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 
 ## 6. 模型管理与能力探测（v1.14）
 
-- **18 家厂商预设**数据化（`app/agents/provider_presets.json`，`GET /api/providers/presets` ·
-  `POST /api/providers/presets/reload` 热加载）；文件缺失/解析失败回退内置最小默认集并记警告。
-  每条预设含 `name/label/protocol/base_url/models/reasoning_models/vision_models/note/docs_url`。
-- **模型能力探测**（直连厂商 `/chat/completions`，仅 openai 协议）：
+- **33 家厂商预设**数据化（`app/agents/provider_presets.json`，`GET /api/providers/presets` ·
+  `POST /api/providers/presets/reload` 热加载；含按量、仅交互（`plan_interactive_only`）、
+  交互+API（`plan_api_allowed`）三类套餐与本地/自定义）；文件缺失/解析失败回退内置最小默认集并记警告。
+  每条预设含 `name/label/protocol/base_url/models/reasoning_models/vision_models/note/docs_url`；
+  v3 起新增 `session_header`/`user_agent`（官方要求会话头的套餐，如 OpenCode Go 的
+  `x-opencode-session` + 自定义 UA：由 `llm.provider_headers` 生成默认请求头，模型实例按
+  session 维度缓存；密钥只走 SDK 鉴权，绝不进自定义头）。
+- **模型能力探测**（直连厂商 `/chat/completions`；anthropic 协议按 `/v1/messages` 实测，不再一律跳过）：
 
 | 探测 | 方法 |
 | --- | --- |
-| 思考能力 `probe/reasoning` | `reasoning_effort` 逐档各发一发，判定 supported / accepted / unsupported |
+| 思考能力 `probe/reasoning` | 档位取模型已同步/手动的 `thinking_levels`，参数风格取 `capability_meta.reasoning_style`（effort / `thinking{type}` / `enable_thinking+thinking_budget`；anthropic 走 `output_config.effort`），逐档判定 supported / accepted / unsupported——**accepted（接受参数但无思考输出）≠ supported**；获得明确结论（supported/accepted/unsupported）时回写 `supports_thinking`/`thinking_levels` 并记 `manual_fields` + 来源 `probe` 作为本地覆盖（默认同步不覆盖实测值，`override_manual`/reset-overrides 可清除恢复）；全部请求失败不写结论、不记覆盖 |
 | 上下文 `probe/context` | 二分查找，≤6 次小请求，`max_tokens=1` |
 | 最大输出 `probe/output` | 阶梯 1024 → 131072 |
 | `probe/all` | 三连探测，单步失败不中断，汇总写 `probe_result` + `probed_at` |
@@ -383,8 +398,37 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
   探测失败一律 **200 + error** 返回——**不可达 ≠ 不支持**，`supports_thinking` 保持 `-1` 不误判。
 - **模型级自定义**：`temperature`（空 = 跟随系统默认，已接入 `build_model` 运行时、openai/anthropic 双协议注入）、
   `note`、`supports_thinking` / `thinking_levels` 手动覆盖、`supports_vision`。
+- **工具/图片实测落库**（`POST /api/assistant/config/test` 带 `model_id`）：按该模型执行，
+  明确结论才回写 `supports_tools` / `supports_vision`（来源 `probe`：成功→1、400/422 参数拒绝→0、
+  401/403/404/408/429/5xx 与网络错误保持原值，不把「没测到」当成「不支持」）。probe 结论记入
+  `manual_fields` 作为本地覆盖：默认目录同步不覆盖它，`override_manual=true` 或 reset-overrides
+  可清除并恢复同步值。
 - API Key 存 `model_providers.api_key`，**DPAPI 静态加密**（`dpapi:` 前缀）；回传前端脱敏为 `••••••xxxx`，
   掩码哨兵 `********`（8 个星号）或脱敏值原样回传均表示保留现值（v1.15.1 起双形态均拒绝覆盖真实密钥）。
+  可选管控面凭证（火山 AK/SK）同口径密封存储，任何 GET 不回传。
+- **在线模型同步**（Task 4，`POST /api/assistant/providers/{id}/sync-models`）：设置页**每供应商**卡片
+  「同步模型」按钮触发（33 家预设中 22 家带官方列表适配器，其余按能力目录兜底并如实标注）。
+  在线适配器优先（payload→`RemoteModel` 纯映射）；无官方列表
+  （`models_url` 空）/无凭证/在线失败 → 能力目录兜底，响应 `online=false` + `partial=true` + `errors`
+  如实标注，**绝不假成功**（200+空列表或结构不可识别一律 `RemoteFetchError`）。单事务幂等 upsert：
+  并发 409、批内去重、一条非法记录整批回滚（`ok=false`，不裸 500）、第二次同步全 unchanged、
+  远端消失不删本地；manual/probe/note/temperature/enabled/active 全保留。记录数组元素必须是
+  JSON 对象（`_require_entries`/阿里 entries 入口统一守卫，字符串/null/数组/数字抛
+  `SyncRecordError`）；fetch 阶段对适配器未预期缺陷另有结构化兜底（只记异常类型，不裸 500）。
+  `override_manual` 默认 false：手动能力字段与实测（probe）结论不被覆盖；界面勾选
+  「覆盖手动/实测」后传 `override_manual=true`，且每次同步前弹确认警告。有界分页
+  （OpenRouter 同源 ≤5 页、Anthropic `has_more`、阿里 `page_no`、火山 `PageNumber`），
+  到上限仍有后续页标 `truncated=true`。同步只发目录/管控请求、绝不推理（唯一例外：火山官方管控面
+  三个只读列表 Action 的只读 POST，body 仅分页字段，发送前强制官方 host + Action 白名单 + 根路径）。
+- **能力三态与来源**（Task 6）：模型能力统一三态——支持（1）/ 不支持（0）/ 未知（-1），
+  未知不显示红叉、标「未确认」；每条能力带来源（manual / probe / official_catalog / sync），
+  界面按 `modelCapabilities.js` 纯函数渲染徽章。`reasoning_effort` 全局白名单
+  `''/off/none/minimal/low/medium/high/xhigh/max`，`off` 为旧版「关闭思考」兼容保留、语义同 `none`；
+  前端 `normalizeEffort` 把旧 `off` 值在可关闭模型上迁移为 `none` 并保存。
+- **动态思考档位**（Task 6）：聊天面板思考下拉由激活模型（及各专家生效模型）的
+  `thinking_levels` + `reasoning_style` + `thinking_can_disable` 动态生成；`off/none`
+  不受声明集门控（可关闭模型始终提供「关闭」项，保证迁移值有可选项目），其余 canonical 档位
+  受声明集门控；已知不支持思考的模型禁用该下拉。
 
 ## 7. SSE 流式对话协议
 
@@ -508,9 +552,13 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
   落盘到 `data/uploads/{session_id}/`；xlsx/xls 用 openpyxl 读第一张工作表转 CSV（`utf-8-sig`）。
   读取统一走共享分块限流 `read_upload_limited`（1MB 分片、超限即抛 `UploadTooLargeError`，全局映射 400），
   不再裸 `file.read()`；宿主全局请求体上限 128MB（见第 10 节）。
+- **文档解析**：PDF/DOCX/PPTX 与经 LibreOffice 转换的 DOC/PPT 均在线程提取，原件保留、正文写入
+  `.extracted/`；OOXML ≤5000 成员/解压 ≤100MB，正文 ≤8 万字符，PDF ≤300 页、PPT ≤500 页，旧版转换 60s。
+  失败清理原件与 sidecar；无文字扫描件明确拒绝，不做 OCR。
 - **注入**：对话时对每个附件路径做 `resolve() + relative_to(UPLOAD_DIR)` 校验，越界路径直接忽略；
-  仅白名单文本后缀（txt/md/csv/json/log/py/html/xml/yaml/yml/sql）且 ≤300KB 的附件按文本注入消息
-  （截断至 8 万字符）；其余仅告知路径，提示 Agent 用 Bash 工具处理（Bash 默认关闭）。
+  文档 sidecar 同样校验并直接注入提取正文，缺失时提示重新上传；普通白名单文本后缀
+  （txt/md/csv/json/log/py/html/xml/yaml/yml/sql）且 ≤300KB 的附件按文本注入消息（截断至 8 万字符）；
+  其余仅告知路径，提示 Agent 用 Bash 工具处理（Bash 默认关闭）。
 - **图片**：以 base64 DataBlock 注入（见 4.2「聊天传图与多模态理解」），同样受上传目录与大小上限约束。
 
 ### 9.4 模型接入与配置存储（`agents/llm.py` + `config_store.py`）
@@ -518,10 +566,17 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - 配置优先级：激活模型（`model_providers` + `provider_models`，界面管理）> `.env` 的 `LLM_*` 兜底。
 - openai 协议 → `OpenAIChatModel`（覆盖 ModelScope/硅基流动/DeepSeek/火山方舟/DashScope 兼容/Ollama）；
   anthropic 协议 → `AnthropicChatModel`（强制流式聚合）。
-- 思考深度 `reasoning_effort`（''/off/low/medium/high/max）映射到两协议各自的 thinking 参数；
+- 思考参数由 `reasoning_request(cfg, effort)` 按能力契约生成（Task 5，见 15.1）：
+  档位不写死表——AgentScope 不认识的档位（openai 侧 `max`）经 `extra_body` 原样发送且不与顶层重复；
+  **模型已声明 `thinking_levels` 时，声明集之外的档位（含 `max`）视为不支持，回退声明默认档/跟随模型，
+  不原样发给供应商**；未声明档位集时保持兼容；未知/非法已存档档位回退「跟随模型」
+  （不擅改 medium/xhigh），强制思考模型（`thinking_can_disable=False`）不可被关成 off；
+  anthropic 原生 `reasoning_effort`（含 max，内部转 `output_config.effort`），toggle 风格走 `thinking_mode`。
   温度默认 0.3，模型级 `temperature` 非空时覆盖。
 - 专家可独立绑定模型（`agent_specs.model_id`），编排器按 `model_cfg_by_id` 构建并缓存；
-  不可用（删除/停用）时回退全局激活模型。
+  不可用（删除/停用）时回退全局激活模型。官方要求会话头的供应商（`preset.session_header`）按
+  (模型, 会话) 维度缓存（LRU 上限 64，淘汰即释放实例），保证 `x-opencode-session` 等会话头值
+  在同一会话内稳定；其余供应商沿用共享缓存。
 
 ### 9.5 前端架构
 
@@ -534,7 +589,9 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **列表请求序号防竞态**：任务/日程/笔记列表请求带自增序号（`++loadSeq`），响应返回时序号不是最新则丢弃。
 - **统一 axios 拦截器**：`src/api/index.js` 把 422 detail 数组/超时/断网统一转成中文 ElMessage 提示；
   SSE 走原生 fetch 与 axios 共用 `VITE_API_BASE`（默认 `/api`）。
-- **构建**：`npm run build`，各视图独立 chunk；生产模式前端产物由后端在 8000 端口直接托管，天然同源。
+- **构建与版本切换**：`npm run build`，各视图独立 chunk；生产模式前端产物由后端在 8000 端口直接托管，天然同源。
+  入口 HTML 返回 `Cache-Control: no-cache`，带哈希的 JS/CSS 不额外改变缓存策略；`vite:preloadError` 对同一次同 URL
+  加载失败只自动刷新一次，只有无 `failure` 的成功导航才清除防循环标记，持续失败保留原始错误，避免无限刷新。
 
 ### 9.6 QwenPaw Agent 批量导入（`scripts/import_qwenpaw_agents.py`）
 
@@ -690,7 +747,12 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **BIP 列签名识别**（`detect_file_type`）：分录摘要/制单人 → voucher（凭证列表独有，按账簿分 sheet 无账簿列）；对方科目 → aux；期初/本期/期末 → balance；unknown 进人工映射。多 sheet 以 sheet 名合成 `__sheet_ledger__` 账簿列；续行按账簿分组 ffill（凭证日期/凭证号不重复）。
 - **引擎路径解析**（`utils.resolve_engine_root`）：目录原样 / 文件取父目录 / 不存在原样返回交由调用方 503；覆盖五模块。
 - **引擎子进程环境**（`utils.engine_subprocess_env`）：TEMP/TMP/TMPDIR 显式钉到应用自建临时目录，修 Git Bash 继承破损 TEMP；上传文件名 mojibake 修复（`repair_upload_mojibake`，latin-1→gbk 回转，回转含中文才采纳）。
-- **探测 429 退避**（`model_probe._chat_once`）：429 等 30s 重试至多 2 次，避免厂商 TPM 窗口把探测判成部分完成。
+- **探测 429 退避**（`model_probe._post_with_retry`）：429 等 30s 重试至多 2 次，避免厂商 TPM 窗口把探测判成部分完成。
+- **显式 null 能力字段恢复**（`routers/assistant.save_provider_model`，Task 7）：前端把「思考可关闭」选回「未知」时显式发送 `thinking_can_disable: null`；路由在 `exclude_none` 后仅对显式出现在 `payload.model_fields_set` 的该字段补回 None（其余 None 继续排除），使 `config_store` 的显式 null 恢复分支生效——不扩大为全局 `exclude_unset` 改动。
+- **思考参数按能力生成**（`llm.reasoning_request`）：档位不写死表——openai 侧 AgentScope 不认识的 `max` 经 `extra_body` 原样发送且不与顶层 `reasoning_effort` 重复；模型已声明 `thinking_levels` 时声明集之外的档位（含 `max`）视为不支持并回退声明默认/跟随（未声明集时保持兼容）；未知/非法已存档档位与 Anthropic 无法表达的档位一律回退「跟随模型」（不擅改 medium/xhigh）；`thinking_can_disable=False` 的强制思考模型不可被关成 off；风格三形态：effort（`reasoning_effort`）、toggle（`thinking{type}`，anthropic 走 `thinking_mode`）、budget（`enable_thinking+thinking_budget` 数值档——映射为保守约定值 1024~65536 tokens，实际以供应商文档为准，不伪装 effort）；anthropic 原生 `output_config.effort` 含 max。
+- **会话头供应商**（`llm.provider_headers`）：仅预设声明 `session_header` 的套餐（OpenCode Go）生成 `User-Agent` + 会话头；取值对同一 session 恒定（sha256 派生，缺省用进程稳定默认值），密钥只走 SDK 鉴权。
+- **实测三态落库**（`config_store.record_probe_verdict`）：工具/图片只有明确结论才写 `supports_tools`/`supports_vision`（成功→1、400/422 参数拒绝→0，来源 `probe`；401/403/404/408/429/5xx 与网络错误保持原值——「没测到」不等于「不支持」）；probe 结论记入 `manual_fields` 作为本地覆盖，默认同步不覆盖，`override_manual`/reset-overrides 可恢复同步值。工具侧参数拒绝按「SDK 异常类型 > status_code > 明确的 Error code: 400|422」判定，消息偶含 400 不算。**思考探测同口径**（`model_probe._mark_probe_override`）：`probe_reasoning` 的明确结论（supported/accepted/unsupported）回写 `supports_thinking`/`thinking_levels` 时同样记 `manual_fields` + 来源 `probe`，默认同步不得把实测「不支持」翻回目录「支持」；全部请求失败不写结论也不记覆盖。
+- **会话模型缓存 LRU**（`orchestrator._session_cache_put`）：要求会话头的供应商按 (模型, 会话) 缓存模型实例，上限 64（与 Agent 缓存同口径），淘汰最久未用会话即释放实例（含 SDK 连接池）；`invalidate`/`session_delete` 完整清理。
 - **财务数据脱敏**（`dev/desensitize_finance_data.py`）：金额随机 + 勾稽重算（凭证借=贷、明细账余额链、余额表配平、报表合计行），泛化命名避开 BIP 表头关键词（防污染表头定位评分）；`dev/verify_desensitized.py` V1–V5 断言。
 
 ### 15.2 模块功能需求实现情况
@@ -707,9 +769,11 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 ### 15.3 已验证运行情况
 
-- 后端 pytest：`909/909`（2026-10-26 深测轮，含停止脚本 findstr 回归）。
-- 前端 vitest：`45 文件、652/652`；生产构建通过（10.48s）。
-- E2E：17 区探针 `656/656`（2026-10-26 深测轮）；旧 E2E 三脚本历史通过。
+- 后端 pytest：`1106/1106`（2026-10-26 Task 7 收尾轮，含 thinking_can_disable 显式 null 恢复与 `_is_non_chat_id` 厂商段过滤用例；首轮 1104/1104，上一轮 909/909）。
+- 前端 vitest：`47 文件、745/745`；生产构建通过（13.18s）。
+- E2E：17 区探针 `656/656`（2026-10-26 深测轮）；Task 7 隔离 E2E（2026-10-26，临时 SQLite + 本地 mock OpenRouter 形状目录 + 内置浏览器）：新增供应商→同步模型（新增 2/跳过 2/能力三态徽章）→激活→动态思考档位→路由预览命中 security（关键词/高置信/零推理），证据 `.superpowers/sdd/doctor-mid-nite-black-bolt-maria-hill/task-7-e2e/`。
+- 公开目录只读 smoke（2026-10-26，临时库+合成 Key）：OpenRouter 在线同步 466 条全成功；OpenCode 在线 401（合成 Key）→ 能力目录兜底 partial，符合「不假成功」契约。
+- 迁移演练（2026-10-26，复制库）：应用迁移函数首次仅 workbench.db 变化、二次零变更（幂等）、行数稳定；真实 `backend/data` 115 文件哈希零改动。
 - 性能：最慢 p95 `76.68ms`；`/api/health` p95 `21.81ms` 越 20ms 预算，未改阈值。
 - 真实浏览器：临时数据库下完成主要菜单与新增入口验收。
 - 外部验证（2026-10-23，隔离服务 + 脱敏数据，真实 `backend/data` 字节级零改动）：第 0 章 G1–G9、第 1 章 LLM、第 2 章 MCP、第 3 章 BIP 11/11、第 4 章五管线 + E4/E9、第 5 章 W1–W9、第 6 章 U1–U10 代理走查。

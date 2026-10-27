@@ -158,30 +158,45 @@
 
 统一走 OpenAI 兼容协议（另支持 anthropic 协议）。**推荐在「AI 助手 → ⚙ 设置 → 模型」配置**（供应商/模型两级，存库，重启不丢）；也可写 `backend/.env` 的 `LLM_*` 兜底（`llm.source` 标识当前生效来源：界面配置 / env 兜底）。
 
-**18 家厂商预设**数据化存于 `backend/app/agents/provider_presets.json`：`GET /api/providers/presets` 读取、`POST /api/providers/presets/reload` 热加载；文件缺失/解析失败回退内置最小默认集并记警告。每条预设含 `name/label/protocol/base_url/models/reasoning_models/vision_models/note/docs_url`，界面选择后自动填充 base_url、候选模型与视觉模型清单。协议仅 `openai` / `anthropic` 两种。
+**33 家厂商预设**数据化存于 `backend/app/agents/provider_presets.json`：`GET /api/providers/presets` 读取、`POST /api/providers/presets/reload` 热加载；文件缺失/解析失败回退内置最小默认集并记警告。每条预设含 `name/label/protocol/base_url/models/reasoning_models/vision_models/note/docs_url`，界面选择后自动填充 base_url、候选模型与视觉模型清单。协议仅 `openai` / `anthropic` 两种。套餐范围：`general`（按量，任意场景）/ `plan_interactive_only`（仅交互式，定时任务选中会中文拒绝）/ `plan_api_allowed`（交互+API 均可）。
 
-| 预设 | base_url | 示例模型 |
-| --- | --- | --- |
-| ModelScope 推理 | `https://api-inference.modelscope.cn/v1` | `Qwen/Qwen3.5-122B-A10B` |
-| 硅基流动 SiliconFlow | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3.2` |
-| DeepSeek 官方 | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| 火山方舟 Volcengine | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-2-0` |
-| 阿里 DashScope 兼容 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| 智谱 GLM 官方 | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.3` |
-| 月之暗面 Kimi | `https://api.moonshot.cn/v1` | `kimi-k2-0905-preview` |
-| MiniMax | `https://api.minimax.chat/v1` | `MiniMax-M2` |
-| 腾讯混元 | `https://api.hunyuan.cloud.tencent.com/v1` | `hunyuan-turbos-latest` |
-| 讯飞星火 | `https://spark-api-open.xf-yun.com/v1` | `4.0Ultra` |
-| OpenAI | `https://api.openai.com/v1` | `gpt-5.1` |
-| Anthropic Claude | `https://api.anthropic.com`（协议选 anthropic） | `claude-sonnet-4-5` |
-| OpenRouter | `https://openrouter.ai/api/v1` | `openai/gpt-5` |
-| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
-| Together AI | `https://api.together.xyz/v1` | `Qwen/Qwen3-235B-A22B` |
-| 本地 Ollama | `http://localhost:11434/v1` | `qwen2.5:7b` |
-| 本地 LM Studio | `http://localhost:1234/v1` | `qwen2.5-7b-instruct` |
-| 自定义 | 任意 OpenAI 兼容服务 | 手填 |
+| 预设 | base_url | 示例模型 | 协议 | 套餐范围 |
+| --- | --- | --- | --- | --- |
+| ModelScope 推理 | `https://api-inference.modelscope.cn/v1` | `Qwen/Qwen3-235B-A22B-Instruct-2507` | openai | 按量 |
+| 硅基流动 SiliconFlow（国内） | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3.2` | openai | 按量 |
+| 硅基流动 SiliconFlow（国际） | `https://api.siliconflow.com/v1` | `deepseek-ai/DeepSeek-V4-Pro` | openai | 按量 |
+| DeepSeek 官方 | `https://api.deepseek.com/v1` | `deepseek-flash` | openai | 按量 |
+| 火山方舟 Volcengine 按量 | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-2-1-pro-260628` | openai | 按量 |
+| 火山方舟 Coding Plan | `https://ark.cn-beijing.volces.com/api/coding/v3` | `deepseek-v4-flash` | openai | 仅交互 |
+| 火山方舟 Agent Plan | `https://ark.cn-beijing.volces.com/api/plan/v3` | 手填 | openai | 仅交互 |
+| 阿里 DashScope 按量 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.8-max` | openai | 按量 |
+| 阿里 DashScope Coding Plan | `https://coding.dashscope.aliyuncs.com/v1` | `qwen3.5-plus` | openai | 仅交互 |
+| 阿里 DashScope Token Plan | `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` | `qwen3.8-max` | openai | 仅交互 |
+| 腾讯 TokenHub 按量 | `https://tokenhub.tencentmaas.com/v1` | `hy3-preview` | openai | 按量 |
+| 腾讯 Token Plan | `https://api.lkeap.cloud.tencent.com/plan/v3` | `hy3` | openai | 仅交互 |
+| 腾讯 Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/v3` | `tc-code-latest` | openai | 仅交互 |
+| 智谱 GLM 官方 | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.3` | openai | 按量 |
+| 智谱 GLM Coding Plan | `https://open.bigmodel.cn/api/coding/paas/v4` | `glm-5.3-highspeed` | openai | 仅交互 |
+| 智谱 GLM（Anthropic 协议） | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3` | anthropic | 按量 |
+| 月之暗面 Kimi 开放平台 | `https://api.moonshot.cn/v1` | `kimi-k3.1-pro` | openai | 按量 |
+| Kimi Code | `https://api.kimi.com/coding/v1` | `kimi-for-coding` | openai | 仅交互 |
+| StepFun 阶跃星辰 按量 | `https://api.stepfun.com/v1` | `step-5-preview` | openai | 按量 |
+| StepFun Step Plan | `https://api.stepfun.com/step_plan/v1` | `step-5-preview` | openai | 交互+API |
+| OpenCode 付费推理 | `https://opencode.ai/inference/openai/v1` | `kimi-k3` | openai | 按量 |
+| OpenCode Go | `https://opencode.ai/inference/go/openai/v1` | `kimi-k3.1-pro` | openai | 交互+API |
+| MiniMax | `https://api.minimax.chat/v1` | `MiniMax-M3` | openai | 按量 |
+| 腾讯混元 | `https://api.hunyuan.cloud.tencent.com/v1` | `hunyuan-turbos-latest` | openai | 按量 |
+| 讯飞星火 | `https://spark-api-open.xf-yun.com/v1` | `lite` | openai | 按量 |
+| OpenAI | `https://api.openai.com/v1` | `gpt-5.1` | openai | 按量 |
+| Anthropic Claude | `https://api.anthropic.com` | `claude-opus-4-5` | anthropic | 按量 |
+| OpenRouter | `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-flash` | openai | 按量 |
+| Groq | `https://api.groq.com/openai/v1` | `openai/gpt-oss-120b` | openai | 按量 |
+| Together AI | `https://api.together.xyz/v1` | `Qwen/Qwen3-235B-A22B` | openai | 按量 |
+| 本地 Ollama | `http://localhost:11434/v1` | `qwen2.5:7b` | openai | 按量 |
+| 本地 LM Studio | `http://localhost:1234/v1` | `qwen2.5-7b-instruct` | openai | 按量 |
+| 自定义 | 手填 | 手填 | openai | — |
 
-> 历史：v1.1.0–v1.13.0 仅内置 7 家预设（ModelScope / 硅基流动 / DeepSeek / 火山方舟 / DashScope / 本地 Ollama + 自定义）；v1.14.0 起预设数据化并扩充至 18 家。上表以 `provider_presets.json` 运行时权威为准。
+> 历史：v1.1.0–v1.13.0 仅内置 7 家预设（ModelScope / 硅基流动 / DeepSeek / 火山方舟 / DashScope / 本地 Ollama + 自定义）；v1.14.0 起预设数据化并扩充至 18 家；v1.16.x 随在线同步（Task 4）与套餐边界（Task 5）扩充至 33 家（新增各家 Coding/Token/Agent Plan、智谱 Anthropic 协议、Kimi Code、StepFun Plan、OpenCode Go、硅基国际等）。上表以 `provider_presets.json` 运行时权威为准。
 
 - **模型超时**：两种协议共用 **120 秒**显式 SDK 超时（`llm.py` 的 `LLM_TIMEOUT_SECONDS`，经 `client_kwargs` 透传给 `openai.AsyncClient` / `anthropic.AsyncAnthropic`；SDK 默认 600 秒，单用户工作台显式收紧，避免一次挂起长时间占住请求）。
 - **模型级自定义**：`temperature`（空 = 跟随系统默认，已接入 `build_model` 运行时、双协议注入）、思考档位 `reasoning_effort`、`supports_vision`、备注。

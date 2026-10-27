@@ -236,7 +236,7 @@ route-test 入参与返回：
 {
   "llm": { "configured": true, "protocol": "openai", "provider": "…", "source": "provider", "base_url": "…", "model": "…" },
   "config": { /* api_key 已脱敏为 ••••••xxxx，附 api_key_set */ },
-  "presets": [ /* 18 家供应商预设 */ ],
+  "presets": [ /* 33 家供应商预设（含按量/仅交互/交互+API 套餐） */ ],
   "providers": [ /* 供应商及其模型 */ ],
   "models": [ /* 启用中模型扁平列表（快速切换用） */ ],
   "work_modes": { "standard": {...}, "readonly": {...}, "deep": {...} },
@@ -253,38 +253,46 @@ route-test 入参与返回：
 
 #### PUT /api/assistant/config
 保存 **Agent 工作参数**（模型配置请走供应商/模型接口）。全部可选、部分更新：
-`max_iters`（1~20，工具轮次）、`enable_memory`、`history_inject`（0~100）、`enable_skills` / `skills_dir`、`enable_bash`、`enable_plugins` / `plugins_dir`、`reasoning_effort`（`""` 跟随模型 / `off` / `low` / `medium` / `high` / `max`）。
+`max_iters`（1~20，工具轮次）、`enable_memory`、`history_inject`（0~100）、`enable_skills` / `skills_dir`、`enable_bash`、`enable_plugins` / `plugins_dir`、`reasoning_effort`（`""` 跟随模型 / `off`（旧版「关闭思考」，兼容保留，语义同 `none`）/ `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；白名单外按跟随模型处理）。
 
 #### POST /api/assistant/config/test
 ```json
-{ "config": { /* 可选候选配置 */ }, "provider_id": 1, "include_image": true, "test_tools": true }
+{ "config": { /* 可选候选配置 */ }, "provider_id": 1, "model_id": 2, "include_image": true, "test_tools": true }
 ```
 返回 `{ "text": {...}, "tools": {...}, "image": {...} }`（后两项仅在 `text.ok` 为真且对应开关打开时出现）。
 
 - `provider_id`：测试该供应商第一个启用模型
+- `model_id`：测试指定模型（用其完整配置含密钥）；工具/图片实测按该模型执行，**明确结论**回写 `supports_tools` / `supports_vision`（来源 `probe`：成功→1、400/422 参数拒绝→0、401/403/404/408/429/5xx 与网络错误保持原值，不把「没测到」当成「不支持」）；不存在/未启用返回 `400`
 - **测试当前激活模型**（不传 `config`）：`api_key` 留空或传掩码哨兵 `********`（`••••••` 开头的回显掩码同）时自动回填现值
-- **测试自定义候选配置**（传 `config`）：必须显式填写**新的** API Key——空/掩码不会借用当前激活模型的真实密钥，返回 `200` + `{"text": {"ok": false, "error": "请填写新的 API Key：测试自定义配置不会沿用当前激活模型的密钥"}}`；`base_url` 经共享网关校验，非法返回 `400`
+- **测试自定义候选配置**（传 `config`）：必须显式填写**新的** API Key——空/掩码不会借用当前激活模型的真实密钥，返回 `200` + `{"text": {"ok": false, "error": "请填写新的 API Key：测试自定义配置不会沿用当前激活模型的密钥"}}`；`base_url` 经共享网关校验，非法返回 `400`；自定义配置不对应模型行，不回写能力结论
 - `text` 结构：成功 `{ok: true, latency_ms, reply, usage: {input_tokens, output_tokens}}`；失败 `{ok: false, latency_ms, error}`
-- `image`：`include_image=true` 时按协议走 openai 兼容或 anthropic 图片识别测试（红色图片问答，判定回答含「红/red」）
+- `tools`：`{ok, latency_ms, tool_calls, reply, verdict}`，`verdict` ∈ `supported`（明确调用成功）/ `rejected`（SDK `BadRequestError`、`status_code=400/422` 或明确的 `Error code: 400|422`）/ `unknown`（401/429/5xx、网络错误、消息偶含 400 或模型未调用）
+- `image`：`include_image=true` 时按协议走 openai 兼容或 anthropic 图片识别测试（红色图片问答，判定回答含「红/red」）；`verdict` 三态同 `tools`，仅 400/422 判 rejected
+- **probe 结论是本地覆盖**：回写时该字段同时记入 `manual_fields`，默认目录同步不覆盖实测值；`override_manual=true` 的同步或 `reset-overrides` 可清除覆盖并按最近同步快照恢复。思考探测（`probe/reasoning`）同口径：明确结论回写 `supports_thinking`/`thinking_levels` 时也记 `manual_fields` + 来源 `probe`，全部请求失败不写结论也不记覆盖
 
 #### 供应商 / 模型（两级管理）
 | 接口 | 说明 |
 | --- | --- |
 | `GET /api/assistant/providers` | `{ providers（api_key 不回传，含 api_key_set）, presets }`；presets 每项含 `vision_models`（已知视觉模型清单，供界面预勾选模型的 supports_vision） |
-| `POST /api/assistant/providers` | 新增/更新：`{provider_id?, name, protocol?, base_url?, api_key?, enabled?}`；api_key 空或 `********` 保留现值 |
+| `POST /api/assistant/providers` | 新增/更新：`{provider_id?, name, protocol?, base_url?, api_key?, preset_key?, models_url?, sync_access_key?, sync_secret_key?, enabled?}`；api_key 空或 `********` 保留现值。`preset_key` 定位同步适配器与能力目录（适配器只认 preset_key）；`models_url` 模型列表地址（仅 http(s)，空 = 无官方列表仅目录兜底）；`sync_access_key`/`sync_secret_key` 为可选管控面凭证（火山 AK/SK）：密封存储、任何 GET 不回传，空/掩码保留现值 |
 | `DELETE /api/assistant/providers/{id}` | 删除供应商（含其模型；若为激活模型则取消激活） |
-| `POST /api/assistant/providers/{id}/models` | 新增/更新模型：`{model_id?, model, context_size?(4096~2000000), max_tokens?(64~500000), multimodal?, supports_vision?, enabled?}`；`supports_vision` 为视觉（图片理解）能力，聊天传图需开启 |
+| `POST /api/assistant/providers/{id}/models` | 新增/更新模型：`{model_id?, model, context_size?(4096~2000000), max_tokens?(64~500000), multimodal?, supports_vision?, enabled?, temperature?, note?, supports_thinking?(-1/0/1), thinking_levels?, max_input_tokens?, supports_tools?(-1/0/1), input_modalities?, output_modalities?, default_thinking_level?, thinking_can_disable?, reasoning_style?, api_family?}`；`supports_vision` 为视觉（图片理解）能力，聊天传图需开启。**提交了的能力字段才记入 `manual_fields`**（同步默认不覆盖）——编辑时未变化的字段不要重复提交。`thinking_can_disable` 例外：显式传 `null`（请求体含该键且值为 null）表示恢复「未知」，落库 None 并清旧判定；**不传该键**才表示保留现值（路由仅对显式出现的该字段补回 null，其余 null 字段继续按缺省排除） |
 | `DELETE /api/assistant/providers/{id}/models/{mid}` | 删除模型 |
 | `POST /api/assistant/models/{id}/activate` | 激活模型（跨供应商，立即生效）；不存在/未启用返回 404 |
-| `GET /api/assistant/models` | 启用中模型扁平列表 |
+| `POST /api/assistant/providers/{id}/sync-models` | 同步供应商在线模型列表（只读目录/管控请求，不发推理）：`{include_disabled?=false, override_manual?=false}`。返回 `{ok, partial, online, source, added, updated, unchanged, skipped[], warnings[], truncated, errors[], synced_at, providers}`；在线不可达按能力目录兜底并标 `partial`；分页到上限标 `truncated`；一条非法记录（缺模型 ID 或记录不是 JSON 对象——`_require_entries`/阿里 entries 入口统一守卫）或写入异常整批回滚（`ok=false` + `errors`，不裸 500）；fetch 阶段适配器未预期缺陷同样结构化失败（错误只记异常类型）；并发同步同一供应商 409。`override_manual` 默认 false：手动能力字段与实测（probe）结论不被覆盖；界面勾选「覆盖手动/实测」后才传 true（勾选后每次同步前弹确认警告） |
+| `POST /api/assistant/models/{id}/capabilities/reset-overrides` | 清除手动能力覆盖（`manual_fields`）并按最近同步快照恢复；无快照仅清标记（`applied=false`，下次同步生效）；不存在返回 404 |
+| `GET /api/assistant/models` | 启用中模型扁平列表（`id/label/provider/model/multimodal/supports_vision/active` + 能力契约字段 `max_input_tokens/supports_tools/input_modalities/output_modalities/default_thinking_level/thinking_can_disable/api_family/capability` + 思考字段 `supports_thinking/thinking_levels/reasoning_style`，与 providers 视图同口径） |
 
 ### 附件与扩展
 
 #### POST /api/assistant/upload
-multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超限 400）。扩展名白名单：文本/数据类 `.txt .md .csv .json .log .py .html .xml .yaml .yml .sql`、Excel `.xlsx/.xls`（自动把第一张工作表转 CSV）、图片 `.png .jpg .jpeg .webp .gif`；白名单外返回 400，无扩展名按普通文件放行。返回 `{ "name", "path", "kind"("file"/"csv_converted"/"image"), "size", "note" }`。
+multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超限 400）。扩展名白名单：文本/数据类 `.txt .md .csv .json .log .py .html .xml .yaml .yml .sql`、Excel `.xlsx/.xls`（自动把第一张工作表转 CSV）、图片 `.png .jpg .jpeg .webp .gif`、文档 `.pdf .doc .docx .ppt .pptx`；白名单外返回 400，无扩展名按普通文件放行。返回 `{ "name", "path", "kind"("file"/"csv_converted"/"image"/"document_text"), "size", "note" }`。
 - 读取经共享分块限额（`read_upload_limited`）：超限在落盘前即 400，不留任何文件
 - xlsx 首表行数（含表头）超过导入行数上限 `200000` 行：上传整体拒绝并清理 xlsx 与半成品 CSV，返回 `400`
 - Excel 转 CSV 失败时降级：保留 xlsx 本体，`note` 说明失败原因（既有契约）
+- 文档上传保留原文件，`path` 仍指向原件；提取文本写入同会话 `.extracted/<原文件名>.txt`，`kind="document_text"`，`note` 标明提取字数、旧版转换与截断。聊天只传 `{name,path}`，编排层自动读取 sidecar 注入模型，无需视觉模型或 Bash。
+- PDF/DOCX/PPTX 直接提取文字与表格；DOC/PPT 需本机 LibreOffice（可用 `SOFFICE_PATH` 指定）无界面转换为新版后提取。每附件最多 80,000 字符，PDF 最多前 300 页、PPT 最多前 500 页；OOXML 最多 5,000 成员/解压 100MB，旧版转换 60 秒超时，达到提取边界在文本与 `note` 中明示。
+- 无文字扫描件、损坏文件、解析或转换失败返回 400 中文原因并清理原件与 sidecar；当前不做 OCR，不把“仅保存原件”冒充可分析成功。
 
 #### GET /api/assistant/skills/discover?dir=...
 扫描技能池目录（SKILL.md 格式）：`{ "count", "names" }`（names 最多 30 条）。**安全边界：仅允许配置中已保存的 `skills_dir`**——未保存时返回 `{"count": 0, "names": [], "error": "目录未保存：请先在设置中保存该技能池目录再检测"}`；目录不存在返回 `{"count": 0, "names": [], "error": "目录不存在"}`。
@@ -571,7 +579,7 @@ run_id 形如 `20261013-153000_recon`；有错误的页面/失败用例自动建
 | `POST /api/models/{id}/probe/output` | 最大输出长度阶梯探测（1024→131072） |
 | `POST /api/models/{id}/probe/all` | 三连探测，汇总写 probe_result + probed_at |
 | `GET /api/models/{id}/probe` | 当前探测状态（只读） |
-| `GET /api/providers/presets` · `POST /api/providers/presets/reload` | 厂商预设（provider_presets.json，18 家）；另挂 `/api/models/providers/presets` 别名（兼容「router prefix=/models」的路径解读） |
+| `GET /api/providers/presets` · `POST /api/providers/presets/reload` | 厂商预设（provider_presets.json，33 家；含按量/仅交互/交互+API 套餐）；另挂 `/api/models/providers/presets` 别名（兼容「router prefix=/models」的路径解读）。v3 起每项可含 `session_header`/`user_agent`（官方要求会话头的套餐，如 OpenCode Go `x-opencode-session`）与 `usage_scope`（`plan_interactive_only` = 仅限交互式使用，`job-*` 定时任务会话选中该套餐模型时中文拒绝、不发起推理） |
 
-- 探测直连厂商 `/chat/completions`（openai 兼容），失败=200+error（不可达≠不支持，supports_thinking 保持 -1）
+- 探测直连厂商 `/chat/completions`（openai 兼容）；anthropic 协议走 `/v1/messages`（effort→`output_config.effort`、budget→`thinking.budget_tokens`、off→`thinking{type:disabled}`），失败=200+error（不可达≠不支持，supports_thinking 保持 -1）；429 等 30s 退避重试至多 2 次
 - 模型级自定义配置：temperature（空=跟随）、note、supports_thinking/thinking_levels 手动覆盖；temperature 已接入 build_model 运行时（openai/anthropic 双协议）
