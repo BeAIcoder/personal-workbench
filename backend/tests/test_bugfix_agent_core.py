@@ -22,7 +22,7 @@ from app.agents import team as team_mod
 from app.agents.team import QUERY_TOOLS, AgentSpec
 from app.database import Base, SessionLocal, engine
 from app.main import app
-from app.models import AgentSpecModel
+from app.models import AgentSpecModel, ChatMessage
 
 VISION_ERROR = "当前模型不支持图片理解，请在设置中为该模型开启视觉能力或切换视觉模型"
 
@@ -356,3 +356,273 @@ def test_attachments_block_decodes_gbk_chinese(upload_dir):
     utf8_file.write_text("这是一段 UTF-8 中文", encoding="utf-8")
     block2 = orchestrator._attachments_block([{"name": "说明.txt", "path": str(utf8_file)}])
     assert "这是一段 UTF-8 中文" in block2
+
+
+# ---------------- 低置信纯文本 LLM 仲裁与路由诊断 ----------------
+
+@pytest.fixture()
+def route_team():
+    def _spec(name, label, keywords, sort):
+        return AgentSpec(
+            name=name,
+            label=label,
+            emoji="",
+            color="",
+            description=f"{label}职责",
+            system_prompt="",
+            keywords=keywords,
+            sort=sort,
+        )
+
+    return {
+        "realestate": _spec("realestate", "综合管家", ["综合"], 0),
+        "leasing": _spec("leasing", "招商专员", ["安排", "招商", "合作"], 1),
+        "operations": _spec("operations", "运营专员", ["运营", "合作"], 2),
+    }
+
+
+def _assistant_msg(text):
+    from agentscope.message import Msg, TextBlock
+
+    return Msg(name="调度员", role="assistant", content=[TextBlock(type="text", text=text)])
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("leasing", "leasing"),
+        ("招商专员", "leasing"),
+        ('```json\n{"agent": "leasing", "reason": "招商"}\n```', "leasing"),
+        ("建议由招商专员处理", "leasing"),
+        ("leasing 和 operations", None),
+        ("legal_advisor", None),
+    ],
+)
+def test_parse_route_reply_accepts_only_one_valid_identity(route_team, reply, expected):
+    """纯文本模型只可选中名册内唯一 name/label；多候选与幻觉均拒绝。"""
+    assert orchestrator.parse_route_reply(reply, route_team) == expected
+
+
+def test_route_by_llm_uses_plain_text_reply_without_structured_schema(route_team, monkeypatch):
+    """路由 Agent 返回中文 label 也可解析，调用不得要求结构化输出能力。"""
+    from agentscope.agent import Agent
+
+    calls = []
+
+    async def _reply(self, msg, **kwargs):
+        calls.append(kwargs)
+        return _assistant_msg("招商专员")
+
+    monkeypatch.setattr(orchestrator, "_get_model", lambda: object())
+    monkeypatch.setattr(Agent, "reply", _reply)
+    assert asyncio.run(orchestrator._route_by_llm("这个问题谁来处理", route_team)) == "leasing"
+    assert calls == [{}]
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, asyncio.TimeoutError])
+def test_route_by_llm_logs_only_error_type_and_route_stage(route_team, monkeypatch, caplog, error_type):
+    """路由超时/异常只记录类型和阶段，异常消息中的敏感文本不得进入日志。"""
+    import logging
+
+    from agentscope.agent import Agent
+
+    async def _reply(self, msg, **kwargs):
+        raise error_type("sk-route-test-secret")
+
+    monkeypatch.setattr(orchestrator, "_get_model", lambda: object())
+    monkeypatch.setattr(Agent, "reply", _reply)
+    caplog.set_level(logging.WARNING, logger="app.agents.orchestrator")
+    assert asyncio.run(orchestrator._route_by_llm("这个问题谁来处理", route_team)) is None
+    assert "路由阶段" in caplog.text
+    assert error_type.__name__ in caplog.text
+    assert "sk-route-test-secret" not in caplog.text
+
+
+def test_resolve_spec_only_calls_llm_for_weak_or_tied_candidates(route_team, monkeypatch):
+    """指定和高置信关键词直接路由；仅弱词与同分候选进入 LLM 仲裁。"""
+    calls = []
+
+    async def _route(question, team):
+        calls.append(question)
+        return "operations"
+
+    monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
+    monkeypatch.setattr(orchestrator, "_route_by_llm", _route)
+
+    specified = asyncio.run(orchestrator._resolve_spec("招商", "operations"))
+    direct = asyncio.run(orchestrator._resolve_spec("招商", None))
+    weak = asyncio.run(orchestrator._resolve_spec("安排", None))
+    tied = asyncio.run(orchestrator._resolve_spec("合作", None))
+
+    assert specified == (route_team["operations"], "指定")
+    assert direct == (route_team["leasing"], "关键词")
+    assert weak == (route_team["operations"], "AI 调度")
+    assert tied == (route_team["operations"], "AI 调度")
+    assert calls == ["安排", "合作"]
+
+
+def test_resolve_spec_llm_failure_falls_back_to_weak_candidate_then_default(route_team, monkeypatch):
+    """仲裁失败先保留最佳弱关键词候选；完全无候选时才回默认专家。"""
+    calls = []
+
+    async def _route(question, team):
+        calls.append(question)
+        return None
+
+    monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
+    monkeypatch.setattr(orchestrator, "_route_by_llm", _route)
+
+    weak = asyncio.run(orchestrator._resolve_spec("安排", None))
+    default = asyncio.run(orchestrator._resolve_spec("没有候选", None))
+
+    assert weak == (route_team["leasing"], "关键词回退")
+    assert default == (route_team["realestate"], "默认")
+    assert calls == ["安排", "没有候选"]
+
+
+def test_chat_stream_exposes_sanitized_route_candidates(route_team, monkeypatch, client):
+    """流式 meta/done 均携带候选诊断，且不泄漏 hits、提示词等内部细节。"""
+    monkeypatch.setattr(orchestrator, "llm_status", lambda: {"configured": True})
+    monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
+
+    class _Agent:
+        async def reply_stream(self, msg, yield_final_msg):
+            yield _assistant_msg("已完成")
+
+    async def _ensure(session_id, spec, mode):
+        return _Agent()
+
+    monkeypatch.setattr(orchestrator, "_ensure_agent", _ensure)
+
+    async def _collect():
+        return [event async for event in orchestrator.chat_stream("sess-route-diag", "招商")]
+
+    events = asyncio.run(_collect())
+    meta = next(event for event in events if event["type"] == "meta")
+    done = next(event for event in events if event["type"] == "done")
+    expected = [{"name": "leasing", "score": 2, "confidence": "high"}]
+    assert meta["route_candidates"] == expected
+    assert done["route_candidates"] == expected
+
+
+# ---------------- 续聊角色连续性与中断历史落库 ----------------
+
+def test_resolve_spec_keeps_current_agent_for_continuation(route_team, monkeypatch, client):
+    """“继续”类续聊保持当前会话专家，不再掉回默认商业地产管家。"""
+    monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
+    calls = []
+
+    async def _route(question, team):
+        calls.append(question)
+        return "realestate"
+
+    monkeypatch.setattr(orchestrator, "_route_by_llm", _route)
+    orchestrator._persist("sess-cont-01", "assistant", "leasing", "上一轮回答", [])
+
+    resolved = asyncio.run(orchestrator._resolve_spec("继续", None, "sess-cont-01"))
+
+    assert resolved == (route_team["leasing"], "续聊")
+    assert calls == []
+
+
+def test_resolve_spec_explicit_and_keyword_override_continuation(route_team, monkeypatch, client):
+    """显式指定专家与高置信关键词仍优先于续聊保持，不会把用户锁死在当前专家。"""
+    monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
+
+    async def _boom(question, team):
+        raise AssertionError("显式指定与关键词直路不需要 LLM 仲裁")
+
+    monkeypatch.setattr(orchestrator, "_route_by_llm", _boom)
+    orchestrator._persist("sess-cont-02", "assistant", "operations", "上一轮回答", [])
+
+    explicit = asyncio.run(orchestrator._resolve_spec("继续", "leasing", "sess-cont-02"))
+    direct = asyncio.run(orchestrator._resolve_spec("继续招商", None, "sess-cont-02"))
+
+    assert explicit == (route_team["leasing"], "指定")
+    assert direct == (route_team["leasing"], "关键词")
+
+
+def test_resolve_spec_non_continuation_still_uses_llm(route_team, monkeypatch, client):
+    """非续聊弱候选仍走 LLM 仲裁，续聊保持不会让智能路由失效。"""
+    monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
+    calls = []
+
+    async def _route(question, team):
+        calls.append(question)
+        return "operations"
+
+    monkeypatch.setattr(orchestrator, "_route_by_llm", _route)
+    orchestrator._persist("sess-cont-03", "assistant", "operations", "上一轮回答", [])
+
+    resolved = asyncio.run(orchestrator._resolve_spec("安排", None, "sess-cont-03"))
+
+    assert resolved == (route_team["operations"], "AI 调度")
+    assert calls == ["安排"]
+
+
+def test_resolve_spec_continuation_skips_internal_job_session(route_team, monkeypatch, client):
+    """定时任务等内部会话不粘专家：即使提示词含“继续”，也按当次任务重新路由。"""
+    monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
+    calls = []
+
+    async def _route(question, team):
+        calls.append(question)
+        return "operations"
+
+    monkeypatch.setattr(orchestrator, "_route_by_llm", _route)
+    orchestrator._persist("job-cont-01", "assistant", "leasing", "上一次任务回复", [])
+
+    resolved = asyncio.run(orchestrator._resolve_spec("继续汇总今天的待办", None, "job-cont-01"))
+
+    assert resolved == (route_team["operations"], "AI 调度")
+    assert calls == ["继续汇总今天的待办"]
+
+
+def test_chat_stream_interrupt_persists_partial_history(route_team, monkeypatch, client):
+    """流式生成中断：已产出的正文/思考必须落库，继续输入时历史不缺片。"""
+    from agentscope.event import ThinkingBlockDeltaEvent, TextBlockDeltaEvent
+
+    pid = _mk_provider(client)
+    _activate(client, _mk_model(client, pid))
+    monkeypatch.setattr(orchestrator, "llm_status", lambda: {"configured": True})
+    monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
+
+    async def _route(question, team):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_route_by_llm", _route)
+
+    class _Agent:
+        async def reply_stream(self, msg, yield_final_msg=True):
+            yield TextBlockDeltaEvent(reply_id="r-int", block_id="b-int", delta="第一段内容")
+            yield ThinkingBlockDeltaEvent(reply_id="r-int", block_id="t-int", delta="思考片段")
+            await asyncio.Event().wait()  # 模拟尚未结束的长流，等待外部中断
+
+    async def _ensure(session_id, spec, mode):
+        return _Agent()
+
+    monkeypatch.setattr(orchestrator, "_ensure_agent", _ensure)
+
+    async def _drive():
+        agen = orchestrator.chat_stream("sess-interrupt-01", "继续")
+        meta = await agen.__anext__()
+        assert meta["type"] == "meta"
+        delta = await agen.__anext__()
+        thinking = await agen.__anext__()
+        assert delta == {"type": "delta", "text": "第一段内容"}
+        assert thinking == {"type": "thinking_delta", "text": "思考片段"}
+        await agen.aclose()  # 模拟用户点击停止/断开 SSE
+
+    asyncio.run(_drive())
+
+    with SessionLocal() as db:
+        rows = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.session_id == "sess-interrupt-01")
+            .order_by(ChatMessage.id.asc())
+            .all()
+        )
+    assert [row.role for row in rows] == ["user", "assistant"]
+    assert rows[1].agent_name == "realestate"
+    assert rows[1].content == "第一段内容"
+    assert rows[1].thinking == "思考片段"

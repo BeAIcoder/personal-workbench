@@ -1,204 +1,1023 @@
 {
-  "version": 1,
-  "note": "LLM 厂商预设（个人工作台）：界面选择后自动填充 base_url、候选模型与视觉模型清单。协议仅 openai / anthropic 两种。",
-  "presets": [
-    {
-      "name": "modelscope",
-      "label": "ModelScope 推理",
-      "protocol": "openai",
-      "base_url": "https://api-inference.modelscope.cn/v1",
-      "models": ["Qwen/Qwen3.5-122B-A10B", "Qwen/Qwen3-235B-A22B", "deepseek-ai/DeepSeek-V4-Flash-0731"],
-      "note": "国内直连，含 DeepSeek/Qwen 全系",
-      "docs_url": "https://www.modelscope.cn/docs/model-service/API-Inference",
-      "reasoning_models": ["Qwen/Qwen3-235B-A22B", "deepseek-ai/DeepSeek-R1"],
-      "vision_models": ["Qwen/Qwen2.5-VL-72B-Instruct", "Qwen/Qwen2-VL-7B-Instruct"]
-    },
-    {
-      "name": "siliconflow",
-      "label": "硅基流动 SiliconFlow",
-      "protocol": "openai",
-      "base_url": "https://api.siliconflow.cn/v1",
-      "models": ["deepseek-ai/DeepSeek-V3.2", "Qwen/Qwen3.5-122B-A10B", "zai-org/GLM-5.3"],
-      "note": "国内直连，DeepSeek 性价比高",
-      "docs_url": "https://docs.siliconflow.cn/",
-      "reasoning_models": ["deepseek-ai/DeepSeek-V3.2", "zai-org/GLM-5.3"],
-      "vision_models": ["Qwen/Qwen2.5-VL-32B-Instruct", "zai-org/GLM-4.5V"]
-    },
-    {
-      "name": "deepseek",
-      "label": "DeepSeek 官方",
-      "protocol": "openai",
-      "base_url": "https://api.deepseek.com/v1",
-      "models": ["deepseek-chat", "deepseek-reasoner"],
-      "note": "官方直连",
-      "docs_url": "https://platform.deepseek.com/api-docs/",
-      "reasoning_models": ["deepseek-reasoner"],
-      "vision_models": []
-    },
-    {
-      "name": "volcengine",
-      "label": "火山方舟 Volcengine",
-      "protocol": "openai",
-      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "models": ["doubao-seed-2-0", "doubao-1-5-pro-32k"],
-      "note": "需在火山控制台开通模型并创建推理接入点",
-      "docs_url": "https://www.volcengine.com/docs/82379",
-      "reasoning_models": ["doubao-seed-2-0"],
-      "vision_models": ["doubao-vision-pro-32k", "doubao-vision-lite-32k", "doubao-1-5-vision-pro-32k"]
-    },
-    {
-      "name": "dashscope",
-      "label": "阿里 DashScope 兼容",
-      "protocol": "openai",
-      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "models": ["qwen-plus", "qwen-max", "qwen-vl-plus"],
-      "note": "通义千问官方（vl 系列支持图片）",
-      "docs_url": "https://help.aliyun.com/zh/model-studio/",
-      "reasoning_models": ["qwen-plus", "qwen-max"],
-      "vision_models": ["qwen-vl-plus", "qwen-vl-max", "qwen2.5-vl-72b-instruct"]
-    },
-    {
-      "name": "zhipu",
-      "label": "智谱 GLM 官方",
-      "protocol": "openai",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "models": ["glm-5.3", "glm-4.6", "glm-4.5-air", "glm-z1-air"],
-      "note": "智谱官方开放平台；GLM-4.5 起为混合思考模型",
-      "docs_url": "https://docs.bigmodel.cn/",
-      "reasoning_models": ["glm-5.3", "glm-4.6", "glm-z1-air"],
-      "vision_models": ["glm-4v-plus", "glm-4v-flash", "glm-4v"]
-    },
-    {
-      "name": "moonshot",
-      "label": "月之暗面 Kimi",
-      "protocol": "openai",
-      "base_url": "https://api.moonshot.cn/v1",
-      "models": ["kimi-k2-0905-preview", "kimi-k2-thinking", "kimi-latest", "moonshot-v1-128k"],
-      "note": "月之暗面官方；Kimi K2 系列",
-      "docs_url": "https://platform.moonshot.cn/docs/",
-      "reasoning_models": ["kimi-k2-thinking"],
-      "vision_models": ["moonshot-v1-32k-vision-preview", "moonshot-v1-128k-vision-preview"]
-    },
-    {
-      "name": "minimax",
-      "label": "MiniMax",
-      "protocol": "openai",
-      "base_url": "https://api.minimax.chat/v1",
-      "models": ["MiniMax-M2", "MiniMax-Text-01"],
-      "note": "MiniMax 官方开放平台",
-      "docs_url": "https://platform.minimaxi.com/document/",
-      "reasoning_models": ["MiniMax-M2"],
-      "vision_models": []
-    },
-    {
-      "name": "hunyuan",
-      "label": "腾讯混元",
-      "protocol": "openai",
-      "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
-      "models": ["hunyuan-turbos-latest", "hunyuan-t1-latest", "hunyuan-a13b"],
-      "note": "腾讯混元官方；需在腾讯云开通混元大模型",
-      "docs_url": "https://cloud.tencent.com/document/product/1729",
-      "reasoning_models": ["hunyuan-t1-latest"],
-      "vision_models": []
-    },
-    {
-      "name": "spark",
-      "label": "讯飞星火",
-      "protocol": "openai",
-      "base_url": "https://spark-api-open.xf-yun.com/v1",
-      "models": ["lite", "generalv3.5", "pro-128k", "4.0Ultra"],
-      "note": "讯飞星火官方；x1 为推理（思考）模型",
-      "docs_url": "https://www.xfyun.cn/doc/spark/Web.html",
-      "reasoning_models": ["x1"],
-      "vision_models": []
-    },
-    {
-      "name": "openai",
-      "label": "OpenAI",
-      "protocol": "openai",
-      "base_url": "https://api.openai.com/v1",
-      "models": ["gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano"],
-      "note": "OpenAI 官方；GPT-5 系列为推理模型（国内需代理）",
-      "docs_url": "https://platform.openai.com/docs/",
-      "reasoning_models": ["gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano"],
-      "vision_models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5-nano"]
-    },
-    {
-      "name": "anthropic",
-      "label": "Anthropic Claude",
-      "protocol": "anthropic",
-      "base_url": "https://api.anthropic.com",
-      "models": ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
-      "note": "Anthropic 官方；Claude 4.x 为混合思考模型，协议选 anthropic",
-      "docs_url": "https://docs.anthropic.com/",
-      "reasoning_models": ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
-      "vision_models": ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"]
-    },
-    {
-      "name": "openrouter",
-      "label": "OpenRouter",
-      "protocol": "openai",
-      "base_url": "https://openrouter.ai/api/v1",
-      "models": ["anthropic/claude-sonnet-4.5", "openai/gpt-5", "deepseek/deepseek-r1", "qwen/qwen3-235b-a22b"],
-      "note": "模型聚合网关；一个 Key 调用多家模型（海外服务）",
-      "docs_url": "https://openrouter.ai/docs/",
-      "reasoning_models": ["deepseek/deepseek-r1", "openai/gpt-5", "anthropic/claude-sonnet-4.5"],
-      "vision_models": ["openai/gpt-4o", "anthropic/claude-sonnet-4.5", "qwen/qwen2.5-vl-72b-instruct"]
-    },
-    {
-      "name": "groq",
-      "label": "Groq",
-      "protocol": "openai",
-      "base_url": "https://api.groq.com/openai/v1",
-      "models": ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b", "qwen/qwen3-32b"],
-      "note": "Groq 高速推理（海外服务）",
-      "docs_url": "https://console.groq.com/docs/",
-      "reasoning_models": ["deepseek-r1-distill-llama-70b", "qwen/qwen3-32b"],
-      "vision_models": []
-    },
-    {
-      "name": "together",
-      "label": "Together AI",
-      "protocol": "openai",
-      "base_url": "https://api.together.xyz/v1",
-      "models": ["Qwen/Qwen3-235B-A22B", "deepseek-ai/DeepSeek-R1"],
-      "note": "Together AI（海外服务）",
-      "docs_url": "https://docs.together.ai/",
-      "reasoning_models": ["deepseek-ai/DeepSeek-R1"],
-      "vision_models": []
-    },
-    {
-      "name": "ollama",
-      "label": "本地 Ollama",
-      "protocol": "openai",
-      "base_url": "http://localhost:11434/v1",
-      "models": ["qwen2.5:7b", "llama3.1:8b"],
-      "note": "完全本地、免费；需先安装 Ollama 并拉取模型",
-      "docs_url": "https://ollama.com/",
-      "reasoning_models": [],
-      "vision_models": []
-    },
-    {
-      "name": "lmstudio",
-      "label": "本地 LM Studio",
-      "protocol": "openai",
-      "base_url": "http://localhost:1234/v1",
-      "models": ["qwen2.5-7b-instruct", "llama-3.1-8b"],
-      "note": "LM Studio 本地服务器；可用模型随本机加载变化",
-      "docs_url": "https://lmstudio.ai/docs",
-      "reasoning_models": [],
-      "vision_models": []
-    },
-    {
-      "name": "custom",
-      "label": "自定义",
-      "protocol": "openai",
-      "base_url": "",
-      "models": [],
-      "note": "任意 OpenAI 兼容服务；anthropic 协议请用协议下拉选择",
-      "docs_url": "",
-      "reasoning_models": [],
-      "vision_models": []
-    }
-  ]
+ "version": 3,
+ "note": "LLM 厂商预设（个人工作台）：界面选择后自动填充 base_url、候选模型与视觉模型清单。协议仅 openai / anthropic 两种。v2 起新增 preset_key/sync_adapter/models_url/catalog_key/usage_scope/auth_scheme：适配器只认 preset_key；models_url 为在线列表 GET 地址（空=无官方列表，仅目录兜底）；usage_scope 标记套餐边界（plan_interactive_only 禁止定时任务）；普通 Key 与套餐 Key/base 不混用。v3 起新增 session_header/user_agent：官方要求会话头的套餐（OpenCode Go 的 x-opencode-session + 自定义 UA）由 llm.provider_headers 生成默认请求头，模型实例按 session 维度缓存；缺省不生成任何自定义头。",
+ "presets": [
+  {
+   "name": "modelscope",
+   "preset_key": "modelscope",
+   "label": "ModelScope 推理",
+   "protocol": "openai",
+   "base_url": "https://api-inference.modelscope.cn/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api-inference.modelscope.cn/v1/models",
+   "catalog_key": "modelscope",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    "Qwen/Qwen3-235B-A22B-Thinking-2507",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "Qwen/Qwen3-30B-A3B-Thinking-2507",
+    "ZhipuAI/GLM-4.6",
+    "ZhipuAI/GLM-4.5"
+   ],
+   "note": "国内直连，含 DeepSeek/Qwen 全系；在线列表返回 ID/status，能力以官方模型卡与审校目录为准",
+   "docs_url": "https://www.modelscope.cn/docs/model-service/API-Inference",
+   "reasoning_models": [
+    "Qwen/Qwen3-235B-A22B-Thinking-2507",
+    "Qwen/Qwen3-30B-A3B-Thinking-2507",
+    "ZhipuAI/GLM-4.6",
+    "ZhipuAI/GLM-4.5"
+   ],
+   "vision_models": []
+  },
+  {
+   "name": "siliconflow",
+   "preset_key": "siliconflow",
+   "label": "硅基流动 SiliconFlow（国内）",
+   "protocol": "openai",
+   "base_url": "https://api.siliconflow.cn/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api.siliconflow.cn/v1/models?sub_type=chat",
+   "catalog_key": "siliconflow",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "deepseek-ai/DeepSeek-V3.2",
+    "Qwen/Qwen3.5-122B-A10B",
+    "zai-org/GLM-5.3"
+   ],
+   "note": "国内直连，DeepSeek 性价比高；在线列表仅 ID，VL/tools/思考档位以目录为准",
+   "docs_url": "https://docs.siliconflow.com/",
+   "reasoning_models": [
+    "deepseek-ai/DeepSeek-V3.2",
+    "Qwen/Qwen3.5-122B-A10B"
+   ],
+   "vision_models": [
+    "Qwen/Qwen3.5-122B-A10B"
+   ]
+  },
+  {
+   "name": "siliconflow_intl",
+   "preset_key": "siliconflow_intl",
+   "label": "硅基流动 SiliconFlow（国际）",
+   "protocol": "openai",
+   "base_url": "https://api.siliconflow.com/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api.siliconflow.com/v1/models?sub_type=chat",
+   "catalog_key": "siliconflow_intl",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "zai-org/GLM-5.3",
+    "Qwen/Qwen3.5-27B"
+   ],
+   "note": "国际站独立账号与 Key，不与国内站混用",
+   "docs_url": "https://www.siliconflow.com/",
+   "reasoning_models": [
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "zai-org/GLM-5.3"
+   ],
+   "vision_models": [
+    "Qwen/Qwen3.5-27B"
+   ]
+  },
+  {
+   "name": "deepseek",
+   "preset_key": "deepseek",
+   "label": "DeepSeek 官方",
+   "protocol": "openai",
+   "base_url": "https://api.deepseek.com/v1",
+   "sync_adapter": "deepseek_models",
+   "models_url": "https://api.deepseek.com/models",
+   "catalog_key": "deepseek",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "deepseek-flash",
+    "deepseek-v4-pro"
+   ],
+   "note": "官方直连；官方 Models & Pricing 页仅列 deepseek-flash 与 deepseek-v4-pro（旧名 deepseek-chat/deepseek-reasoner 已不在列）",
+   "docs_url": "https://api-docs.deepseek.com/",
+   "reasoning_models": [
+    "deepseek-flash",
+    "deepseek-v4-pro"
+   ],
+   "vision_models": [
+    "deepseek-flash"
+   ]
+  },
+  {
+   "name": "volcengine",
+   "preset_key": "volcengine",
+   "label": "火山方舟 Volcengine 按量",
+   "protocol": "openai",
+   "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+   "sync_adapter": "volcengine_ak_sk",
+   "models_url": "",
+   "catalog_key": "volcengine",
+   "usage_scope": "general",
+   "auth_scheme": "ak_sk",
+   "models": [
+    "doubao-seed-2-1-pro-260628",
+    "doubao-seed-2-1-turbo-260628",
+    "doubao-seed-2-0-mini-260428",
+    "doubao-seed-2-0-lite-260428",
+    "doubao-seed-evolving",
+    "doubao-seed-character-260628",
+    "deepseek-v4-pro-ga-260813",
+    "glm-5-2-260617"
+   ],
+   "note": "需在火山控制台开通模型并创建推理接入点；可选填管控 AK/SK 调官方基础模型列表，未填时仅目录更新、可手动添加 Model ID/Endpoint ID",
+   "docs_url": "https://www.volcengine.com/docs/ark/base-url-and-authentication",
+   "reasoning_models": [
+    "doubao-seed-2-1-pro-260628",
+    "doubao-seed-2-1-turbo-260628",
+    "doubao-seed-2-0-mini-260428",
+    "doubao-seed-2-0-lite-260428",
+    "doubao-seed-evolving",
+    "doubao-seed-character-260628",
+    "deepseek-v4-pro-ga-260813",
+    "glm-5-2-260617"
+   ],
+   "vision_models": [
+    "doubao-seed-2-1-pro-260628",
+    "doubao-seed-2-1-turbo-260628",
+    "doubao-seed-2-0-mini-260428",
+    "doubao-seed-2-0-lite-260428",
+    "doubao-seed-evolving",
+    "doubao-seed-character-260628"
+   ]
+  },
+  {
+   "name": "volcengine_coding",
+   "preset_key": "volcengine_coding",
+   "label": "火山方舟 Coding Plan",
+   "protocol": "openai",
+   "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+   "sync_adapter": "volcengine_ak_sk",
+   "models_url": "",
+   "catalog_key": "volcengine_coding",
+   "usage_scope": "plan_interactive_only",
+   "auth_scheme": "ak_sk",
+   "models": [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "kimi-k3",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "doubao-seed-evolving"
+   ],
+   "note": "Coding Plan 专属 Key 与 base，不与按量混用；交互式编程工具条款，禁止定时任务使用",
+   "docs_url": "https://www.volcengine.com/docs/ark/coding-plan",
+   "reasoning_models": [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "kimi-k3",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "doubao-seed-evolving"
+   ],
+   "vision_models": [
+    "kimi-k3",
+    "glm-5.3-flash",
+    "doubao-seed-evolving"
+   ]
+  },
+  {
+   "name": "volcengine_agent_plan",
+   "preset_key": "volcengine_agent_plan",
+   "label": "火山方舟 Agent Plan",
+   "protocol": "openai",
+   "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+   "sync_adapter": "volcengine_ak_sk",
+   "models_url": "",
+   "catalog_key": "volcengine_agent_plan",
+   "usage_scope": "plan_interactive_only",
+   "auth_scheme": "ak_sk",
+   "models": [],
+   "note": "Agent Plan 专属 Key 与 base；套餐可用模型以火山管控台/官方页面为准（无公开列表），可手动添加；能力目录沿用方舟基础模型",
+   "docs_url": "https://www.volcengine.com/docs/ark/agent-plan-personal-get-started",
+   "reasoning_models": [],
+   "vision_models": []
+  },
+  {
+   "name": "dashscope",
+   "preset_key": "dashscope",
+   "label": "阿里 DashScope 按量",
+   "protocol": "openai",
+   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+   "sync_adapter": "alibaba_models",
+   "models_url": "",
+   "catalog_key": "dashscope",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "qwen3.8-max",
+    "qwen3.7-plus",
+    "qwen3.8-flash",
+    "qwen3.8-omni-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4.1-flash",
+    "kimi-k3",
+    "glm-5.3",
+    "glm-5.2",
+    "MiniMax-M3.1-Flash",
+    "mimo-v2.5-pro"
+   ],
+   "note": "通义千问官方；候选为百炼当前文本/视觉理解模型。工作空间专属地址可用官方 GET /api/v1/models（在 models_url 显式填写后在线同步）",
+   "docs_url": "https://help.aliyun.com/zh/model-studio/list-models",
+   "reasoning_models": [
+    "qwen3.8-max",
+    "qwen3.7-plus",
+    "qwen3.8-flash",
+    "qwen3.8-omni-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4.1-flash",
+    "kimi-k3",
+    "glm-5.3",
+    "glm-5.2"
+   ],
+   "vision_models": [
+    "qwen3.8-max",
+    "qwen3.7-plus",
+    "qwen3.8-flash",
+    "qwen3.8-omni-flash",
+    "deepseek-v4.1-flash",
+    "kimi-k3"
+   ]
+  },
+  {
+   "name": "dashscope_coding",
+   "preset_key": "dashscope_coding",
+   "label": "阿里 DashScope Coding Plan",
+   "protocol": "openai",
+   "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "dashscope_coding",
+   "usage_scope": "plan_interactive_only",
+   "auth_scheme": "bearer",
+   "models": [
+    "qwen3.5-plus",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+    "glm-5",
+    "kimi-k2.5",
+    "MiniMax-M2.5"
+   ],
+   "note": "Coding Plan 专属 Key 与 base，不与按量混用；无公开套餐列表，仅目录候选（online=false）",
+   "docs_url": "https://help.aliyun.com/zh/model-studio/coding-plan",
+   "reasoning_models": [
+    "qwen3.5-plus",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+    "glm-5",
+    "kimi-k2.5",
+    "MiniMax-M2.5"
+   ],
+   "vision_models": [
+    "qwen3.5-plus",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+    "kimi-k2.5"
+   ]
+  },
+  {
+   "name": "dashscope_token_plan",
+   "preset_key": "dashscope_token_plan",
+   "label": "阿里 DashScope Token Plan",
+   "protocol": "openai",
+   "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "dashscope_token_plan",
+   "usage_scope": "plan_interactive_only",
+   "auth_scheme": "bearer",
+   "models": [
+    "qwen3.8-max",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+    "qwen3.6-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4-pro-0813",
+    "deepseek-v4-flash-0731",
+    "deepseek-v4.1-flash-1017",
+    "glm-5",
+    "kimi-k2.6",
+    "kimi-k2.7-code"
+   ],
+   "note": "Token Plan 专属 Key 与 base，不与按量/Coding Plan 混用；无公开套餐列表，仅目录候选（online=false）",
+   "docs_url": "https://help.aliyun.com/zh/model-studio/token-plan-personal-quick-start",
+   "reasoning_models": [
+    "qwen3.8-max",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+    "qwen3.6-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4-pro-0813",
+    "deepseek-v4-flash-0731",
+    "deepseek-v4.1-flash-1017",
+    "glm-5",
+    "kimi-k2.6",
+    "kimi-k2.7-code"
+   ],
+   "vision_models": [
+    "qwen3.8-max",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+    "qwen3.6-flash",
+    "deepseek-v4.1-flash-1017",
+    "kimi-k2.6",
+    "kimi-k2.7-code"
+   ]
+  },
+  {
+   "name": "tokenhub",
+   "preset_key": "tokenhub",
+   "label": "腾讯 TokenHub 按量",
+   "protocol": "openai",
+   "base_url": "https://tokenhub.tencentmaas.com/v1",
+   "sync_adapter": "tencent_models",
+   "models_url": "https://tokenhub.tencentmaas.com/v1/models",
+   "catalog_key": "tokenhub",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "hy3-preview",
+    "hy3",
+    "hy4-preview"
+   ],
+   "note": "腾讯混元 TokenHub（OpenAI/Anthropic 双兼容）；GET /v1/models 返回在线 ID 与状态，能力以官方目录为准",
+   "docs_url": "https://cloud.tencent.com/document/product/1823/130078",
+   "reasoning_models": [
+    "hy3-preview",
+    "hy3",
+    "hy4-preview"
+   ],
+   "vision_models": []
+  },
+  {
+   "name": "tokenhub_token_plan",
+   "preset_key": "tokenhub_token_plan",
+   "label": "腾讯 Token Plan",
+   "protocol": "openai",
+   "base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "tokenhub_token_plan",
+   "usage_scope": "plan_interactive_only",
+   "auth_scheme": "bearer",
+   "models": [
+    "hy3",
+    "hy4-preview"
+   ],
+   "note": "Token Plan 专属 Key 与 base，不与按量混用；无文档化列表接口，仅目录候选（online=false）",
+   "docs_url": "https://cloud.tencent.com/document/product/1823/130060",
+   "reasoning_models": [
+    "hy3",
+    "hy4-preview"
+   ],
+   "vision_models": []
+  },
+  {
+   "name": "tokenhub_coding_plan",
+   "preset_key": "tokenhub_coding_plan",
+   "label": "腾讯 Coding Plan",
+   "protocol": "openai",
+   "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "tokenhub_coding_plan",
+   "usage_scope": "plan_interactive_only",
+   "auth_scheme": "bearer",
+   "models": [
+    "tc-code-latest"
+   ],
+   "note": "Coding Plan 专属 Key 与 base；交互式编程工具条款，禁止定时任务使用；无文档化列表接口，仅目录候选",
+   "docs_url": "https://cloud.tencent.com/document/product/1823/131208",
+   "reasoning_models": [],
+   "vision_models": []
+  },
+  {
+   "name": "zhipu",
+   "preset_key": "zhipu",
+   "label": "智谱 GLM 官方",
+   "protocol": "openai",
+   "base_url": "https://open.bigmodel.cn/api/paas/v4",
+   "sync_adapter": "openai_models",
+   "models_url": "https://open.bigmodel.cn/api/paas/v4/models",
+   "catalog_key": "zhipu",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-4.7",
+    "glm-4.6",
+    "glm-4.5-air",
+    "glm-5v-turbo",
+    "glm-4.6v",
+    "glm-4.5v"
+   ],
+   "note": "智谱官方开放平台；GLM-5.3 起为强制思考（不可关闭），GLM-4.5 起为混合思考模型；/models 仅作在线增强，权威能力来自官方模型页目录",
+   "docs_url": "https://docs.bigmodel.cn/cn/guide/start/model-overview",
+   "reasoning_models": [
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-4.7",
+    "glm-4.6",
+    "glm-4.5-air",
+    "glm-5v-turbo",
+    "glm-4.6v",
+    "glm-4.5v"
+   ],
+   "vision_models": [
+    "glm-5.3-flash",
+    "glm-5v-turbo",
+    "glm-4.6v",
+    "glm-4.5v"
+   ]
+  },
+  {
+   "name": "zhipu_coding",
+   "preset_key": "zhipu_coding",
+   "label": "智谱 GLM Coding Plan",
+   "protocol": "openai",
+   "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "zhipu_coding",
+   "usage_scope": "plan_interactive_only",
+   "auth_scheme": "bearer",
+   "models": [
+    "glm-5.3-highspeed",
+    "glm-5.3",
+    "glm-5.3-flash"
+   ],
+   "note": "Coding Plan 专属 Key 与 base，不与按量混用；无公开套餐列表，仅目录候选（online=false）",
+   "docs_url": "https://docs.bigmodel.cn/cn/coding-plan/quick-start",
+   "reasoning_models": [
+    "glm-5.3-highspeed",
+    "glm-5.3",
+    "glm-5.3-flash"
+   ],
+   "vision_models": [
+    "glm-5.3-flash"
+   ]
+  },
+  {
+   "name": "zhipu_anthropic",
+   "preset_key": "zhipu_anthropic",
+   "label": "智谱 GLM（Anthropic 协议）",
+   "protocol": "anthropic",
+   "base_url": "https://open.bigmodel.cn/api/anthropic",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "zhipu",
+   "usage_scope": "general",
+   "auth_scheme": "x-api-key",
+   "models": [
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-4.7",
+    "glm-4.6",
+    "glm-4.5-air"
+   ],
+   "note": "智谱官方 Anthropic Messages 变体；能力目录与按量预设共用；协议选 anthropic",
+   "docs_url": "https://docs.bigmodel.cn/cn/guide/start/model-overview",
+   "reasoning_models": [
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-4.7",
+    "glm-4.6",
+    "glm-4.5-air"
+   ],
+   "vision_models": [
+    "glm-5.3-flash"
+   ]
+  },
+  {
+   "name": "moonshot",
+   "preset_key": "moonshot",
+   "label": "月之暗面 Kimi 开放平台",
+   "protocol": "openai",
+   "base_url": "https://api.moonshot.cn/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api.moonshot.cn/v1/models",
+   "catalog_key": "moonshot",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.6"
+   ],
+   "note": "月之暗面官方按量；moonshot-v1 系列、kimi-k2-thinking、kimi-latest 等已官方下线（候选已剔除，用户库旧行不删）",
+   "docs_url": "https://platform.kimi.com/docs/models",
+   "reasoning_models": [
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.6"
+   ],
+   "vision_models": [
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.6"
+   ]
+  },
+  {
+   "name": "kimi_code",
+   "preset_key": "kimi_code",
+   "label": "Kimi Code",
+   "protocol": "openai",
+   "base_url": "https://api.kimi.com/coding/v1",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "kimi_code",
+   "usage_scope": "plan_interactive_only",
+   "auth_scheme": "bearer",
+   "models": [
+    "kimi-for-coding",
+    "kimi-for-coding-highspeed",
+    "k3.1-pro",
+    "k3.1-pro-highspeed",
+    "k3",
+    "k3-256k"
+   ],
+   "note": "Kimi Code 订阅；模型 ID 与开放平台按量不同（勿混用），交互式编程工具条款，禁止定时任务使用",
+   "docs_url": "https://platform.kimi.com/docs/guide/product-plans",
+   "reasoning_models": [
+    "kimi-for-coding",
+    "kimi-for-coding-highspeed",
+    "k3.1-pro",
+    "k3.1-pro-highspeed",
+    "k3",
+    "k3-256k"
+   ],
+   "vision_models": [
+    "kimi-for-coding",
+    "kimi-for-coding-highspeed",
+    "k3.1-pro",
+    "k3.1-pro-highspeed",
+    "k3",
+    "k3-256k"
+   ]
+  },
+  {
+   "name": "stepfun",
+   "preset_key": "stepfun",
+   "label": "StepFun 阶跃星辰 按量",
+   "protocol": "openai",
+   "base_url": "https://api.stepfun.com/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api.stepfun.com/v1/models",
+   "catalog_key": "stepfun",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "step-5-preview",
+    "step-3.7-flash",
+    "step-3.5-flash",
+    "step-3.5-flash-2603",
+    "step-1o-turbo-vision"
+   ],
+   "note": "阶跃星辰官方按量；GET /v1/models 返回 ID，能力/档位以官方目录为准",
+   "docs_url": "https://platform.stepfun.com/docs/zh/api-reference/models",
+   "reasoning_models": [
+    "step-5-preview",
+    "step-3.7-flash",
+    "step-3.5-flash",
+    "step-3.5-flash-2603"
+   ],
+   "vision_models": [
+    "step-5-preview",
+    "step-3.7-flash"
+   ]
+  },
+  {
+   "name": "step_plan",
+   "preset_key": "step_plan",
+   "label": "StepFun Step Plan",
+   "protocol": "openai",
+   "base_url": "https://api.stepfun.com/step_plan/v1",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "step_plan",
+   "usage_scope": "plan_api_allowed",
+   "auth_scheme": "bearer",
+   "models": [
+    "step-5-preview",
+    "step-3.7-flash",
+    "step-3.5-flash",
+    "step-3.5-flash-2603",
+    "step-router-v1"
+   ],
+   "note": "Step Plan 订阅套餐；官方明确允许第三方 API 调用（可用于定时任务）；无公开套餐列表，仅目录候选",
+   "docs_url": "https://platform.stepfun.com/docs/zh/step-plan",
+   "reasoning_models": [
+    "step-5-preview",
+    "step-3.7-flash",
+    "step-3.5-flash",
+    "step-3.5-flash-2603"
+   ],
+   "vision_models": [
+    "step-5-preview",
+    "step-3.7-flash"
+   ]
+  },
+  {
+   "name": "opencode",
+   "preset_key": "opencode",
+   "label": "OpenCode 付费推理",
+   "protocol": "openai",
+   "base_url": "https://opencode.ai/inference/openai/v1",
+   "sync_adapter": "opencode_models",
+   "models_url": "https://opencode.ai/inference/v1/models",
+   "catalog_key": "opencode",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "minimax-m3",
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
+    "gpt-5.6-luna",
+    "gpt-6.1-sol",
+    "deepseek-v4-pro",
+    "qwen3.8-max",
+    "gemini-4-argon",
+    "grok-4.7"
+   ],
+   "note": "OpenCode Console 付费推理；免费档模型仅 OpenCode 内可用（第三方 403）；多 API family：Responses/Messages/deprecated 模型按 api_family 过滤，Go 套餐另列",
+   "docs_url": "https://opencode.ai/v2/docs/console/api/inference/",
+   "reasoning_models": [
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "minimax-m3",
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
+    "gpt-5.6-luna",
+    "gpt-6.1-sol",
+    "deepseek-v4-pro",
+    "qwen3.8-max",
+    "gemini-4-argon",
+    "grok-4.7"
+   ],
+   "vision_models": [
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "glm-5.3-flash",
+    "minimax-m3",
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
+    "gpt-5.6-luna",
+    "gpt-6.1-sol",
+    "qwen3.8-max",
+    "gemini-4-argon",
+    "grok-4.7"
+   ]
+  },
+  {
+   "name": "opencode_go",
+   "preset_key": "opencode_go",
+   "label": "OpenCode Go",
+   "protocol": "openai",
+   "base_url": "https://opencode.ai/inference/go/openai/v1",
+   "sync_adapter": "opencode_models",
+   "models_url": "https://opencode.ai/inference/go/v1/models",
+   "catalog_key": "opencode_go",
+   "usage_scope": "plan_api_allowed",
+   "auth_scheme": "bearer",
+   "session_header": "x-opencode-session",
+   "user_agent": "personal-workbench/1.0",
+   "models": [
+    "kimi-k3.1-pro",
+    "kimi-k3",
+    "glm-5.3",
+    "minimax-m3.1-flash",
+    "claude-haiku-5-5",
+    "claude-sonnet-5-5",
+    "qwen3.8-max",
+    "deepseek-v4-flash",
+    "gpt-5.6-luna"
+   ],
+   "note": "OpenCode Go 订阅；官方明确允许第三方 API 调用；需自带 User-Agent 与 x-opencode-session 会话头",
+   "docs_url": "https://opencode.ai/docs/go/",
+   "reasoning_models": [
+    "kimi-k3.1-pro",
+    "kimi-k3",
+    "glm-5.3",
+    "minimax-m3.1-flash",
+    "claude-haiku-5-5",
+    "qwen3.8-max",
+    "gpt-5.6-luna"
+   ],
+   "vision_models": [
+    "kimi-k3.1-pro",
+    "kimi-k3",
+    "minimax-m3.1-flash",
+    "claude-haiku-5-5",
+    "qwen3.8-max",
+    "gpt-5.6-luna"
+   ]
+  },
+  {
+   "name": "minimax",
+   "preset_key": "minimax",
+   "label": "MiniMax",
+   "protocol": "openai",
+   "base_url": "https://api.minimax.chat/v1",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "minimax",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "MiniMax-M3",
+    "MiniMax-M3.1-Flash"
+   ],
+   "note": "MiniMax 官方开放平台；官方 Anthropic 协议端点为 api.minimax.io/anthropic/v1（与本预设 openai 地址不同，按账号类型选择）",
+   "docs_url": "https://platform.minimaxi.com/document/",
+   "reasoning_models": [
+    "MiniMax-M3",
+    "MiniMax-M3.1-Flash"
+   ],
+   "vision_models": [
+    "MiniMax-M3",
+    "MiniMax-M3.1-Flash"
+   ]
+  },
+  {
+   "name": "hunyuan",
+   "preset_key": "hunyuan",
+   "label": "腾讯混元",
+   "protocol": "openai",
+   "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api.hunyuan.cloud.tencent.com/v1/models",
+   "catalog_key": "",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "hunyuan-turbos-latest",
+    "hunyuan-t1-latest",
+    "hunyuan-a13b"
+   ],
+   "note": "腾讯混元官方；需在腾讯云开通混元大模型；无审校能力目录，能力未知处保持未知",
+   "docs_url": "https://cloud.tencent.com/document/product/1729",
+   "reasoning_models": [
+    "hunyuan-t1-latest"
+   ],
+   "vision_models": []
+  },
+  {
+   "name": "spark",
+   "preset_key": "spark",
+   "label": "讯飞星火",
+   "protocol": "openai",
+   "base_url": "https://spark-api-open.xf-yun.com/v1",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "lite",
+    "generalv3.5",
+    "pro-128k",
+    "4.0Ultra"
+   ],
+   "note": "讯飞星火官方；x1 为推理（思考）模型；无公开列表接口",
+   "docs_url": "https://www.xfyun.cn/doc/spark/Web.html",
+   "reasoning_models": [
+    "x1"
+   ],
+   "vision_models": []
+  },
+  {
+   "name": "openai",
+   "preset_key": "openai",
+   "label": "OpenAI",
+   "protocol": "openai",
+   "base_url": "https://api.openai.com/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api.openai.com/v1/models",
+   "catalog_key": "openai",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "gpt-5.1",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano"
+   ],
+   "note": "OpenAI 官方；GPT-5 系列为推理模型（国内需代理）",
+   "docs_url": "https://platform.openai.com/docs/",
+   "reasoning_models": [
+    "gpt-5.1",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano"
+   ],
+   "vision_models": [
+    "gpt-5.1",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano"
+   ]
+  },
+  {
+   "name": "anthropic",
+   "preset_key": "anthropic",
+   "label": "Anthropic Claude",
+   "protocol": "anthropic",
+   "base_url": "https://api.anthropic.com",
+   "sync_adapter": "anthropic_models",
+   "models_url": "https://api.anthropic.com/v1/models",
+   "catalog_key": "anthropic",
+   "usage_scope": "general",
+   "auth_scheme": "x-api-key",
+   "models": [
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5"
+   ],
+   "note": "Anthropic 官方；Claude 4.x 为混合思考模型，协议选 anthropic",
+   "docs_url": "https://docs.anthropic.com/",
+   "reasoning_models": [
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5"
+   ],
+   "vision_models": [
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5"
+   ]
+  },
+  {
+   "name": "openrouter",
+   "preset_key": "openrouter",
+   "label": "OpenRouter",
+   "protocol": "openai",
+   "base_url": "https://openrouter.ai/api/v1",
+   "sync_adapter": "openrouter_models",
+   "models_url": "https://openrouter.ai/api/v1/models?output_modalities=text",
+   "catalog_key": "openrouter",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-chat",
+    "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-opus-4.5",
+    "openai/gpt-5",
+    "z-ai/glm-5.3",
+    "moonshotai/kimi-k3.1-pro"
+   ],
+   "note": "模型聚合网关；一个 Key 调用多家模型（海外服务）；在线列表直接映射 context/top_provider/modalities/supported_parameters，effort 只读 reasoning.supported_efforts",
+   "docs_url": "https://openrouter.ai/docs/guides/overview/models",
+   "reasoning_models": [
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+    "openai/gpt-5",
+    "z-ai/glm-5.3",
+    "moonshotai/kimi-k3.1-pro"
+   ],
+   "vision_models": [
+    "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-opus-4.5",
+    "openai/gpt-5",
+    "moonshotai/kimi-k3.1-pro"
+   ]
+  },
+  {
+   "name": "groq",
+   "preset_key": "groq",
+   "label": "Groq",
+   "protocol": "openai",
+   "base_url": "https://api.groq.com/openai/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api.groq.com/openai/v1/models",
+   "catalog_key": "groq",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b"
+   ],
+   "note": "Groq 高速推理（海外服务）",
+   "docs_url": "https://console.groq.com/docs/",
+   "reasoning_models": [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b"
+   ],
+   "vision_models": []
+  },
+  {
+   "name": "together",
+   "preset_key": "together",
+   "label": "Together AI",
+   "protocol": "openai",
+   "base_url": "https://api.together.xyz/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "https://api.together.xyz/v1/models",
+   "catalog_key": "",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "Qwen/Qwen3-235B-A22B",
+    "deepseek-ai/DeepSeek-R1"
+   ],
+   "note": "Together AI（海外服务）",
+   "docs_url": "https://docs.together.ai/",
+   "reasoning_models": [
+    "deepseek-ai/DeepSeek-R1"
+   ],
+   "vision_models": []
+  },
+  {
+   "name": "ollama",
+   "preset_key": "ollama",
+   "label": "本地 Ollama",
+   "protocol": "openai",
+   "base_url": "http://localhost:11434/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "http://localhost:11434/v1/models",
+   "catalog_key": "",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "qwen2.5:7b",
+    "llama3.1:8b"
+   ],
+   "note": "完全本地、免费；需先安装 Ollama 并拉取模型",
+   "docs_url": "https://ollama.com/",
+   "reasoning_models": [],
+   "vision_models": []
+  },
+  {
+   "name": "lmstudio",
+   "preset_key": "lmstudio",
+   "label": "本地 LM Studio",
+   "protocol": "openai",
+   "base_url": "http://localhost:1234/v1",
+   "sync_adapter": "openai_models",
+   "models_url": "http://localhost:1234/v1/models",
+   "catalog_key": "",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [
+    "qwen2.5-7b-instruct",
+    "llama-3.1-8b"
+   ],
+   "note": "LM Studio 本地服务器；可用模型随本机加载变化",
+   "docs_url": "https://lmstudio.ai/docs",
+   "reasoning_models": [],
+   "vision_models": []
+  },
+  {
+   "name": "custom",
+   "preset_key": "custom",
+   "label": "自定义",
+   "protocol": "openai",
+   "base_url": "",
+   "sync_adapter": "none",
+   "models_url": "",
+   "catalog_key": "",
+   "usage_scope": "general",
+   "auth_scheme": "bearer",
+   "models": [],
+   "note": "任意 OpenAI 兼容服务；anthropic 协议请用协议下拉选择",
+   "docs_url": "",
+   "reasoning_models": [],
+   "vision_models": []
+  }
+ ]
 }

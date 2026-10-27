@@ -11,7 +11,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from ..agents import config_store, model_probe
+from ..agents import config_store, model_probe, orchestrator
 from ..database import SessionLocal
 from ..models import ProviderModel
 
@@ -77,4 +77,7 @@ def get_presets():
 @presets_router.post("/providers/presets/reload", summary="重新加载 provider_presets.json 预设")
 def reload_presets():
     presets = config_store.reload_presets()
+    # 预设可能改变 session_header/usage_scope 等运行配置：清空 orchestrator 进程缓存，
+    # 已构建的模型实例不继续沿用旧会话头/旧套餐边界（下次取用按新预设重建）
+    orchestrator.invalidate()
     return {"presets": presets, "count": len(presets)}

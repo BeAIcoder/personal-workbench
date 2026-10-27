@@ -230,6 +230,7 @@ def test_presets_include_vision_models():
     by_name = {p["name"]: p for p in config_store.PRESETS}
     for name in ("openai", "anthropic", "zhipu", "dashscope", "volcengine", "moonshot"):
         assert by_name[name]["vision_models"], name
-    # openai 预设含 gpt-4o 系列；dashscope 含 qwen-vl 系列
-    assert "gpt-4o" in by_name["openai"]["vision_models"]
-    assert any("qwen-vl" in m for m in by_name["dashscope"]["vision_models"])
+    # 视觉候选随官方当前阵容更新（Task 3，2026-10-26 核对）：openai 为 GPT-5 系列，
+    # dashscope 为百炼图像理解列表（qwen3.8-max 等）；已不在官方列表的旧名（gpt-4o/qwen-vl）不再宣称
+    assert "gpt-5.1" in by_name["openai"]["vision_models"]
+    assert any("qwen3.8" in m for m in by_name["dashscope"]["vision_models"])

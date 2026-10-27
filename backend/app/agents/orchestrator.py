@@ -1,8 +1,9 @@
 """编排器：路由 → 专家 Agent 执行 → 轨迹与会话持久化。
 
-路由策略：用户指定 > 关键词规则 > LLM 结构化调度 > 默认（商业地产管家）。
+路由策略：用户指定 > 高置信关键词 > 低置信纯文本 LLM 仲裁 > 弱关键词候选/默认（商业地产管家）。
 Agent 实例按 (会话, 专家, 模式) 缓存在进程内；会话消息持久化到 SQLite，
-进程重启后按历史重建会话上下文。
+进程重启后按历史重建会话上下文。模型实例默认按模型共享缓存，官方要求会话头的
+供应商（OpenCode Go 等）按 (模型, 会话) 维度缓存，保证会话头值稳定。
 
 工作模式（借鉴 QwenPaw Loop 模式）：
 - standard 标准执行：全部工具，自动放行
@@ -11,40 +12,64 @@ Agent 实例按 (会话, 专家, 模式) 缓存在进程内；会话消息持久
 """
 import asyncio
 import base64
+import json
 import logging
 import re
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import OperationalError
 
 from ..database import SessionLocal
 from ..models import AgentSession, ChatMessage
 from . import config_store
-from .llm import build_model, llm_status
+from .llm import build_model, llm_status, needs_session_headers
 from .team import (
     COMMON_RULES,
     QUERY_TOOLS,
     TEAM,
     AgentSpec,
+    best_keyword_candidate,
     default_agent_name,
-    keyword_hit,
     load_team,
+    normalize_route_text,
     roster_text,
+    route_scores,
 )
 from .tools import TOOL_SPECS, build_tools, tool_trace
 
 logger = logging.getLogger(__name__)
 
 _model = None
-_models: dict[int, object | None] = {}  # 专家绑定模型缓存：model_id → 模型实例（None 表示不可用）
+_models: dict[int, object | None] = {}  # 共享模型缓存：model_id → 模型实例（None 表示不可用）
+# 要求会话头的供应商（OpenCode Go 等）按 (model_id|0, session_id) 维度缓存；
+# model_id=0 表示全局激活模型。LRU 上限与会话 Agent 缓存同口径，淘汰即释放实例（含连接池）。
+_SESSION_MODEL_CACHE_MAX = 64
+_session_models: "OrderedDict[tuple[int, str], object | None]" = OrderedDict()
+_session_model_ids: set[int] = set()
+# 全局激活模型所属供应商是否要求会话头（首次构造时判定，invalidate 重置）
+_model_needs_session = False
 # 各会话 Agent 缓存（LRU：上限 64 个，超出淘汰最久未用，避免长驻服务内存无限增长）
 _AGENT_CACHE_MAX = 64
 _agents: "OrderedDict[tuple[str, str, str, int], object]" = OrderedDict()
 _agent_locks: dict[tuple[str, str, str, int], asyncio.Lock] = {}
+
+
+def _session_cache_put(key: tuple[int, str], model: object | None) -> None:
+    """按会话维度的模型缓存（LRU）：淘汰最久未用会话，同步释放其模型实例。"""
+    _session_models[key] = model
+    _session_models.move_to_end(key)
+    while len(_session_models) > _SESSION_MODEL_CACHE_MAX:
+        _session_models.popitem(last=False)
+
+
+def _session_cache_get(key: tuple[int, str]):
+    """读取按会话缓存的模型实例；命中（含缓存的 None）即刷新新近度（真 LRU，非 FIFO）。"""
+    if key in _session_models:
+        _session_models.move_to_end(key)
+    return _session_models[key]
 
 
 def _agent_cache_put(key: tuple[str, str, str, int], agent: object) -> None:
@@ -65,40 +90,123 @@ DEEP_SUFFIX = "\n\n【当前模式：深度研究】请进行更全面深入的�
 READONLY_SUFFIX = "\n\n【当前模式：只读咨询】本次仅提供分析与建议，不修改任何工作台数据（写入类工具已对你关闭）。"
 
 
-class RouteDecision(BaseModel):
-    """LLM 路由的结构化输出。"""
+def parse_route_reply(text: str, team: dict[str, AgentSpec]) -> str | None:
+    """从纯文本回复中解析名册内唯一专家；接受精确 name/label 与 JSON 代码块。"""
+    normalized = normalize_route_text(text or "").strip()
+    if not normalized:
+        return None
 
-    agent: str = Field(description="专家标识，必须是名册中列出的 name")
-    reason: str = Field(description="选择理由，20 字以内")
+    aliases: dict[str, set[str]] = {}
+    for name, spec in team.items():
+        for value in (name, spec.label):
+            alias = normalize_route_text(value).strip()
+            if alias:
+                aliases.setdefault(alias, set()).add(name)
+
+    def _exact_names(value: str) -> set[str]:
+        return aliases.get(normalize_route_text(value).strip(), set())
+
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", normalized, re.DOTALL)
+    candidate_text = (fenced.group(1) if fenced else normalized).strip()
+    exact = _exact_names(candidate_text)
+    if len(exact) == 1:
+        return next(iter(exact))
+
+    try:
+        payload = json.loads(candidate_text)
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+    if isinstance(payload, dict):
+        selected: set[str] = set()
+        identity_values = [payload[key] for key in ("agent", "name", "label") if isinstance(payload.get(key), str)]
+        if not identity_values:
+            return None
+        for value in identity_values:
+            names = _exact_names(value)
+            if len(names) != 1:
+                return None
+            selected.update(names)
+        return next(iter(selected)) if len(selected) == 1 else None
+    if isinstance(payload, str):
+        names = _exact_names(payload)
+        return next(iter(names)) if len(names) == 1 else None
+
+    selected = set()
+    for alias, names in aliases.items():
+        pattern = re.escape(alias)
+        if alias[0].isascii() and alias[0].isalnum():
+            pattern = rf"(?<![a-z0-9_]){pattern}"
+        if alias[-1].isascii() and alias[-1].isalnum():
+            pattern = rf"{pattern}(?![a-z0-9_])"
+        if re.search(pattern, candidate_text):
+            selected.update(names)
+    return next(iter(selected)) if len(selected) == 1 else None
 
 
 def invalidate() -> None:
     """配置变更后清空进程内缓存（模型实例与各会话 Agent）。"""
-    global _model
+    global _model, _model_needs_session
     _model = None
+    _model_needs_session = False
     _models.clear()
+    _session_models.clear()
+    _session_model_ids.clear()
     _agents.clear()
     _agent_locks.clear()
 
 
-def _get_model():
-    global _model
+def _get_model(session_id: str | None = None):
+    """全局激活模型（进程内共享缓存）。
+
+    供应商要求会话头时按 session 维度缓存（LRU 有上限，命中刷新新近度，淘汰即释放实例）；
+    其余供应商沿用共享实例。session_id 缺省时共享实例用稳定会话头值（LLM 路由等内部
+    调用保持稳定即可）；该实例首次可能由某个会话调用构造，头值即该会话的稳定值。
+    """
+    global _model, _model_needs_session
     if _model is None:
-        _model = build_model()
-    return _model
+        cfg = config_store.load()
+        _model = build_model(cfg)
+        _model_needs_session = needs_session_headers(cfg)
+    if _model is None or not _model_needs_session or session_id is None:
+        return _model
+    key = (0, str(session_id))
+    if key not in _session_models:
+        _session_cache_put(key, build_model(config_store.load(), session_id=session_id))
+    return _session_cache_get(key)
 
 
-def _get_spec_model(spec: AgentSpec):
-    """专家生效模型：绑定 model_id 时按其配置构建（进程内缓存），为空/不可用回退全局激活模型。"""
+def _get_spec_model(spec: AgentSpec, session_id: str | None = None):
+    """专家生效模型：绑定 model_id 时按其配置构建（进程内缓存），为空/不可用回退全局激活模型。
+
+    需要会话头的供应商（OpenCode Go 等）按 (model_id, session_id) 维度缓存（LRU 有上限），
+    保证同一会话内会话头稳定；其余供应商沿用共享缓存（model_id 维度）。
+    """
     if spec.model_id:
-        if spec.model_id not in _models:
-            cfg = config_store.model_cfg_by_id(spec.model_id)
-            _models[spec.model_id] = build_model(cfg) if cfg else None
-            if _models[spec.model_id] is None:
-                logger.warning("专家 %s 绑定的模型不可用（model_id=%s），回退全局激活模型", spec.name, spec.model_id)
-        if _models[spec.model_id] is not None:
-            return _models[spec.model_id]
-    return _get_model()
+        if spec.model_id in _session_model_ids and session_id is not None:
+            key = (spec.model_id, str(session_id))
+            if key not in _session_models:
+                cfg = config_store.model_cfg_by_id(spec.model_id)
+                model = build_model(cfg, session_id=session_id) if cfg else None
+                _session_cache_put(key, model)
+                if model is None:
+                    logger.warning("专家 %s 绑定的模型不可用（model_id=%s），回退全局激活模型", spec.name, spec.model_id)
+            if _session_cache_get(key) is not None:
+                return _session_models[key]
+        else:
+            if spec.model_id not in _models:
+                cfg = config_store.model_cfg_by_id(spec.model_id)
+                model = build_model(cfg, session_id=session_id) if cfg else None
+                _models[spec.model_id] = model
+                if model is not None and cfg and needs_session_headers(cfg):
+                    # 该供应商要求会话头：后续同会话调用走 (model_id, session) 缓存
+                    _session_model_ids.add(spec.model_id)
+                    if session_id is not None:
+                        _session_cache_put((spec.model_id, str(session_id)), model)
+                if model is None:
+                    logger.warning("专家 %s 绑定的模型不可用（model_id=%s），回退全局激活模型", spec.name, spec.model_id)
+            if _models[spec.model_id] is not None:
+                return _models[spec.model_id]
+    return _get_model(session_id)
 
 
 def _resolve_mode(mode: str | None) -> str:
@@ -156,7 +264,7 @@ def _readonly_tool_names() -> set[str]:
     return set(QUERY_TOOLS) | {name for name, spec in list(TOOL_SPECS.items()) if spec.get("readonly")}
 
 
-async def _build_agent(spec: AgentSpec, mode: str = "standard"):
+async def _build_agent(spec: AgentSpec, mode: str = "standard", session_id: str | None = None):
     from pathlib import Path
 
     from agentscope.agent import Agent, ReActConfig
@@ -230,7 +338,7 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
     return Agent(
         name=spec.label,
         system_prompt=system_prompt,
-        model=_get_spec_model(spec),
+        model=_get_spec_model(spec, session_id=session_id),
         toolkit=toolkit,
         state=state,
         react_config=ReActConfig(max_iters=max_iters),
@@ -238,7 +346,7 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard"):
 
 
 def _get_agent(session_id: str, spec: AgentSpec, mode: str):
-    if _get_spec_model(spec) is None:
+    if _get_spec_model(spec, session_id=session_id) is None:
         raise RuntimeError("LLM 未配置")
     # 缓存 key 含专家绑定模型：模型变更（或绑定变化）时重建 Agent
     key = (session_id, spec.name, mode, spec.model_id or 0)
@@ -260,7 +368,7 @@ async def _ensure_agent(session_id: str, spec: AgentSpec, mode: str):
         try:
             return _get_agent(session_id, spec, mode)
         except KeyError:
-            agent = await _build_agent(spec, mode)
+            agent = await _build_agent(spec, mode, session_id=session_id)
             history = _load_history_msgs(session_id)
             if history:
                 agent.observe(history)
@@ -298,7 +406,7 @@ def _load_history_msgs(session_id: str, limit: int | None = None) -> list:
 
 
 async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None:
-    """LLM 结构化调度；任何失败都返回 None（回退关键词/默认）。"""
+    """LLM 纯文本仲裁；任何失败都返回 None（回退关键词/默认）。"""
     from agentscope.agent import Agent
     from agentscope.message import Msg, TextBlock
 
@@ -309,7 +417,7 @@ async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None
             name="调度员",
             system_prompt=(
                 "你是 Agent 团队的任务调度员。根据团队名册和用户消息，"
-                "选出最合适的一位专家。只做路由选择，不做具体回答。"
+                "选出最合适的一位专家。只做路由选择，不做具体回答；只返回一个 name。"
             ),
             model=_get_model(),
         )
@@ -318,14 +426,11 @@ async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None
                 name="用户",
                 role="user",
                 content=[TextBlock(type="text", text=f"团队名册：\n{roster_text(team)}\n\n用户消息：{question}")],
-            ),
-            structured_schema=RouteDecision,
+            )
         )
-        decision = reply.structured_output or {}
-        if decision.get("agent") in team:
-            return decision["agent"]
-    except Exception:
-        logger.warning("LLM 结构化调度失败，回退关键词/默认路由", exc_info=True)
+        return parse_route_reply(reply.get_text_content() or "", team)
+    except Exception as exc:
+        logger.warning("LLM 路由阶段失败（%s），回退关键词/默认路由", type(exc).__name__)
     return None
 
 
@@ -472,6 +577,7 @@ def _read_text_attachment(path: Path) -> str:
 def _attachments_block(attachments) -> str:
     """把聊天附件拼成可注入消息的文本块（安全：仅允许上传目录内的文件）。"""
     from ..config import UPLOAD_DIR
+    from ..document_text import DOCUMENT_SUFFIXES, extracted_text_path
 
     if not attachments:
         return ""
@@ -487,10 +593,23 @@ def _attachments_block(attachments) -> str:
             parts.append(f"【附件 {name}】文件不存在")
             continue
         size = path.stat().st_size
-        if path.suffix.lower() in _TEXT_SUFFIXES and size <= 300_000:
-            content = _read_text_attachment(path)[:80000]
+        is_document = path.suffix.lower() in DOCUMENT_SUFFIXES
+        read_path = extracted_text_path(path) if is_document else path
+        if is_document:
+            try:
+                read_path.resolve().relative_to(UPLOAD_DIR.resolve())
+            except Exception:
+                parts.append(f"【文档附件：{name}】提取文本路径越界，已忽略")
+                continue
+            if not read_path.is_file():
+                parts.append(f"【文档附件：{name}】提取文本不存在，请重新上传")
+                continue
+        read_size = read_path.stat().st_size
+        if is_document or (read_path.suffix.lower() in _TEXT_SUFFIXES and read_size <= 300_000):
+            content = _read_text_attachment(read_path)[:80000]
+            content_label = "提取文本如下" if is_document else "内容如下"
             parts.append(
-                f"【附件文件：{name}（{size} 字节）内容如下】\n\n```\n{content}\n```\n\n"
+                f"【附件文件：{name}（{size} 字节）{content_label}】\n\n```\n{content}\n```\n\n"
                 f"（完整路径：{path}。如需更深入的统计、透视或处理，可使用 Bash 工具读取该文件。）"
             )
         else:
@@ -524,23 +643,99 @@ def _thinking_of(msg) -> str:
     return "\n".join(p for p in parts if p).strip()
 
 
-async def _resolve_spec(question: str, agent_name: str | None):
+def _route_candidate_payload(matches: list[dict]) -> list[dict]:
+    return [
+        {"name": match["name"], "score": match["score"], "confidence": match["confidence"]}
+        for match in matches
+    ]
+
+
+# 续聊判定：这些表达强依赖上一轮上下文，不应作为新问题重新路由
+_CONTINUATION_MARKERS = (
+    "继续",
+    "接着",
+    "接着说",
+    "按照上面",
+    "如上",
+    "同上",
+    "刚才",
+    "刚刚",
+    "上面",
+)
+
+
+def _is_continuation(question: str) -> bool:
+    """判断用户是否在要求延续当前会话上下文。"""
+    normalized = normalize_route_text(question or "")
+    return any(marker in normalized for marker in _CONTINUATION_MARKERS)
+
+
+def _session_current_agent(session_id: str | None) -> str | None:
+    """取当前会话最近一次实际回复的专家；无历史/内部会话返回 None。
+
+    定时任务（job-*）等内部会话不参与续聊保持：任务提示词即使出现“继续”，
+    也应按当次任务重新路由，而不是沿用上一次任务留下的专家。
+    """
+    if not session_id or session_id in _INTERNAL_SESSION_IDS:
+        return None
+    if any(session_id.startswith(prefix) for prefix in _INTERNAL_SESSION_PREFIXES):
+        return None
+    try:
+        with SessionLocal() as db:
+            row = (
+                db.query(ChatMessage.agent_name)
+                .filter(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.role == "assistant",
+                    ChatMessage.agent_name != "",
+                )
+                .order_by(ChatMessage.id.desc())
+                .first()
+            )
+    except OperationalError:
+        logger.warning("读取会话当前专家失败（数据库暂不可用）", exc_info=True)
+        return None
+    return row[0] if row and row[0] else None
+
+
+def _interrupted_stream_message(delta_parts: list[str], thinking_parts: list[str]) -> tuple[str, str]:
+    """把中断前已流式产出的正文/思考整理为可落库内容，避免历史缺片。"""
+    text, inline_think = _split_inline_think("".join(delta_parts))
+    thinking = "\n".join(part for part in (inline_think, "".join(thinking_parts)) if part).strip()
+    return (text.strip() or "（已停止生成）"), thinking
+
+
+async def _resolve_route(question: str, agent_name: str | None, session_id: str | None = None):
+    team = load_team()
+    if not team:
+        return None
+    matches = route_scores(question, team)
+    if agent_name in team:
+        return team[agent_name], "指定", matches
+    direct = best_keyword_candidate(matches)
+    if direct:
+        return team[direct["name"]], "关键词", matches
+    # 续聊保持：没有高置信关键词且用户明确依赖上文时，继续当前会话专家，
+    # 避免“继续/接着说”掉回默认专家造成角色漂移与上下文断片。
+    if session_id and _is_continuation(question):
+        current_agent = _session_current_agent(session_id)
+        if current_agent in team:
+            return team[current_agent], "续聊", matches
+    picked = await _route_by_llm(question, team)
+    if picked in team:
+        return team[picked], "AI 调度", matches
+    if matches:
+        return team[matches[0]["name"]], "关键词回退", matches
+    return team[default_agent_name(team)], "默认", matches
+
+
+async def _resolve_spec(question: str, agent_name: str | None, session_id: str | None = None):
     """路由：返回 (spec, routed_by)。专家团队读库（启用中），兜底内置定义。
 
     专家团队为空（全部停用）时返回 None，由调用方给出明确错误（见 EMPTY_TEAM_MESSAGE）。
     """
-    team = load_team()
-    if not team:
-        return None
-    if agent_name in team:
-        return team[agent_name], "指定"
-    hit = keyword_hit(question, team)
-    if hit:
-        return team[hit], "关键词"
-    picked = await _route_by_llm(question, team)
-    if picked:
-        return team[picked], "AI 调度"
-    return team[default_agent_name(team)], "默认"
+    resolved = await _resolve_route(question, agent_name, session_id)
+    return resolved[:2] if resolved is not None else None
 
 
 def _with_memory_context(message: str) -> str:
@@ -587,6 +782,39 @@ def _user_content_blocks(message: str, attachments, spec: AgentSpec | None = Non
     return [TextBlock(type="text", text=text)] + image_blocks
 
 
+def _job_scope_refusal(session_id: str, spec: AgentSpec | None = None) -> str | None:
+    """定时任务会话（job-*）的套餐边界：交互式套餐模型拒绝执行；普通聊天不受影响。
+
+    生效模型 = 专家绑定模型（路由后复核）或全局激活模型；usage_scope 取自供应商预设
+    （plan_interactive_only = 官方约定仅限交互式工具，禁定时任务/API 调用）。
+    """
+    if not any(str(session_id or "").startswith(prefix) for prefix in _INTERNAL_SESSION_PREFIXES):
+        return None
+    cfg = None
+    if spec is not None and spec.model_id:
+        cfg = config_store.model_cfg_by_id(spec.model_id)
+    if cfg is None:
+        cfg = config_store.load()
+    if str(cfg.get("usage_scope") or "general") != "plan_interactive_only":
+        return None
+    who = str(cfg.get("provider_name") or "当前模型")
+    return (
+        f"定时任务已阻止：{who} 属于仅限交互式使用的套餐（官方约定不用于定时任务/API 调用），"
+        f"请在 AI 助手设置中切换到按量付费或明确允许 API 调用的模型后再运行。"
+    )
+
+
+def _preroute_scope_refusal(session_id: str, agent_name: str | None) -> str | None:
+    """路由前的套餐预检：仅自动路由需要（路由本身可能调用全局激活模型仲裁）。
+
+    明确指定专家时路由不会触碰全局模型，由路由后的 spec 复核兜底——
+    避免「全局是交互式套餐、专家绑定按量模型」的合法定时任务被误伤。
+    """
+    if agent_name and agent_name in load_team():
+        return None
+    return _job_scope_refusal(session_id)
+
+
 async def chat(
     session_id: str,
     message: str,
@@ -602,11 +830,19 @@ async def chat(
             "message": "模型未配置：请在 AI 助手「⚙ 设置」中选择供应商并填写 API Key，保存后即可激活 Agent 团队。",
         }
 
+    refusal = _preroute_scope_refusal(session_id, agent_name)
+    if refusal:
+        return {"ok": False, "message": refusal}
+
     mode = _resolve_mode(mode)
-    resolved = await _resolve_spec(message, agent_name)
+    resolved = await _resolve_spec(message, agent_name, session_id)
     if resolved is None:
         return {"ok": False, "message": EMPTY_TEAM_MESSAGE}
     spec, routed_by = resolved
+    # 路由定到专家后按其绑定模型复核套餐边界（专家绑定模型可能与全局不同）
+    refusal = _job_scope_refusal(session_id, spec)
+    if refusal:
+        return {"ok": False, "message": refusal}
     # 路由定到专家后按其绑定模型复核视觉能力（自动路由时路由层前置校验只看了全局模型）
     assert_vision_supported(attachments, spec=spec)
     agent = await _ensure_agent(session_id, spec, mode)
@@ -658,18 +894,34 @@ async def chat_stream(
         return
 
     mode = _resolve_mode(mode)
-    resolved = await _resolve_spec(message, agent_name)
+    refusal = _preroute_scope_refusal(session_id, agent_name)
+    if refusal:
+        yield {"type": "error", "message": refusal}
+        return
+    resolved = await _resolve_route(message, agent_name, session_id)
     if resolved is None:
         yield {"type": "error", "message": EMPTY_TEAM_MESSAGE}
         return
-    spec, routed_by = resolved
+    spec, routed_by, matches = resolved
+    # 路由定到专家后按其绑定模型复核套餐边界（专家绑定模型可能与全局不同）
+    refusal = _job_scope_refusal(session_id, spec)
+    if refusal:
+        yield {"type": "error", "message": refusal}
+        return
+    route_candidates = _route_candidate_payload(matches)
     try:
         # 路由定到专家后按其绑定模型复核视觉能力（自动路由时路由层前置校验只看了全局模型）
         assert_vision_supported(attachments, spec=spec)
     except ValueError as exc:
         yield {"type": "error", "message": str(exc)}
         return
-    yield {"type": "meta", "agent": {"name": spec.name, "label": spec.label, "emoji": spec.emoji, "color": spec.color}, "routed_by": routed_by, "mode": mode}
+    yield {
+        "type": "meta",
+        "agent": {"name": spec.name, "label": spec.label, "emoji": spec.emoji, "color": spec.color},
+        "routed_by": routed_by,
+        "route_candidates": route_candidates,
+        "mode": mode,
+    }
 
     agent = await _ensure_agent(session_id, spec, mode)
 
@@ -684,6 +936,9 @@ async def chat_stream(
     _persist(session_id, "user", "", message, [])
 
     token = tool_trace.set([])
+    delta_parts: list[str] = []
+    thinking_parts: list[str] = []
+    assistant_persisted = False
     try:
         final_msg = None
         async for ev in agent.reply_stream(
@@ -692,9 +947,11 @@ async def chat_stream(
         ):
             if isinstance(ev, TextBlockDeltaEvent):
                 if ev.delta:
+                    delta_parts.append(ev.delta)
                     yield {"type": "delta", "text": ev.delta}
             elif isinstance(ev, ThinkingBlockDeltaEvent):
                 if ev.delta:
+                    thinking_parts.append(ev.delta)
                     yield {"type": "thinking_delta", "text": ev.delta}
             elif isinstance(ev, ToolCallStartEvent):
                 yield {"type": "tool_start", "name": ev.tool_call_name}
@@ -706,12 +963,25 @@ async def chat_stream(
         text, inline_think = _split_inline_think(text)
         thinking = "\n".join(x for x in (inline_think, _thinking_of(final_msg) if final_msg is not None else "") if x).strip()
         trace = list(tool_trace.get() or [])
+    except (asyncio.CancelledError, GeneratorExit):
+        # 客户端停止/断开：用户消息已落库，把已流式产出的内容补存为 assistant，
+        # 否则继续输入时新 Agent 看不到这半轮上下文，表现为“遗忘上文”。
+        if not assistant_persisted:
+            text, thinking = _interrupted_stream_message(delta_parts, thinking_parts)
+            trace = list(tool_trace.get() or [])
+            try:
+                _persist(session_id, "assistant", spec.name, text, trace, thinking)
+                assistant_persisted = True
+            except Exception:
+                logger.warning("中断内容落库失败：session_id=%s", session_id, exc_info=True)
+        raise
     except Exception as exc:
         # 用户消息已落库，补一条 assistant 侧错误消息，保持历史成对
         err_text = f"抱歉，本次回复生成失败：{type(exc).__name__}"
         logger.warning("流式对话执行失败：session_id=%s，%s", session_id, exc, exc_info=True)
         try:
             _persist(session_id, "assistant", spec.name, err_text, [])
+            assistant_persisted = True
         except Exception:
             logger.warning("错误消息落库失败：session_id=%s", session_id, exc_info=True)
         yield {"type": "error", "message": err_text}
@@ -727,6 +997,7 @@ async def chat_stream(
         "thinking": thinking,
         "agent": {"name": spec.name, "label": spec.label, "emoji": spec.emoji, "color": spec.color},
         "routed_by": routed_by,
+        "route_candidates": route_candidates,
         "mode": mode,
         "trace": trace,
     }
@@ -803,6 +1074,9 @@ def session_delete(session_id: str) -> None:
         _agents.pop(key, None)
     for key in [k for k in list(_agent_locks) if k[0] == session_id]:
         _agent_locks.pop(key, None)
+    # 该会话按 (模型, 会话) 维度缓存的模型实例一并清理（含 SDK 连接池引用）
+    for key in [k for k in list(_session_models) if k[1] == session_id]:
+        _session_models.pop(key, None)
 
 
 def session_set_archived(session_id: str, archived: bool) -> dict:

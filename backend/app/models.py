@@ -110,6 +110,13 @@ class ModelProvider(Base):
     base_url: Mapped[str] = mapped_column(String(300), default="")
     api_key: Mapped[str] = mapped_column(String(300), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 预设标识（provider_presets.json 的 preset_key）：适配器只认它，不认中文显示名
+    preset_key: Mapped[str] = mapped_column(String(50), default="")
+    # 模型列表接口地址（在线同步用；空 = 无官方列表，仅目录兜底）
+    models_url: Mapped[str] = mapped_column(String(300), default="")
+    # 可选管控面凭证（火山 AK/SK）：seal 后的 JSON {"access_key","secret_key"}；
+    # 任何 GET 不回传，保存时空/掩码保留旧值
+    sync_credentials: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -144,6 +151,14 @@ class ProviderModel(Base):
     probe_result: Mapped[str] = mapped_column(Text, default="")
     # 最近一次探测时间（ISO 本地时间，如 2026-10-12T20:30:00）
     probed_at: Mapped[str] = mapped_column(Text, default="")
+    # 声明的最大输入 tokens（0 = 未提供；与 context_size 分列：context 含输出份额）
+    max_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    # 工具调用能力：-1 未知 / 0 否 / 1 是（目录/同步/手动）
+    supports_tools: Mapped[int] = mapped_column(Integer, default=-1)
+    # 能力元数据 JSON：sources/manual_fields/模态/思考默认档/api_family/remote_status/最近同步快照
+    capability_meta: Mapped[str] = mapped_column(Text, default="{}")
+    # 最近一次能力同步时间（ISO 本地时间；空 = 从未同步）
+    synced_at: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
