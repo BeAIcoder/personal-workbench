@@ -102,6 +102,8 @@ export const assistantApi = {
 
   models: {
     list: () => api.get('/assistant/models'),
+    // 恢复同步值：清除 manual_fields 并按最近同步快照恢复（无快照仅清标记）
+    resetOverrides: (id) => api.post(`/assistant/models/${id}/capabilities/reset-overrides`),
   },
 
   agents: {
@@ -109,7 +111,7 @@ export const assistantApi = {
     create: (data) => api.post('/assistant/agents', data),
     update: (id, data) => api.put(`/assistant/agents/${id}`, data),
     remove: (id) => api.delete(`/assistant/agents/${id}`),
-    routeTest: (text) => api.post('/assistant/agents/route-test', { text }),
+    routeTest: (text, includeLlm = false) => api.post('/assistant/agents/route-test', { text, include_llm: includeLlm }),
     reset: () => api.post('/assistant/agents/reset'),
   },
 
@@ -119,6 +121,14 @@ export const assistantApi = {
     saveModel: (providerId, data) => api.post(`/assistant/providers/${providerId}/models`, data),
     removeModel: (providerId, modelId) => api.delete(`/assistant/providers/${providerId}/models/${modelId}`),
     activate: (modelId) => api.post(`/assistant/models/${modelId}/activate`),
+    // 在线模型列表同步：只读目录/管控请求，绝不发推理；
+    // 180s 与后端 5×(20s+Retry-After 重试) 的上界匹配，避免前端先断、后端仍持锁
+    syncModels: (id, opts = {}) =>
+      api.post(
+        `/assistant/providers/${id}/sync-models`,
+        { include_disabled: !!opts.include_disabled, override_manual: !!opts.override_manual },
+        { timeout: 180000 },
+      ),
   },
 }
 

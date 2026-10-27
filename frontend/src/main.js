@@ -9,11 +9,13 @@ import 'dayjs/locale/zh-cn'
 import App from './App.vue'
 import router from './router'
 import { debugApi } from './api'
+import { installChunkRecovery } from './utils/chunkRecovery'
 import './style.css'
 
 dayjs.locale('zh-cn')
 
 const app = createApp(App)
+installChunkRecovery(window, router)
 app.use(router)
 app.use(ElementPlus, { locale: zhCn })
 for (const [name, component] of Object.entries(Icons)) {

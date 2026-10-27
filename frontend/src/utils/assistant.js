@@ -3,11 +3,23 @@
 // 允许上传的图片后缀（与后端上传接口约定一致）
 export const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
 
-// 附件选择 accept：原有文本/表格类 + 图片
-export const ASSISTANT_ACCEPT = [
+export const ASSISTANT_FILE_EXTS = [
   '.txt', '.md', '.csv', '.json', '.log', '.py', '.html', '.xml', '.yaml', '.yml', '.sql', '.xlsx', '.xls',
+  '.pdf', '.doc', '.docx', '.ppt', '.pptx',
+]
+
+// 附件选择 accept：文本/表格/文档 + 图片
+export const ASSISTANT_ACCEPT = [
+  ...ASSISTANT_FILE_EXTS,
   ...IMAGE_EXTS.map((e) => '.' + e),
 ].join(',')
+
+export function isSupportedAttachmentFile(file) {
+  if (!file) return false
+  const name = String(file.name || '')
+  const ext = name.includes('.') ? '.' + name.split('.').pop().toLowerCase() : ''
+  return !ext || ASSISTANT_ACCEPT.split(',').includes(ext)
+}
 
 // 会话列表查询参数：archived 页签（false=进行中 / true=已归档）
 export function sessionListParams(archived) {

@@ -33,6 +33,7 @@
       :models="models"
       :work-modes="workModes"
       :reasoning="teamConfig.reasoning_effort || 'default'"
+      :team-config="teamConfig"
       @session-created="onSessionCreated"
       @session-activity="loadSessions"
       @open-settings="openSettings()"

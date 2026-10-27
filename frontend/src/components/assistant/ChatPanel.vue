@@ -1,5 +1,13 @@
 <template>
-  <el-card class="chat-card" shadow="never">
+  <el-card
+    class="chat-card"
+    shadow="never"
+    @dragenter="onDragEnter"
+    @dragleave="onDragLeave"
+    @dragover.prevent
+    @drop="onDrop"
+  >
+    <div v-if="dragActive" class="drop-mask" role="status">松开上传附件</div>
     <div ref="chatBox" class="chat-box">
       <el-empty
         v-if="!messages.length"
@@ -56,19 +64,15 @@
         <el-select v-model="workMode" size="small" class="mode-select">
           <el-option v-for="(v, k) in workModes" :key="k" :label="v.label" :value="k" />
         </el-select>
-        <el-tooltip content="思考深度：越深越聪明但更慢更贵；部分模型不支持时自动忽略" placement="top">
+        <el-tooltip :content="reasoningTip" placement="top">
           <el-select
             v-model="reasoningEffort"
             size="small"
             class="mode-select"
+            :disabled="reasoningOpts.disabled"
             @change="saveReasoning"
           >
-            <el-option label="🧠 思考：跟随模型" value="default" />
-            <el-option label="🧠 思考：关闭（最快）" value="off" />
-            <el-option label="🧠 思考：低" value="low" />
-            <el-option label="🧠 思考：中" value="medium" />
-            <el-option label="🧠 思考：高" value="high" />
-            <el-option label="🧠 思考：最大" value="max" />
+            <el-option v-for="o in reasoningOpts.options" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
         </el-tooltip>
         <el-dropdown trigger="click" @command="onModelCommand">
@@ -89,6 +93,7 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <span v-if="reasoningHint" class="reasoning-hint" :title="reasoningHint">{{ reasoningHint }}</span>
       </div>
       <div v-if="attachments.length" class="attach-row">
         <template v-for="(a, i) in attachments" :key="i">
@@ -113,8 +118,14 @@
           :auto-upload="false"
           :on-change="onFilePicked"
           :accept="ASSISTANT_ACCEPT"
+          multiple
         >
-          <el-button circle :loading="uploading" title="添加文件或图片分析（≤10MB）">
+          <el-button
+            circle
+            :loading="uploading"
+            title="点击、拖放或粘贴附件（单个 ≤10MB）"
+            aria-label="添加文件或图片分析"
+          >
             <el-icon><Paperclip /></el-icon>
           </el-button>
         </el-upload>
@@ -122,8 +133,9 @@
           v-model="draft"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 4 }"
-          placeholder="输入问题，Enter 发送，Shift+Enter 换行；可点 📎 附加文件或图片"
+          placeholder="输入问题，Enter 发送，Shift+Enter 换行；可点击、拖放或粘贴附件"
           @keydown.enter.exact.prevent="send()"
+          @paste="onPaste"
         />
         <el-button v-if="loading" type="danger" @click="abortStream()">停止</el-button>
         <el-button v-else type="primary" @click="send()">发送</el-button>
@@ -138,7 +150,8 @@ import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { ArrowDown, Close, Paperclip } from '@element-plus/icons-vue'
 import { assistantApi, API_BASE } from '../../api'
-import { ASSISTANT_ACCEPT, attachmentImageSrc, canSend, isImageAttachment, isImageFile, sendBlockHint, splitPreviewUrls } from '../../utils/assistant'
+import { ASSISTANT_ACCEPT, attachmentImageSrc, canSend, isImageAttachment, isImageFile, isSupportedAttachmentFile, sendBlockHint, splitPreviewUrls } from '../../utils/assistant'
+import { CANONICAL_LEVELS, reasoningOptions } from '../../utils/modelCapabilities'
 
 const props = defineProps({
   sessionId: { type: String, default: '' },
@@ -148,6 +161,8 @@ const props = defineProps({
   models: { type: Array, default: () => [] },
   workModes: { type: Object, default: () => ({}) },
   reasoning: { type: String, default: 'default' },
+  // 当前激活模型的完整配置（config.get 脱敏视图）：动态思考下拉据此生成
+  teamConfig: { type: Object, default: () => ({}) },
 })
 
 const emit = defineEmits([
@@ -188,12 +203,17 @@ const chatBox = ref(null)
 const workMode = ref('standard')
 const reasoningEffort = ref(props.reasoning || 'default')
 
-// team 接口异步返回后，父组件回填已保存的思考深度
+// team 接口异步返回后，父组件回填已保存的思考深度；
+// 旧版 off / 其它非法存档值在此归一（迁移规则见 normalizeEffort）
 watch(() => props.reasoning, (v) => {
   reasoningEffort.value = v || 'default'
+  normalizeEffort()
 })
 const attachments = ref([])
 const uploading = ref(false)
+const dragActive = ref(false)
+let dragDepth = 0
+let activeUploadBatches = 0
 
 // 当前 SSE 流的控制器；切换/删除会话、发送新消息、组件卸载时 abort
 let streamCtrl = null
@@ -482,6 +502,86 @@ const selectedAgentLabel = computed(() => {
 })
 
 // ---------------- 思考深度 ----------------
+// 选项由当前激活模型动态生成：已知不支持 → 禁用；强制思考 → 无「关闭」；
+// 档位未声明（未知）→ 保留 canonical 七档兼容并标注未确认（不猜）
+const reasoningOpts = computed(() => reasoningOptions(props.teamConfig || {}))
+
+const reasoningTip = computed(() => {
+  const parts = ['思考深度：越深越聪明但更慢更贵']
+  if (reasoningOpts.value.disabled) parts.push('当前模型不支持思考')
+  else if (reasoningOpts.value.canDisable === false) parts.push('当前模型为强制思考，无法关闭')
+  else if (reasoningOpts.value.unconfirmed) parts.push('当前模型档位未确认，不支持的档位会被忽略')
+  if (reasoningOpts.value.defaultLevel) parts.push(`模型默认档：${reasoningOpts.value.defaultLevel}`)
+  return parts.join('；')
+})
+
+// 提示按各 Agent 生效模型自适应：指定专家用其绑定模型，否则用当前激活模型
+const agentModelHint = computed(() => {
+  const agent = props.agents.find((a) => a.name === props.selectedAgent)
+  if (agent) {
+    if (!agent.model_id) return `专家「${agent.label}」未绑定模型，跟随当前激活模型`
+    const m = props.models.find((x) => x.id === agent.model_id)
+    if (!m) return `专家「${agent.label}」绑定的模型不可用，跟随当前激活模型`
+    const parts = [`专家「${agent.label}」生效模型 ${m.model || m.label || m.id}`]
+    if (m.default_thinking_level) parts.push(`默认档 ${m.default_thinking_level}`)
+    if (m.thinking_can_disable === false) parts.push('强制思考（不可关闭）')
+    else if (m.thinking_can_disable === true) parts.push('可关闭')
+    else parts.push('能否关闭未确认')
+    if (m.reasoning_style || m.capability?.reasoning_style) parts.push(`风格 ${m.reasoning_style || m.capability.reasoning_style}`)
+    return parts.join('：')
+  }
+  const model = props.llmInfo?.model || '未配置'
+  return reasoningOpts.value.declared
+    ? `智能路由按当前激活模型 ${model}：档位 ${reasoningOpts.value.levels.join('/')}`
+    : `智能路由按当前激活模型 ${model}：档位未确认`
+})
+
+const reasoningHint = computed(() => {
+  const parts = []
+  if (agentModelHint.value) parts.push(agentModelHint.value)
+  if (reasoningOpts.value.note) parts.push(reasoningOpts.value.note)
+  return parts.join('；')
+})
+
+// 切换模型（或能力快照变化）后重新校验已存档档位：非法值按 normalizeEffort 迁移
+watch(
+  [() => props.teamConfig?.model, () => reasoningOpts.value.levels.join(',')],
+  () => {
+    normalizeEffort()
+  },
+)
+
+// 已存档思考深度归一（Task 6B：旧 off 偏好不得被意外改回开启）：
+//  - 旧版 off：当前/目标模型允许关闭思考 → 迁移为 canonical「none」并保存；
+//    强制思考（明确不可关）→ 回「跟随模型」并保存；
+//  - canonical「none」与后端同口径不受声明集门控，只受 can_disable 约束：遇到强制思考模型
+//    回「跟随模型」（模型关不掉，不留不可兑现的值）；
+//  - 其它 canonical 档位：目标模型已声明档位时，声明集之外视为不支持 → 回「跟随模型」；
+//  - 其它非法值 → 回「跟随模型」并保存；合法值与 default 不动、不重复保存
+function normalizeEffort() {
+  const v = reasoningEffort.value
+  const opts = reasoningOpts.value
+  let next = null
+  if (v === 'off') {
+    next = opts.canClose ? 'none' : 'default'
+  } else if (v === 'none') {
+    next = opts.canClose ? null : 'default'
+  } else if (!v || v === 'default') {
+    return
+  } else if (!CANONICAL_LEVELS.includes(v)) {
+    next = 'default'
+  } else if (opts.declared && !opts.levels.includes(v)) {
+    next = 'default'
+  }
+  if (next === null) return
+  reasoningEffort.value = next
+  saveReasoning()
+}
+
+// 挂载时也执行一次（keep-alive / 重挂后 props.reasoning 可能没变，watch 不会触发，
+// 旧 off 会有无可选项）；watch 保留用于后续回填与模型切换
+normalizeEffort()
+
 async function saveReasoning() {
   try {
     const v = reasoningEffort.value === 'default' ? '' : reasoningEffort.value
@@ -501,27 +601,81 @@ function removeAttachment(i) {
   attachments.value.splice(i, 1)
 }
 
-async function onFilePicked(uploadFile) {
-  const raw = uploadFile.raw
-  if (!raw) return
-  if (raw.size > 10 * 1024 * 1024) {
-    ElMessage.warning('文件超过 10MB 上限')
-    return
-  }
+async function uploadFiles(files) {
+  const candidates = Array.from(files || []).filter(Boolean)
+  if (!candidates.length) return
+  activeUploadBatches += 1
   uploading.value = true
-  const sid = ensureSession()
   try {
-    const { data } = await assistantApi.config.upload(sid, raw)
-    const att = { name: data.name, path: data.path, kind: data.kind, note: data.note }
-    // 图片：本地 objectURL 供缩略图预览（后端若返回可访问 url 则优先用它）
-    if (isImageFile(raw) || isImageAttachment(att)) att.previewUrl = createPreviewUrl(raw)
-    attachments.value.push(att)
-    if (data.note) ElMessage.success(data.note)
-  } catch {
-    /* 拦截器已提示；吞掉拒绝，避免异步事件处理器产生未捕获异常 */
+    for (const raw of candidates) {
+      if (!isSupportedAttachmentFile(raw)) {
+        const name = String(raw.name || '')
+        const suffix = name.includes('.') ? '.' + name.split('.').pop().toLowerCase() : ''
+        ElMessage.warning(`不支持的文件类型：${suffix || name || '未知'}`)
+        continue
+      }
+      if (raw.size > 10 * 1024 * 1024) {
+        ElMessage.warning(`${raw.name || '文件'}超过 10MB 上限`)
+        continue
+      }
+      try {
+        const sid = ensureSession()
+        const { data } = await assistantApi.config.upload(sid, raw)
+        const att = { name: data.name, path: data.path, kind: data.kind, note: data.note }
+        if (isImageFile(raw) || isImageAttachment(att)) att.previewUrl = createPreviewUrl(raw)
+        attachments.value.push(att)
+        if (data.note) ElMessage.success(data.note)
+      } catch {
+        /* 拦截器已提示；单个失败不阻断同批后续文件 */
+      }
+    }
   } finally {
-    uploading.value = false
+    activeUploadBatches -= 1
+    uploading.value = activeUploadBatches > 0
   }
+}
+
+async function onFilePicked(uploadFile) {
+  await uploadFiles([uploadFile?.raw])
+}
+
+function hasFileItems(transfer) {
+  const types = Array.from(transfer?.types || [])
+  return types.includes('Files') || Array.from(transfer?.files || []).length > 0
+}
+
+function resetDrag() {
+  dragDepth = 0
+  dragActive.value = false
+}
+
+function onDragEnter(event) {
+  if (!hasFileItems(event.dataTransfer)) return
+  event.preventDefault?.()
+  dragDepth += 1
+  dragActive.value = true
+}
+
+function onDragLeave() {
+  if (!dragDepth) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  dragActive.value = dragDepth > 0
+}
+
+async function onDrop(event) {
+  const transfer = event.dataTransfer
+  if (!hasFileItems(transfer)) return
+  event.preventDefault?.()
+  const files = Array.from(transfer.files || [])
+  resetDrag()
+  await uploadFiles(files)
+}
+
+async function onPaste(event) {
+  const files = Array.from(event.clipboardData?.files || [])
+  if (!files.length) return
+  event.preventDefault?.()
+  await uploadFiles(files)
 }
 
 // ---------------- 模型快速切换 ----------------
@@ -562,10 +716,26 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 <style scoped>
 .chat-card {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+.drop-mask {
+  position: absolute;
+  inset: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed #409eff;
+  border-radius: 10px;
+  background: rgba(236, 245, 255, 0.96);
+  color: #409eff;
+  font-size: 16px;
+  pointer-events: none;
 }
 
 .chat-card :deep(.el-card__body) {
@@ -847,6 +1017,15 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 .mode-select {
   width: 150px;
+}
+
+.reasoning-hint {
+  font-size: 11px;
+  color: #909399;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-chip {
