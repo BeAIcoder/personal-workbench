@@ -1,6 +1,6 @@
 """批次 agent-store 的 bugfix 回归测试（B1-B10）。
 
-- B1 llm._apply_reasoning：openai 协议 effort=max 应映射 xhigh（原为死代码回退 medium）
+- B1 llm.reasoning_request：按能力契约生成思考参数，max/未知档不擅改，强制思考不可 off
 - B2 llm.build_model：anthropic base_url 仅剥结尾 /v1，不得整体小写化
 - B3 config_store.masked：长度 ≤4 的 api_key 整体掩码，不得明文回显
 - B4 config_store.delete_provider：同事务删除 ProviderModel 行并清理激活态
@@ -59,16 +59,232 @@ def skill_store_dir(tmp_path, monkeypatch):
     return root
 
 
-# ---------- B1：openai 协议思考深度 max 死代码 ----------
+# ---------- B1：按模型能力生成思考参数（Task 5 重写：不再 max→xhigh / 未知→medium） ----------
 
-def test_b1_openai_max_effort_maps_to_xhigh():
-    kwargs = llm._apply_reasoning(None, {"reasoning_effort": "max"}, "openai", {})
-    assert kwargs["reasoning_effort"] == "xhigh"
-    assert kwargs["thinking_enable"] is True
-    # 对照：anthropic 分支原生支持 max
-    assert llm._apply_reasoning(None, {"reasoning_effort": "max"}, "anthropic", {})["reasoning_effort"] == "max"
-    # 对照：未知档位仍回退 medium（既有行为不变）
-    assert llm._apply_reasoning(None, {"reasoning_effort": "turbo"}, "openai", {})["reasoning_effort"] == "medium"
+def _reasoning_cfg(**over):
+    """能力契约配置：Task 3/4 同步/手写后经 load()/model_cfg_by_id() 进入 cfg 的字段。"""
+    base = {
+        "protocol": "openai",
+        "reasoning_style": "effort",
+        "thinking_levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "default_thinking_level": None,
+        "thinking_can_disable": True,
+    }
+    base.update(over)
+    return base
+
+
+def test_b1_reasoning_request_openai_effort_sends_levels_verbatim():
+    """openai effort 风格：已知档位原样进 Parameters；max 不经擅改降成 xhigh。"""
+    cfg = _reasoning_cfg()
+    for level in ("minimal", "low", "medium", "high", "xhigh"):
+        kwargs, extra = llm.reasoning_request(cfg, level)
+        assert kwargs == {"thinking_enable": True, "reasoning_effort": level}
+        assert extra == {}
+    # max 不在 AgentScope 的 Literal 白名单：经 extra_body 原样发送，且不与顶层字段重复
+    kwargs, extra = llm.reasoning_request(cfg, "max")
+    assert kwargs.get("reasoning_effort") is None
+    assert extra == {"reasoning_effort": "max"}
+
+
+def test_b1_reasoning_request_off_and_none_disable_thinking():
+    cfg = _reasoning_cfg()
+    for off in ("off", "none"):
+        kwargs, extra = llm.reasoning_request(cfg, off)
+        assert kwargs.get("thinking_enable") is False
+        assert kwargs.get("reasoning_effort") is None
+        assert extra == {}
+
+
+def test_b1_reasoning_request_forced_thinking_cannot_be_off():
+    """强制思考（thinking_can_disable=False）：off 不被执行，回退跟随模型（声明默认档）。"""
+    cfg = _reasoning_cfg(thinking_can_disable=False, default_thinking_level="high")
+    assert llm.reasoning_request(cfg, "off") == (
+        {"thinking_enable": True, "reasoning_effort": "high"},
+        {},
+    )
+    # 无声明默认档时真正跟随模型：不发任何思考参数（厂商默认即开启）
+    assert llm.reasoning_request(_reasoning_cfg(thinking_can_disable=False), "off") == ({}, {})
+
+
+def test_b1_reasoning_request_invalid_level_falls_back_to_follow_model():
+    """非法已存档档位（如 turbo）：不擅改 medium/xhigh，回退跟随模型。"""
+    cfg = _reasoning_cfg(default_thinking_level="low")
+    assert llm.reasoning_request(cfg, "turbo") == (
+        {"thinking_enable": True, "reasoning_effort": "low"},
+        {},
+    )
+    assert llm.reasoning_request(_reasoning_cfg(), "turbo") == ({}, {})
+
+
+def test_b1_reasoning_request_follow_model_uses_declared_default():
+    cfg = _reasoning_cfg(default_thinking_level="high")
+    assert llm.reasoning_request(cfg, "") == ({"thinking_enable": True, "reasoning_effort": "high"}, {})
+    # 无声明默认档：跟随模型 = 不发送任何思考参数
+    assert llm.reasoning_request(_reasoning_cfg(), "") == ({}, {})
+    assert llm.reasoning_request(_reasoning_cfg(default_thinking_level="off"), "") == (
+        {"thinking_enable": False},
+        {},
+    )
+
+
+def test_b1_reasoning_request_toggle_style_sends_thinking_type():
+    """toggle 风格（DeepSeek 形态）：thinking{type} 开关，档位不伪装成 effort。"""
+    cfg = _reasoning_cfg(reasoning_style="toggle")
+    assert llm.reasoning_request(cfg, "high") == ({}, {"thinking": {"type": "enabled"}})
+    assert llm.reasoning_request(cfg, "off") == ({}, {"thinking": {"type": "disabled"}})
+
+
+def test_b1_reasoning_request_budget_style_not_masquerading_as_effort():
+    """budget 风格（Qwen/SiliconFlow 形态）：enable_thinking+thinking_budget，不当成 effort 档发送。"""
+    cfg = _reasoning_cfg(reasoning_style="budget")
+    kwargs, extra = llm.reasoning_request(cfg, "high")
+    assert kwargs == {}
+    assert "reasoning_effort" not in extra
+    assert extra == {"enable_thinking": True, "thinking_budget": 32768}
+    assert llm.reasoning_request(cfg, "off") == ({}, {"enable_thinking": False})
+
+
+def test_b1_reasoning_request_anthropic_effort_native_max():
+    """Anthropic 原生支持 max（内部转 output_config.effort）；off 走 thinking 关闭；无法表达的档位不编不猜。"""
+    cfg = _reasoning_cfg(protocol="anthropic")
+    assert llm.reasoning_request(cfg, "max") == (
+        {"thinking_enable": True, "reasoning_effort": "max"},
+        {},
+    )
+    assert llm.reasoning_request(cfg, "off") == (
+        {"thinking_enable": False, "thinking_mode": "disabled"},
+        {},
+    )
+    assert llm.reasoning_request(cfg, "minimal") == ({}, {})
+
+
+def test_b1_build_model_unknown_effort_goes_through_extra_body():
+    """build_model：AgentScope 不认识的 max 只出现在 extra_body，顶层 reasoning_effort 不重复。"""
+    cfg = {
+        "protocol": "openai",
+        "api_key": "sk-test",
+        "base_url": "https://api.example.com/v1",
+        "model": "test-model",
+        "reasoning_style": "effort",
+        "reasoning_effort": "max",
+    }
+    model = llm.build_model(cfg)
+    assert model is not None
+    assert model.extra_body == {"reasoning_effort": "max"}
+    assert model.parameters.reasoning_effort is None
+
+
+def test_b1_build_model_passes_session_headers_via_client_kwargs():
+    """OpenCode Go 官方要求 UA + x-opencode-session：经 client_kwargs.default_headers 透传。"""
+    cfg = {
+        "protocol": "openai",
+        "api_key": "sk-test",
+        "base_url": "https://opencode.ai/inference/go/openai/v1",
+        "model": "kimi-k3.1-pro",
+        "preset_key": "opencode_go",
+    }
+    model = llm.build_model(cfg, session_id="job-7")
+    headers = model.client_kwargs["default_headers"]
+    assert headers["User-Agent"]
+    assert headers["x-opencode-session"] == llm.session_header_value("job-7")
+    assert "sk-test" not in str(headers)  # 密钥只走 SDK 鉴权，绝不进自定义头
+
+
+def test_b1_provider_headers_session_stable_and_keyless():
+    """会话头对同一 session 稳定、不同 session 不同；不含 Key；非会话头供应商无自定义头。"""
+    cfg = {"preset_key": "opencode_go", "api_key": "sk-synthetic-0001"}
+    h1 = llm.provider_headers(cfg, session_id="job-7")
+    h2 = llm.provider_headers(cfg, session_id="job-7")
+    assert h1 == h2
+    assert h1["x-opencode-session"] and h1["User-Agent"]
+    assert llm.provider_headers(cfg, session_id="job-8")["x-opencode-session"] != h1["x-opencode-session"]
+    assert "sk-synthetic-0001" not in str(h1) and "Authorization" not in h1
+    # 无会话上下文：进程级稳定默认值（路由等内部调用同样稳定）
+    assert llm.provider_headers(cfg) == llm.provider_headers(cfg)
+    assert llm.provider_headers({"preset_key": "deepseek"}, session_id="job-7") == {}
+    assert llm.provider_headers({}, session_id="job-7") == {}
+
+
+def test_b1_needs_session_headers_only_for_session_header_presets():
+    assert llm.needs_session_headers({"preset_key": "opencode_go"}) is True
+    assert llm.needs_session_headers({"preset_key": "deepseek"}) is False
+    assert llm.needs_session_headers({}) is False
+
+
+# ---------- B1 fix round 1：声明集门控 / anthropic toggle ----------
+
+def test_b1_reasoning_request_undeclared_level_falls_back_to_declared_default():
+    """模型已声明档位时，声明集之外的 canonical 档位（如 max）不原样发送，回退声明默认/跟随。"""
+    cfg = _reasoning_cfg(thinking_levels=["low", "medium", "high"], default_thinking_level="medium")
+    assert llm.reasoning_request(cfg, "max") == (
+        {"thinking_enable": True, "reasoning_effort": "medium"},
+        {},
+    )
+    # 无声明默认档：真正跟随模型，不得把 max 原样发给供应商
+    assert llm.reasoning_request(_reasoning_cfg(thinking_levels=["low", "medium", "high"]), "max") == ({}, {})
+    # 未声明档位（空列表）：保持既有兼容行为，max 原样走 extra_body
+    assert llm.reasoning_request(_reasoning_cfg(thinking_levels=[]), "max") == (
+        {"thinking_enable": True},
+        {"reasoning_effort": "max"},
+    )
+    # off 不受声明集门控（由 thinking_can_disable 单独约束）
+    assert llm.reasoning_request(cfg, "off") == ({"thinking_enable": False}, {})
+
+
+def test_b1_step_model_saving_max_falls_back(client):
+    """Step（step-3.7-flash 声明 low/medium/high）下把思考深度存成 max：不原样发送。"""
+    pid = client.post(
+        "/api/assistant/providers",
+        json={
+            "name": "阶跃",
+            "protocol": "openai",
+            "base_url": "https://api.stepfun.com/v1",
+            "api_key": "sk-step-test",
+            "preset_key": "stepfun",
+        },
+    ).json()["provider"]["id"]
+    mid = client.post(
+        f"/api/assistant/providers/{pid}/models",
+        json={"model": "step-3.7-flash", "thinking_levels": ["low", "medium", "high"]},
+    ).json()["model"]["id"]
+    client.put("/api/assistant/config", json={"reasoning_effort": "max"})
+    client.post(f"/api/assistant/models/{mid}/activate")
+
+    cfg = config_store.load()
+    assert cfg["reasoning_effort"] == "max"
+    assert cfg["thinking_levels"] == ["low", "medium", "high"]
+    # 未声明默认档 → 跟随模型（不发任何思考参数），max 不原样出厂
+    assert llm.reasoning_request(cfg, cfg["reasoning_effort"]) == ({}, {})
+
+    # 声明默认档 high 后：回退到声明默认档，仍不发送 max
+    client.post(
+        f"/api/assistant/providers/{pid}/models",
+        json={
+            "model_id": mid,
+            "model": "step-3.7-flash",
+            "thinking_levels": ["low", "medium", "high"],
+            "default_thinking_level": "high",
+        },
+    )
+    cfg2 = config_store.load()
+    assert llm.reasoning_request(cfg2, cfg2["reasoning_effort"]) == (
+        {"thinking_enable": True, "reasoning_effort": "high"},
+        {},
+    )
+
+
+def test_b1_reasoning_request_anthropic_toggle_style_uses_thinking_mode():
+    """anthropic + toggle 风格：映射 thinking_enable/thinking_mode，不得误走 effort。"""
+    cfg = _reasoning_cfg(protocol="anthropic", reasoning_style="toggle")
+    assert llm.reasoning_request(cfg, "high") == (
+        {"thinking_enable": True, "thinking_mode": "enabled"},
+        {},
+    )
+    assert llm.reasoning_request(cfg, "off") == (
+        {"thinking_enable": False, "thinking_mode": "disabled"},
+        {},
+    )
 
 
 # ---------- B2：anthropic base_url 小写化 ----------
@@ -289,3 +505,30 @@ def test_b10_seed_copy_failure_cleans_partial_dir_and_rerun_completes(skill_stor
     assert "month-end-close" in copied
     text = (skill_store_dir / "month-end-close" / "SKILL.md").read_text(encoding="utf-8")
     assert "半截复制" not in text
+
+
+# ---------- B11：supports_thinking == 0 防御（Task 6 fix round 1） ----------
+
+def test_b11_supports_thinking_zero_never_sends_thinking_params():
+    """明确不支持思考（supports_thinking=0）：任何档位/风格/协议都不发思考参数。
+    目录或手动字段可能与探测结论不一致（如目录标了档位但实测不支持），此处兜底。"""
+    cfg = _reasoning_cfg(supports_thinking=0, default_thinking_level="high", thinking_levels=["low", "high"])
+    for level in ("", "default", "off", "none", "low", "medium", "high", "xhigh", "max", "turbo"):
+        assert llm.reasoning_request(cfg, level) == ({}, {}), level
+        assert llm._resolve_thinking_level(cfg, level) is None, level
+    # 字符串 "0" 同样防御（JSON/表单可能传字符串）
+    assert llm.reasoning_request(_reasoning_cfg(supports_thinking="0"), "high") == ({}, {})
+    # 未显式传 effort（读 cfg.reasoning_effort）也被防御
+    assert llm.reasoning_request(dict(cfg, reasoning_effort="high"), None) == ({}, {})
+    # anthropic 协议同样不发
+    acfg = _reasoning_cfg(protocol="anthropic", supports_thinking=0, default_thinking_level="high")
+    assert llm.reasoning_request(acfg, "high") == ({}, {})
+    assert llm.reasoning_request(acfg, "off") == ({}, {})
+    # toggle/budget 风格同样被防御
+    assert llm.reasoning_request(_reasoning_cfg(reasoning_style="toggle", supports_thinking=0), "high") == ({}, {})
+    assert llm.reasoning_request(_reasoning_cfg(reasoning_style="budget", supports_thinking=0), "high") == ({}, {})
+
+    # 未知（-1）与缺省不受阻：保持既有兼容行为
+    assert llm.reasoning_request(_reasoning_cfg(supports_thinking=-1), "high") == ({"thinking_enable": True, "reasoning_effort": "high"}, {})
+    assert llm.reasoning_request(_reasoning_cfg(), "high") == ({"thinking_enable": True, "reasoning_effort": "high"}, {})
+    assert llm.reasoning_request(_reasoning_cfg(supports_thinking=None), "off") == ({"thinking_enable": False}, {})

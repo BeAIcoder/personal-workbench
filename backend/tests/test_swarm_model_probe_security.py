@@ -155,6 +155,35 @@ def test_probe_all_illegal_base_url_isolated_error_without_request(client, monke
 
 # ---------- HTTP 端点层：200 + error 契约不破 ----------
 
+def test_sync_endpoint_illegal_models_url_sends_no_request(client, monkeypatch):
+    """同步端点（Task 4）：非法 models_url 零请求，落目录兜底 + 明确 warning，不伪装在线。"""
+    pid = client.post(
+        "/api/assistant/providers",
+        json={
+            "name": "同步供应商",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": _SECRET_KEY,
+            "preset_key": "deepseek",
+            "models_url": "https://user:pass@api.example.com/models",
+        },
+    ).json()["provider"]["id"]
+
+    calls: list = []
+
+    def _recording_get(self, url, **kwargs):
+        calls.append(url)
+        return httpx.Response(200, request=httpx.Request("GET", "https://sync.invalid/x"), json={"object": "list", "data": []})
+
+    monkeypatch.setattr(httpx.Client, "get", _recording_get)
+    resp = client.post(f"/api/assistant/providers/{pid}/sync-models", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert calls == []
+    assert body["online"] is False and body["partial"] is True
+    assert any("目录" in w for w in body["warnings"])
+    assert _SECRET_KEY not in json.dumps(body, ensure_ascii=False)
+
+
 def test_probe_endpoint_illegal_base_url_returns_200_with_error(client, monkeypatch):
     """端点层：非法供应商地址 → 200 + result.error，不发请求，supports_thinking 保持 -1。"""
     pid = client.post(

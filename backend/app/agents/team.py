@@ -9,7 +9,9 @@
 系统提示词共同遵循 COMMON_RULES（中文输出、数据严谨、工具使用规范）。
 """
 import logging
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,7 @@ class AgentSpec:
     model_id: int | None = None   # 绑定模型（provider_models.id）；None = 全局激活模型
     skills: list[str] | None = None  # 技能白名单；None = 跟随全局技能池
     enabled: bool = True
-    sort: int = 0                 # 排序（兼作关键词同分时的优先级，小者优先）
+    sort: int = 0                 # 排序（同分候选的展示顺序，小者优先）
     is_builtin: bool = False
     row_id: int | None = None     # agent_specs 表主键（内置定义为空）
 
@@ -123,7 +125,7 @@ TEAM: dict[str, AgentSpec] = {
             "沉淀下来的方案与复盘用 create_note 记录，便于团队复用。"
         ),
         tools=QUERY_TOOLS + ["create_task", "create_schedule", "create_note"],
-        keywords=["企划", "营销", "活动方案", "推广", "美陈", "会员", "造节", "市集", "展览", "宣传"],
+        keywords=["企划", "营销", "活动方案", "档期", "推广", "美陈", "会员", "造节", "市集", "展览", "宣传"],
         sort=3,
         is_builtin=True,
     ),
@@ -183,7 +185,7 @@ TEAM: dict[str, AgentSpec] = {
             "数据不在工作台时，请用户直接粘贴数据文本再分析。核对结论与重要分析用 create_note 沉淀。"
         ),
         tools=QUERY_TOOLS + ["create_task", "complete_task", "create_schedule", "create_note"],
-        keywords=["财务", "报表", "凭证", "分录", "报销", "预算", "费用", "税", "发票", "对账", "资金", "成本", "收入", "核算", "记账", "结账", "申报", "信息化", "系统选型", "软件"],
+        keywords=["财务", "报表", "凭证", "分录", "预算", "费用分析", "税务提醒", "资金", "成本", "收入", "核算", "结账", "信息化", "业财", "系统选型", "软件"],
         sort=5,
         is_builtin=True,
     ),
@@ -209,7 +211,7 @@ TEAM: dict[str, AgentSpec] = {
         # 财务模块工具由模块 manifest 的 preset_experts 自动并入（见 modules/registry.py），
         # 此处只列内置工具；模块工具名清单见 agents/module_tool_preset.py 的 FINANCE_TOOL_NAMES
         tools=QUERY_TOOLS + ["create_task", "create_schedule", "create_note"],
-        keywords=["发票", "税", "凭证", "台账", "记账", "报销", "费用", "财税", "对账", "现金流"],
+        keywords=["发票", "税", "凭证", "台账", "记账", "报销", "费用", "财税", "对账", "现金流", "申报"],
         sort=7,
         is_builtin=True,
     ),
@@ -217,12 +219,27 @@ TEAM: dict[str, AgentSpec] = {
 
 TEAM_SIZE = len(TEAM)
 
-# 关键词路由表（由 TEAM 派生，保留导出以兼容旧引用）；顺序即优先级，先专后宽
+# 关键词路由表（由 TEAM 派生，保留导出以兼容旧引用）；实际路由按权重评分
 ROUTE_KEYWORDS: list[tuple[str, list[str]]] = [
     (spec.name, spec.keywords) for spec in sorted(TEAM.values(), key=lambda s: s.sort)
 ]
 
 DEFAULT_AGENT = "realestate"
+
+_ROUTE_SYNONYM_GROUPS = (
+    frozenset({"中毒", "病毒"}),
+    frozenset({"收缴", "收缴率"}),
+    frozenset({"房租", "租金"}),
+    frozenset({"开票", "发票"}),
+    frozenset({"报销单", "报销"}),
+    frozenset({"活动档期", "档期"}),
+)
+_ROUTE_GENERIC_TERMS = frozenset({"安排", "任务", "待办", "提醒", "笔记", "日程", "分析"})
+
+
+def normalize_route_text(text: str) -> str:
+    """路由文本统一做 NFKC 兼容归一化与大小写折叠。"""
+    return unicodedata.normalize("NFKC", text).casefold()
 
 
 # ---------------- 数据库加载（60 秒进程内缓存） ----------------
@@ -314,27 +331,108 @@ def default_agent_name(team: dict[str, AgentSpec] | None = None) -> str:
     return specs[0].name if specs else DEFAULT_AGENT
 
 
+def _route_term_variants(term: str) -> list[str]:
+    normalized = normalize_route_text(term)
+    if not normalized:
+        return []
+    for group in _ROUTE_SYNONYM_GROUPS:
+        if normalized in group:
+            return sorted(group, key=lambda value: (-len(value), value))
+    return [normalized]
+
+
+def _match_route_term(question: str, term: str) -> str | None:
+    for variant in _route_term_variants(term):
+        pattern = re.escape(variant)
+        if variant[0].isascii() and variant[0].isalnum():
+            pattern = rf"(?<![a-z0-9_]){pattern}"
+        if variant[-1].isascii() and variant[-1].isalnum():
+            pattern = rf"{pattern}(?![a-z0-9_])"
+        match = re.search(pattern, question)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _route_term_weight(term: str, *, is_label: bool = False) -> int:
+    if not is_label and term in _ROUTE_GENERIC_TERMS:
+        return 1
+    if is_label:
+        return max(4, len(term))
+    return max(2, len(term))
+
+
 def route_scores(question: str, team: dict[str, AgentSpec] | None = None) -> list[dict]:
-    """关键词命中明细（供路由与 route-test 预览）：按命中数降序、同分按 sort 升序。"""
-    team = team or load_team()
-    q = question.lower()
+    """按权重返回命中明细；仅唯一且有专业词或 label 命中的最高分候选为高置信。"""
+    team = load_team() if team is None else team
+    q = normalize_route_text(question)
     matches = []
+    specific_names = set()
     for spec in _ordered_specs(team):
-        hits = [w for w in spec.keywords if w.lower() in q]
-        if hits:
-            matches.append({"name": spec.name, "display_name": spec.label, "hits": hits, "score": len(hits)})
-    matches.sort(key=lambda m: -m["score"])  # 同分保持 sort 升序（稳定排序）
+        hits = []
+        matched_terms = []
+        score = 0
+        has_specific = False
+        for keyword in spec.keywords:
+            matched = _match_route_term(q, keyword)
+            if matched is None:
+                continue
+            normalized_keyword = normalize_route_text(keyword)
+            weight = _route_term_weight(normalized_keyword)
+            hits.append(keyword)
+            matched_terms.append(matched)
+            score += weight
+            has_specific = has_specific or weight > 1
+        matched_label = _match_route_term(q, spec.label)
+        if matched_label is not None:
+            label_weight = _route_term_weight(normalize_route_text(spec.label), is_label=True)
+            if matched_label in matched_terms:
+                matched_keyword = hits[matched_terms.index(matched_label)]
+                keyword_weight = _route_term_weight(normalize_route_text(matched_keyword))
+                score += max(0, label_weight - keyword_weight)
+            else:
+                matched_terms.append(matched_label)
+                score += label_weight
+            has_specific = True
+        if matched_terms:
+            matches.append({
+                "name": spec.name,
+                "display_name": spec.label,
+                "hits": hits,
+                "score": score,
+                "confidence": "low",
+                "matched_terms": matched_terms,
+            })
+            if has_specific:
+                specific_names.add(spec.name)
+    matches.sort(key=lambda match: -match["score"])
+    if matches:
+        top = matches[0]
+        tied = len(matches) > 1 and matches[1]["score"] == top["score"]
+        if not tied and top["name"] in specific_names:
+            top["confidence"] = "high"
     return matches
 
 
+def best_keyword_candidate(matches: list[dict]) -> dict | None:
+    """返回唯一最高分的高置信候选；空候选、低置信或同分争议均返回 None。"""
+    if not matches:
+        return None
+    top_score = max(match["score"] for match in matches)
+    top_matches = [match for match in matches if match["score"] == top_score]
+    if len(top_matches) != 1 or top_matches[0].get("confidence") != "high":
+        return None
+    return top_matches[0]
+
+
 def keyword_hit(question: str, team: dict[str, AgentSpec] | None = None) -> str | None:
-    """关键词命中时返回专家标识，未命中返回 None。"""
-    matches = route_scores(question, team)
-    return matches[0]["name"] if matches else None
+    """高置信且无同分争议时返回专家标识，否则返回 None。"""
+    candidate = best_keyword_candidate(route_scores(question, team))
+    return candidate["name"] if candidate else None
 
 
 def route_by_keyword(question: str) -> str:
-    """关键词规则路由（离线可用；LLM 路由失败时的兜底）。"""
+    """高置信关键词路由；低置信或未命中时返回默认专家，全程离线。"""
     team = load_team()
     return keyword_hit(question, team) or default_agent_name(team)
 
@@ -342,5 +440,12 @@ def route_by_keyword(question: str) -> str:
 def roster_text(team: dict[str, AgentSpec] | None = None) -> str:
     """团队名册文本（供 LLM 路由提示词使用）。"""
     team = team or load_team()
-    lines = [f"- {spec.name}（{spec.label}）：{spec.description}" for spec in _ordered_specs(team)]
+    lines = [
+        "名册字段：name/label/description/keywords。",
+        "若专家职责重叠，结合 description 和 keywords 按用户意图选择唯一专家；只返回一个 name，不要返回解释。",
+    ]
+    lines.extend(
+        f"- name={spec.name} | label={spec.label} | description={spec.description} | keywords={'、'.join(spec.keywords)}"
+        for spec in _ordered_specs(team)
+    )
     return "\n".join(lines)

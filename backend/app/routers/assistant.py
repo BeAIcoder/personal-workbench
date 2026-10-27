@@ -15,8 +15,10 @@ from pydantic import BaseModel, Field
 from ..agents import config_store, orchestrator
 from ..agents import team as team_mod
 from ..agents.llm import llm_status
+from ..agents.model_sync import ProviderSyncBusy
 from ..config import UPLOAD_DIR
 from ..database import SessionLocal
+from ..document_text import DOCUMENT_SUFFIXES, DocumentExtractionError, extract_document, extracted_text_path
 from ..models import AgentSpecModel
 from ..schemas import AgentSpecCreate, AgentSpecOut, AgentSpecUpdate
 from ..utils import DbId
@@ -76,12 +78,20 @@ class GlobalsPayload(BaseModel):
     enable_bash: Optional[bool] = Field(None, description="允许 Agent 使用 Bash 执行技能脚本")
     enable_plugins: Optional[bool] = Field(None, description="启用 QwenPaw 工具型插件（兼容层，实验性）")
     plugins_dir: Optional[str] = Field(None, max_length=300, description="QwenPaw 插件目录（data/plugins）")
-    reasoning_effort: Optional[str] = Field(None, description="思考深度：''(跟随模型)/off/low/medium/high/max")
+    reasoning_effort: Optional[str] = Field(
+        None,
+        max_length=20,
+        description=(
+            "思考深度：''(跟随模型)/off(旧版关闭思考，兼容保留)/none/minimal/low/medium/high/xhigh/max；"
+            "非法值按跟随模型处理"
+        ),
+    )
 
 
 class TestRequest(BaseModel):
     config: Optional[dict] = Field(None, description="候选配置（未填则测试当前激活模型）")
     provider_id: Optional[int] = Field(None, description="测试指定供应商（用其第一个启用模型）")
+    model_id: Optional[int] = Field(None, description="测试指定模型；工具/图片实测按该模型执行并回写能力结论")
     include_image: bool = Field(False, description="是否同时测试多模态图片识别")
     test_tools: bool = Field(False, description="是否同时测试工具调用能力")
 
@@ -92,6 +102,12 @@ class ProviderPayload(BaseModel):
     protocol: Optional[str] = Field(None, description="openai / anthropic")
     base_url: Optional[str] = None
     api_key: Optional[str] = Field(None, description="空 / ******** / •••••• 开头的回显掩码 均表示保留现值")
+    # 预设标识与在线列表地址（同步适配器只认 preset_key，不认中文显示名）
+    preset_key: Optional[str] = Field(None, max_length=50, description="预设标识（provider_presets.json 的 preset_key）")
+    models_url: Optional[str] = Field(None, max_length=300, description="模型列表接口地址；空 = 无官方列表仅目录兜底")
+    # 可选管控面凭证（火山 AK/SK）：密封存储，任何 GET 不回传；空/掩码保留旧值
+    sync_access_key: Optional[str] = Field(None, description="管控面 Access Key（可选；空/掩码保留旧值）")
+    sync_secret_key: Optional[str] = Field(None, description="管控面 Secret Key（可选；空/掩码保留旧值）")
     enabled: Optional[bool] = None
 
 
@@ -111,6 +127,15 @@ class ModelPayload(BaseModel):
     # 思考能力：-1 未探测 / 0 否 / 1 是（探测接口自动写回，也可手动标记）
     supports_thinking: Optional[int] = Field(None, ge=-1, le=1, description="思考能力：-1 未探测 / 0 否 / 1 是")
     thinking_levels: Optional[list[str]] = Field(None, description="思考档位列表，如 ['low','medium','high']")
+    # 能力契约字段（Task 3；手动填写后记入 manual_fields，同步默认不覆盖）
+    max_input_tokens: Optional[int] = Field(None, ge=0, le=20000000, description="声明的最大输入 tokens（0=未提供）")
+    supports_tools: Optional[int] = Field(None, ge=-1, le=1, description="工具调用能力：-1 未知 / 0 否 / 1 是")
+    input_modalities: Optional[list[str]] = Field(None, description="输入模态，如 ['text','image']")
+    output_modalities: Optional[list[str]] = Field(None, description="输出模态，如 ['text']")
+    default_thinking_level: Optional[str] = Field(None, max_length=20, description="思考默认档位")
+    thinking_can_disable: Optional[bool] = Field(None, description="思考是否可关闭（null=未知）")
+    reasoning_style: Optional[str] = Field(None, max_length=20, description="思考参数形态：effort / budget / toggle")
+    api_family: Optional[str] = Field(None, max_length=30, description="chat_completions / messages / responses / other")
 
 
 def _config_view() -> dict:
@@ -143,13 +168,22 @@ def save_globals(payload: GlobalsPayload):
     return _config_view()
 
 
-@router.post("/config/test", summary="测试模型连通性（可选多模态，仅 openai 协议）")
+@router.post("/config/test", summary="测试模型连通性（可选多模态/工具，仅 openai 协议）")
 async def test_config(payload: TestRequest):
-    if payload.provider_id:
+    target_model_id: int | None = None
+    if payload.model_id:
+        # 显式模型：按该模型的完整配置测试（含其密钥与套餐预设）
+        cfg = config_store.model_cfg_by_id(payload.model_id)
+        if cfg is None:
+            raise HTTPException(status_code=400, detail=f"模型 {payload.model_id} 不存在或未启用")
+        target_model_id = payload.model_id
+    elif payload.provider_id:
         try:
             cfg = config_store.provider_test_cfg(payload.provider_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        # 供应商路径回写到该供应商第一个启用模型
+        target_model_id = config_store.resolve_test_model_id(provider_id=payload.provider_id)
     else:
         cfg = payload.config or config_store.load()
         if payload.config:
@@ -169,20 +203,30 @@ async def test_config(payload: TestRequest):
                     config_store._safe_gateway_url(base_url, "/chat/completions")
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc))
+            # 自定义配置不对应持久化模型行：不回写能力结论
+            target_model_id = None
         elif (cfg.get("api_key") or "").strip() == config_store.MASK or not (cfg.get("api_key") or "").strip():
             # 测试当前激活模型：掩码/空 key 回填真实密钥（既有行为）
             cfg = {**cfg, "api_key": config_store.current_api_key()}
+            target_model_id = config_store.resolve_test_model_id()
 
     text_result = await config_store.test_connection(cfg)
     result = {"text": text_result}
     if text_result.get("ok"):
         if payload.test_tools:
-            result["tools"] = await config_store.test_tool_calling(cfg)
+            tools_result = await config_store.test_tool_calling(cfg)
+            result["tools"] = tools_result
+            # 明确结论才落库（来源 probe）：成功→1、参数拒绝→0、未知保持原值
+            if target_model_id:
+                config_store.record_probe_verdict(target_model_id, "supports_tools", tools_result.get("verdict", "unknown"))
         if payload.include_image:
             if cfg.get("protocol") == "anthropic":
-                result["image"] = await config_store.test_multimodal_anthropic(cfg)
+                image_result = await config_store.test_multimodal_anthropic(cfg)
             else:
-                result["image"] = await config_store.test_multimodal(cfg)
+                image_result = await config_store.test_multimodal(cfg)
+            result["image"] = image_result
+            if target_model_id:
+                config_store.record_probe_verdict(target_model_id, "supports_vision", image_result.get("verdict", "unknown"))
     return result
 
 
@@ -213,6 +257,11 @@ def delete_provider(provider_id: DbId):
 @router.post("/providers/{provider_id}/models", summary="新增/更新供应商下的模型")
 def save_provider_model(provider_id: DbId, payload: ModelPayload):
     data = payload.model_dump(exclude_none=True)
+    # 前端把「思考可关闭」选回「未知」时显式发送 null：exclude_none 会丢弃该键，
+    # 导致 config_store 的显式 null 恢复分支（if "thinking_can_disable" in data）永不触发、
+    # 旧值残留。仅对显式出现在 model_fields_set 的该字段补回 None，其余 None 继续排除。
+    if payload.model_fields_set and payload.thinking_can_disable is None and "thinking_can_disable" in payload.model_fields_set:
+        data["thinking_can_disable"] = None
     data["provider_id"] = provider_id
     try:
         saved = config_store.save_provider_model(data)
@@ -244,6 +293,48 @@ def activate_model(model_id: DbId):
         "models": config_store.models_flat(),
         "llm": llm_status(cfg),
     }
+
+
+@router.post(
+    "/models/{model_id}/capabilities/reset-overrides",
+    summary="清除模型手动能力覆盖并按最近同步快照恢复",
+)
+def reset_capability_overrides(model_id: DbId):
+    """清除 manual_fields 并应用最近一次同步快照；无快照时仅清标记（下次同步生效）。"""
+    try:
+        result = config_store.reset_provider_model_overrides(model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    orchestrator.invalidate()
+    return {"ok": True, **result, "providers": config_store.list_providers()}
+
+
+class SyncModelsPayload(BaseModel):
+    """同步选项：默认不同步已下线模型、不覆盖手动能力字段。"""
+
+    include_disabled: bool = Field(False, description="是否同步官方已标注下线/停用（deprecated 等）的模型")
+    override_manual: bool = Field(False, description="是否覆盖手动填写的能力字段（manual_fields）")
+
+
+@router.post(
+    "/providers/{provider_id}/sync-models",
+    summary="同步供应商在线模型列表（只读目录/管控请求，不发推理请求）",
+)
+async def sync_provider_models(provider_id: DbId, payload: SyncModelsPayload):
+    """在线适配器优先；无官方列表/无凭证/在线失败时按能力目录兜底并如实标注 partial/online。"""
+    try:
+        result = await asyncio.to_thread(
+            config_store.sync_provider_models,
+            provider_id,
+            payload.include_disabled,
+            payload.override_manual,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ProviderSyncBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    orchestrator.invalidate()
+    return {**result, "providers": config_store.list_providers()}
 
 
 @router.get("/models", summary="启用中的模型扁平列表（快速切换用）")
@@ -319,12 +410,12 @@ def discover_plugins(dir: str = Query(..., max_length=300, alias="dir")):
 
 # ---------------- 聊天附件 ----------------
 
-# 附件扩展名白名单：文本/数据类（可按文本注入）+ Excel + 图片（多模态理解）
+# 附件扩展名白名单：文本/数据类 + Excel + 图片 + 可提取正文的 Office/PDF 文档
 _UPLOAD_SUFFIXES = {
     ".txt", ".md", ".csv", ".json", ".log", ".py", ".html", ".xml", ".yaml", ".yml", ".sql",
     ".xlsx", ".xls",
     ".png", ".jpg", ".jpeg", ".webp", ".gif",
-}
+} | DOCUMENT_SUFFIXES
 # 图片扩展名（多模态注入）
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
@@ -366,7 +457,7 @@ def _xlsx_first_sheet_to_csv(src: Path, dst: Path, max_rows: int) -> int:
     return written
 
 
-@router.post("/upload", summary="上传聊天附件（图片/文本/Excel；xlsx 自动转 CSV；上限 10MB）")
+@router.post("/upload", summary="上传聊天附件（图片/文本/Excel/Office/PDF；上限 10MB）")
 async def upload_attachment(
     session_id: str = Form(...),
     file: UploadFile = File(...),
@@ -425,6 +516,24 @@ async def upload_attachment(
             # 转换失败降级：清半成品 CSV，保留 xlsx 本体与说明（既有契约）
             _remove_quietly(csv_path)
             note = f"Excel 转 CSV 失败：{exc}"
+    elif suffix in DOCUMENT_SUFFIXES:
+        text_path = extracted_text_path(dest)
+        try:
+            result = await asyncio.to_thread(extract_document, dest, text_path)
+        except DocumentExtractionError as exc:
+            _remove_quietly(dest, text_path)
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception:
+            _remove_quietly(dest, text_path)
+            logger.warning("文档提取发生未预期错误：session_id=%s", session_id, exc_info=True)
+            raise HTTPException(status_code=400, detail="文档文字提取失败，请确认文件格式后重试")
+        kind = "document_text"
+        notes = [f"已提取 {result.characters} 字供分析"]
+        if result.converted:
+            notes.append("旧版格式已转换")
+        if result.truncated:
+            notes.append("内容已达提取上限，仅前一部分参与分析")
+        note = "；".join(notes)
 
     return {"name": dest.name, "path": str(dest), "kind": kind, "size": dest.stat().st_size, "note": note}
 
@@ -510,16 +619,36 @@ def delete_agent(agent_id: int):
 
 class RouteTestRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000, description="待测试的用户消息")
+    include_llm: bool = Field(False, description="是否对低置信候选实际调用 LLM 仲裁")
 
 
-@router.post("/agents/route-test", summary="关键词路由预览：返回会命中的专家与命中词")
-def route_test(payload: RouteTestRequest):
+@router.post("/agents/route-test", summary="路由预览：默认离线，可选低置信 LLM 仲裁")
+async def route_test(payload: RouteTestRequest):
     team = team_mod.load_team(force=True)
     matches = team_mod.route_scores(payload.text, team)
+    direct = team_mod.best_keyword_candidate(matches)
+    needs_llm = direct is None
+    if direct:
+        routed = direct["name"]
+        matched_by = "关键词"
+    elif matches:
+        routed = matches[0]["name"]
+        matched_by = "关键词回退"
+    else:
+        routed = team_mod.default_agent_name(team)
+        matched_by = "默认"
+    if payload.include_llm and needs_llm and team:
+        picked = await orchestrator._route_by_llm(payload.text, team)
+        if picked in team:
+            routed = picked
+            matched_by = "AI 调度"
     return {
-        "routed": matches[0]["name"] if matches else team_mod.default_agent_name(team),
-        "matched_by": "关键词" if matches else "默认",
+        "routed": routed,
+        "matched_by": matched_by,
         "matches": matches,
+        "needs_llm": needs_llm,
+        "normalized": team_mod.normalize_route_text(payload.text),
+        "include_llm": payload.include_llm,
     }
 
 

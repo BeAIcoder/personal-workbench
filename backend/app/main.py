@@ -137,6 +137,11 @@ def _ensure_sqlite_columns() -> None:
             "cron_expr": "TEXT DEFAULT ''",
             "action": "TEXT DEFAULT ''",
         },
+        "model_providers": {
+            "preset_key": "TEXT DEFAULT ''",
+            "models_url": "TEXT DEFAULT ''",
+            "sync_credentials": "TEXT DEFAULT ''",
+        },
         "provider_models": {
             "temperature": "TEXT DEFAULT ''",
             "note": "TEXT DEFAULT ''",
@@ -147,6 +152,10 @@ def _ensure_sqlite_columns() -> None:
             "probed_max_output": "INTEGER DEFAULT 0",
             "probe_result": "TEXT DEFAULT ''",
             "probed_at": "TEXT DEFAULT ''",
+            "max_input_tokens": "INTEGER DEFAULT 0",
+            "supports_tools": "INTEGER DEFAULT -1",
+            "capability_meta": "TEXT DEFAULT '{}'",
+            "synced_at": "TEXT DEFAULT ''",
         },
     }
     for table, columns in collect_column_patches().items():
@@ -429,7 +438,15 @@ app.include_router(model_probe.presets_router, prefix="/api/models")
 # lifespan 的 create_all 才能建出模块表；任何模块失败仅记日志跳过，不影响宿主。
 load_modules(app)
 
+class FrontendStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200 and response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # 前端已构建（frontend/dist 存在）时由后端直接托管页面，单端口访问
 FRONTEND_DIST = BASE_DIR.parent / "frontend" / "dist"
 if FRONTEND_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+    app.mount("/", FrontendStaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
