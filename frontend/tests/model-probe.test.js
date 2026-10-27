@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { assistantApi, modelProbeApi, providerPresetsApi } from '../src/api'
+import { capabilityBadges } from '../src/utils/modelCapabilities'
 import SettingsDrawer, {
   THINKING_LEVEL_OPTIONS,
   contextResultMessage,
@@ -14,7 +15,6 @@ import SettingsDrawer, {
   probeStateOf,
   providerKeyBadge,
   reasoningResultMessage,
-  thinkingBadge,
 } from '../src/components/assistant/SettingsDrawer.vue'
 
 // node 环境无 DOM：mock 掉消息组件与探测/预设 API，直接驱动编译后的 setup()
@@ -69,24 +69,29 @@ beforeEach(() => {
 })
 
 describe('思考能力徽章', () => {
+  // 徽章统一走 utils/modelCapabilities.capabilityBadges（聊天区动态思考下拉同源）：
+  // 支持 ✓ / 不支持 ✗ / 未知「未确认」虚线，且未知不显示红叉
+  function badge(model) {
+    return capabilityBadges(model).find((b) => b.key === 'thinking')
+  }
+
   it('supports_thinking=1 → 绿色「思考✓」', () => {
-    const badge = thinkingBadge(1)
-    expect(badge.text).toBe('思考✓')
-    expect(badge.type).toBe('success')
-    expect(badge.dashed).toBe(false)
+    expect(badge({ supports_thinking: 1 })).toMatchObject({ text: '思考✓', type: 'success', dashed: false })
   })
 
   it('supports_thinking=0 → 灰色「思考✗」', () => {
-    const badge = thinkingBadge(0)
-    expect(badge.text).toBe('思考✗')
-    expect(badge.type).toBe('info')
-    expect(badge.dashed).toBe(false)
+    expect(badge({ supports_thinking: 0 })).toMatchObject({ text: '思考✗', type: 'info', dashed: false })
   })
 
-  it('supports_thinking=-1 或缺省 → 灰色虚线「未探测」', () => {
-    expect(thinkingBadge(-1)).toMatchObject({ text: '未探测', type: 'info', dashed: true })
-    expect(thinkingBadge(undefined).text).toBe('未探测')
-    expect(thinkingBadge(null).dashed).toBe(true)
+  it('supports_thinking=-1 或缺省 → 灰色虚线「思考未确认」', () => {
+    expect(badge({ supports_thinking: -1 })).toMatchObject({ text: '思考未确认', type: 'info', dashed: true })
+    expect(badge({})).toMatchObject({ text: '思考未确认', dashed: true })
+    expect(badge(null)).toMatchObject({ text: '思考未确认', dashed: true })
+    expect(badge({}).text).not.toContain('✗')
+  })
+
+  it('声明了思考档位即视为支持（缺 supports_thinking 不误判未知）', () => {
+    expect(badge({ thinking_levels: ['low', 'high'] })).toMatchObject({ text: '思考✓' })
   })
 })
 
@@ -134,8 +139,8 @@ describe('thinking_levels 解析', () => {
 })
 
 describe('思考级别选项', () => {
-  it('与后端约定的六档一致', () => {
-    expect(THINKING_LEVEL_OPTIONS).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max'])
+  it('与 canonical 七档一致（Task 6B 后端保存同白名单）', () => {
+    expect(THINKING_LEVEL_OPTIONS).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
   })
 })
 
@@ -462,7 +467,6 @@ describe('模型表单与预设填充（组件 setup 级）', () => {
         note: '备注',
         supports_thinking: 1,
         thinking_levels: ['low', 'high'],
-        supports_vision: false,
       }),
     )
     expect(emit).toHaveBeenCalledWith('refresh')
@@ -471,10 +475,12 @@ describe('模型表单与预设填充（组件 setup 级）', () => {
     await ctx.saveModel()
     expect(assistantApi.providers.saveModel).toHaveBeenLastCalledWith(3, expect.objectContaining({ temperature: 0.7 }))
 
-    // 思考支持回到「自动」时级别传空数组（禁用态的值不透传）
+    // 思考支持回到「自动」时级别传空数组（禁用态的值不透传）；
+    // supports_thinking 回到快照值（-1）属净未变化，不重复提交
     ctx.modelDialog.supports_thinking = -1
     await ctx.saveModel()
-    expect(assistantApi.providers.saveModel).toHaveBeenLastCalledWith(3, expect.objectContaining({ supports_thinking: -1, thinking_levels: [] }))
+    expect(assistantApi.providers.saveModel).toHaveBeenLastCalledWith(3, expect.objectContaining({ thinking_levels: [] }))
+    expect(assistantApi.providers.saveModel.mock.calls.at(-1)[1].supports_thinking).toBeUndefined()
   })
 
   it('保存模型透传视觉开关 supports_vision（旧 multimodal 字段同步保持一致）', async () => {
@@ -486,12 +492,137 @@ describe('模型表单与预设填充（组件 setup 级）', () => {
       3,
       expect.objectContaining({ supports_vision: true, multimodal: true }),
     )
+  })
 
+  it('仅改备注：能力字段不重复提交（未变化传 undefined，不会被重新标记 manual）', async () => {
+    const { ctx } = mountDrawer()
+    ctx.openModelForm(
+      { id: 3 },
+      {
+        id: 7,
+        model: 'm',
+        context_size: 200000,
+        max_tokens: 8192,
+        max_input_tokens: 1000000,
+        supports_tools: 1,
+        supports_thinking: 1,
+        thinking_levels: ['low', 'high'],
+        default_thinking_level: 'high',
+        thinking_can_disable: true,
+        reasoning_style: 'effort',
+        supports_vision: true,
+      },
+    )
+    ctx.modelDialog.note = '只改备注'
+    await ctx.saveModel()
+    const payload = assistantApi.providers.saveModel.mock.calls.at(-1)[1]
+    expect(payload.note).toBe('只改备注')
+    expect(payload.model_id).toBe(7)
+    // 能力字段一律不提交（后端只对「提交了」的字段记 manual）
+    for (const key of [
+      'context_size', 'max_tokens', 'max_input_tokens', 'supports_tools', 'supports_thinking',
+      'thinking_levels', 'default_thinking_level', 'thinking_can_disable', 'reasoning_style',
+      'supports_vision', 'multimodal',
+    ]) {
+      expect(payload[key]).toBeUndefined()
+    }
+    // 非能力字段按原流程提交
+    expect(payload.enabled).toBe(true)
+    expect(payload.temperature).toBe('')
+  })
+
+  it('能力字段实际变化时才差量提交', async () => {
+    const { ctx } = mountDrawer()
+    ctx.openModelForm(
+      { id: 3 },
+      { id: 7, model: 'm', context_size: 200000, max_tokens: 8192, supports_tools: 1, supports_vision: true },
+    )
+    ctx.modelDialog.context_size = 262144
+    ctx.modelDialog.supports_tools = 0
     ctx.modelDialog.supports_vision = false
     await ctx.saveModel()
     expect(assistantApi.providers.saveModel).toHaveBeenLastCalledWith(
       3,
-      expect.objectContaining({ supports_vision: false, multimodal: false }),
+      expect.objectContaining({ context_size: 262144, supports_tools: 0, supports_vision: false, multimodal: false }),
+    )
+    const payload = assistantApi.providers.saveModel.mock.calls.at(-1)[1]
+    // 未变化的能力字段仍然不提交
+    expect(payload.max_tokens).toBeUndefined()
+    expect(payload.max_input_tokens).toBeUndefined()
+    expect(payload.thinking_levels).toBeUndefined()
+  })
+
+  it('新模型仍提交完整默认值（无原始快照可比对）', async () => {
+    const { ctx } = mountDrawer()
+    ctx.openModelForm({ id: 3 })
+    ctx.modelDialog.model = 'new-m'
+    await ctx.saveModel()
+    expect(assistantApi.providers.saveModel).toHaveBeenLastCalledWith(
+      3,
+      expect.objectContaining({
+        model: 'new-m',
+        context_size: 128000,
+        max_tokens: 2048,
+        max_input_tokens: 0,
+        supports_tools: -1,
+        supports_thinking: -1,
+        thinking_levels: [],
+        default_thinking_level: '',
+        thinking_can_disable: null,
+        reasoning_style: '',
+        supports_vision: false,
+        multimodal: false,
+      }),
+    )
+  })
+
+  it('编辑模型回填能力契约字段（max_input/tools/默认档/可关闭/风格）', () => {
+    const { ctx } = mountDrawer()
+    ctx.openModelForm(
+      { id: 3 },
+      {
+        id: 7,
+        model: 'step-3.7-flash',
+        max_input_tokens: 256000,
+        supports_tools: 1,
+        default_thinking_level: 'medium',
+        thinking_can_disable: false,
+        reasoning_style: 'budget',
+      },
+    )
+    expect(ctx.modelDialog).toMatchObject({
+      max_input_tokens: 256000,
+      supports_tools: 1,
+      default_thinking_level: 'medium',
+      thinking_can_disable: false,
+      reasoning_style: 'budget',
+    })
+  })
+
+  it('能力契约字段缺省按未知/空回填，不猜', () => {
+    const { ctx } = mountDrawer()
+    ctx.openModelForm({ id: 3 }, { id: 8, model: 'm' })
+    expect(ctx.modelDialog).toMatchObject({ max_input_tokens: 0, supports_tools: -1, default_thinking_level: '', thinking_can_disable: null, reasoning_style: '' })
+  })
+
+  it('保存模型透传能力契约字段（含默认档/可关闭/风格）', async () => {
+    const { ctx } = mountDrawer()
+    ctx.openModelForm({ id: 3 }, { id: 7, model: 'm' })
+    ctx.modelDialog.max_input_tokens = 200000
+    ctx.modelDialog.supports_tools = 1
+    ctx.modelDialog.default_thinking_level = 'high'
+    ctx.modelDialog.thinking_can_disable = false
+    ctx.modelDialog.reasoning_style = 'budget'
+    await ctx.saveModel()
+    expect(assistantApi.providers.saveModel).toHaveBeenCalledWith(
+      3,
+      expect.objectContaining({
+        max_input_tokens: 200000,
+        supports_tools: 1,
+        default_thinking_level: 'high',
+        thinking_can_disable: false,
+        reasoning_style: 'budget',
+      }),
     )
   })
 

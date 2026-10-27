@@ -248,7 +248,7 @@ describe('异常收口：失败不伪成功且锁复位', () => {
     await ctx.testProvider({ id: 1, name: 'p' }, 'text')
 
     expect(ctx.provTestResult.value[1]).toBeUndefined()
-    expect(ctx.testingProvId.value).toBeNull()
+    expect(ctx.testingId.value).toBeNull()
   })
 
   it('testProvider 忙态防连点：测试进行中不发起第二个测试', async () => {
@@ -265,13 +265,13 @@ describe('异常收口：失败不伪成功且锁复位', () => {
 
     const first = ctx.testProvider({ id: 1, name: 'p' }, 'text')
     await tick()
-    expect(ctx.testingProvId.value).toBe('1:text')
+    expect(ctx.testingId.value).toBe('1:text')
     const second = ctx.testProvider({ id: 1, name: 'p' }, 'tools')
     await second
 
     expect(assistantApi.config.test).toHaveBeenCalledTimes(1)
     await first
-    expect(ctx.testingProvId.value).toBeNull()
+    expect(ctx.testingId.value).toBeNull()
   })
 
   it('discoverSkillsCount 失败：锁复位、不清空结果也不写新结果', async () => {

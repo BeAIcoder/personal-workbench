@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'vitest'
+import axios from 'axios'
+import { describe, expect, it, vi } from 'vitest'
+import { assistantApi } from '../src/api'
 import { agentModelLabel, isValidAgentName, normalizeKeywords } from '../src/utils/agent'
+
+vi.mock('axios', () => {
+  const instance = {
+    post: vi.fn(),
+    interceptors: { response: { use: vi.fn() } },
+  }
+  return { default: { create: () => instance } }
+})
+
+vi.mock('element-plus', () => ({
+  ElMessage: { error: vi.fn() },
+}))
 
 describe('专家 name 校验', () => {
   it('合法名称', () => {
@@ -34,5 +48,24 @@ describe('专家绑定模型显示', () => {
     expect(agentModelLabel({ model_id: 1 }, models)).toBe('deepseek-v4')
     expect(agentModelLabel({ model_id: 2 }, models)).toBe('qwen3')
     expect(agentModelLabel({ model_id: 9 }, models)).toBe('模型 #9')
+  })
+})
+
+describe('路由预览 API', () => {
+  it('把可选 AI 仲裁开关序列化为 include_llm，默认 false', () => {
+    const api = axios.create()
+    api.post.mockClear()
+
+    assistantApi.agents.routeTest('安排')
+    assistantApi.agents.routeTest('安排', true)
+
+    expect(api.post).toHaveBeenNthCalledWith(1, '/assistant/agents/route-test', {
+      text: '安排',
+      include_llm: false,
+    })
+    expect(api.post).toHaveBeenNthCalledWith(2, '/assistant/agents/route-test', {
+      text: '安排',
+      include_llm: true,
+    })
   })
 })

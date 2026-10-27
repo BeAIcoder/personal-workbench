@@ -32,6 +32,10 @@ vi.mock('../src/api', async (importOriginal) => {
         save: vi.fn(),
         saveModel: vi.fn(),
       },
+      agents: {
+        ...actual.assistantApi.agents,
+        routeTest: vi.fn(),
+      },
     },
   }
 })
@@ -163,5 +167,94 @@ describe('AS-AGENT-009 专家绑定模型候选刷新', () => {
     expect(assistantApi.models.list).toHaveBeenCalledTimes(1)
     expect(ctx.models.value).toEqual([{ id: 9, label: 'bind-model' }])
     expect(ctx.form.visible).toBe(true)
+  })
+})
+
+describe('Task 2 路由预览状态', () => {
+  function mountTeamPanel() {
+    return AgentTeamPanel.setup({}, { expose: () => {}, emit: () => {} })
+  }
+
+  it('默认离线预览弱候选时显示待 AI 仲裁并明确需要仲裁', async () => {
+    assistantApi.agents.routeTest.mockResolvedValue({
+      data: {
+        routed: 'realestate',
+        matched_by: '关键词回退',
+        matches: [
+          {
+            name: 'realestate',
+            display_name: '商业地产管家',
+            hits: ['安排'],
+            score: 1,
+            confidence: 'low',
+            matched_terms: ['安排'],
+          },
+        ],
+        needs_llm: true,
+        normalized: '帮我安排roi',
+        include_llm: false,
+      },
+    })
+    const ctx = mountTeamPanel()
+    ctx.routeText.value = '帮我安排ＲＯＩ'
+
+    await ctx.runRouteTest()
+
+    expect(assistantApi.agents.routeTest).toHaveBeenCalledWith('帮我安排ＲＯＩ', false)
+    expect(ctx.routePreviewState.value).toEqual({ kind: 'pending', label: '待 AI 仲裁' })
+    expect(ctx.routeNeedsText.value).toBe('需要 AI 仲裁：是')
+  })
+
+  it('高置信结果显示直接匹配并明确不需要仲裁', async () => {
+    assistantApi.agents.routeTest.mockResolvedValue({
+      data: {
+        routed: 'leasing',
+        matched_by: '关键词',
+        matches: [
+          {
+            name: 'leasing',
+            display_name: '招商专员',
+            hits: ['招商'],
+            score: 2,
+            confidence: 'high',
+            matched_terms: ['招商'],
+          },
+        ],
+        needs_llm: false,
+        normalized: '招商',
+        include_llm: true,
+      },
+    })
+    const ctx = mountTeamPanel()
+    ctx.routeText.value = '招商'
+    ctx.routeIncludeLlm.value = true
+
+    await ctx.runRouteTest()
+
+    expect(assistantApi.agents.routeTest).toHaveBeenCalledWith('招商', true)
+    expect(ctx.routePreviewState.value).toEqual({ kind: 'direct', label: '直接匹配' })
+    expect(ctx.routeNeedsText.value).toBe('需要 AI 仲裁：否')
+  })
+
+  it('显式 AI 仲裁失败回落默认时显示回退', async () => {
+    assistantApi.agents.routeTest.mockResolvedValue({
+      data: {
+        routed: 'realestate',
+        matched_by: '默认',
+        matches: [],
+        needs_llm: true,
+        normalized: '今天天气怎么样',
+        include_llm: true,
+      },
+    })
+    const ctx = mountTeamPanel()
+    ctx.routeText.value = '今天天气怎么样'
+    ctx.routeIncludeLlm.value = true
+
+    await ctx.runRouteTest()
+
+    expect(assistantApi.agents.routeTest).toHaveBeenCalledWith('今天天气怎么样', true)
+    expect(ctx.routePreviewState.value).toEqual({ kind: 'fallback', label: '回退' })
+    expect(ctx.routeNeedsText.value).toBe('需要 AI 仲裁：是')
   })
 })

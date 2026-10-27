@@ -20,27 +20,45 @@
               🔑
               <el-tag size="small" :type="providerKeyBadge(p).type" effect="plain">{{ providerKeyBadge(p).text }}</el-tag>
             </div>
+            <div class="model-filter-row">
+              <el-input
+                :model-value="modelQueries[p.id] || ''"
+                size="small"
+                class="model-search"
+                placeholder="搜索模型名"
+                aria-label="搜索模型名"
+                clearable
+                @update:model-value="(v) => setModelQuery(p, v)"
+              />
+              <el-button
+                v-if="hiddenModelCount(p) > 0"
+                size="small"
+                link
+                type="primary"
+                @click="expandModels(p)"
+              >展开剩余 {{ hiddenModelCount(p) }} 个</el-button>
+              <span v-else-if="filteredModelCount(p) > MODEL_PAGE_SIZE" class="models-count">共 {{ filteredModelCount(p) }} 个</span>
+            </div>
             <div class="prov-models">
-              <div v-for="m in p.models" :key="m.id" class="model-row" :class="{ active: m.active, off: !m.enabled }">
+              <div
+                v-for="(m, mi) in visibleModels(p)"
+                :key="m.id"
+                class="model-row"
+                :class="{ active: m.active, off: !m.enabled, 'model-row--deferred': mi >= DEFERRED_ROW_FROM }"
+              >
                 <div class="model-row-main">
                   <span class="model-name" :title="modelTip(m)" @click="activateModel(m)">
                     {{ m.active ? '✓ ' : '' }}{{ m.model }}
                   </span>
                   <el-tag
+                    v-for="b in capabilityBadges(m)"
+                    :key="b.key"
                     size="small"
-                    :type="thinkingBadge(m.supports_thinking).type"
-                    :effect="thinkingBadge(m.supports_thinking).effect"
-                    :class="{ 'badge-dashed': thinkingBadge(m.supports_thinking).dashed }"
-                  >{{ thinkingBadge(m.supports_thinking).text }}</el-tag>
-                  <span v-if="m.supports_thinking === 1 && thinkingLevelsOf(m).length" class="badge-levels">
-                    {{ thinkingLevelsOf(m).join(' / ') }}
-                  </span>
-                  <el-tag v-if="formatK(m.probed_context)" size="small" type="info" effect="plain" :title="`上下文窗口 ${m.probed_context} tokens`">
-                    ctx {{ formatK(m.probed_context) }}
-                  </el-tag>
-                  <el-tag v-if="formatK(m.probed_max_output)" size="small" type="info" effect="plain" :title="`最大输出 ${m.probed_max_output} tokens`">
-                    out {{ formatK(m.probed_max_output) }}
-                  </el-tag>
+                    :type="b.type"
+                    :effect="b.effect"
+                    :class="{ 'badge-dashed': b.dashed }"
+                    :title="b.title"
+                  >{{ b.text }}</el-tag>
                   <span v-if="m.probed_at" class="probe-at" :title="`探测时间：${m.probed_at}`">探测于 {{ probeAtShort(m.probed_at) }}</span>
                   <div class="spacer"></div>
                   <el-button size="small" link type="primary" @click="openModelForm(p, m)">编辑</el-button>
@@ -53,6 +71,16 @@
                   <el-button size="small" link :loading="probingId === m.id + ':context'" @click="runProbe(m, 'context')">上下文</el-button>
                   <el-button size="small" link :loading="probingId === m.id + ':output'" @click="runProbe(m, 'output')">输出</el-button>
                   <el-button size="small" link :loading="probingId === m.id + ':all'" @click="runProbeAll(m)">全部</el-button>
+                  <span class="ops-label">实测</span>
+                  <el-button size="small" link :loading="testingId === m.id + ':tools'" @click="testProvider(p, 'tools', m)">工具</el-button>
+                  <el-button size="small" link :loading="testingId === m.id + ':image'" @click="testProvider(p, 'image', m)">图片</el-button>
+                  <el-button
+                    v-if="hasManualOverrides(m)"
+                    size="small"
+                    link
+                    :loading="resettingModelId === m.id"
+                    @click="resetModelOverrides(m)"
+                  >恢复同步值</el-button>
                 </div>
               </div>
               <el-button size="small" link type="primary" @click="openModelForm(p)">
@@ -60,10 +88,25 @@
               </el-button>
             </div>
             <div class="prov-ops">
-              <el-button size="small" link :loading="testingProvId === p.id + ':text'" @click="testProvider(p, 'text')">连通</el-button>
-              <el-button size="small" link :loading="testingProvId === p.id + ':tools'" @click="testProvider(p, 'tools')">工具</el-button>
-              <el-button size="small" link :loading="testingProvId === p.id + ':image'" @click="testProvider(p, 'image')">图片</el-button>
+              <el-button size="small" link :loading="testingId === p.id + ':text'" @click="testProvider(p, 'text')">连通</el-button>
               <el-button size="small" link :loading="probingProviderId === p.id" @click="runProbeAllModels(p)">探测全部模型</el-button>
+              <el-button
+                size="small"
+                link
+                type="primary"
+                :loading="syncingProviderId === p.id"
+                :disabled="syncingProviderId !== null && syncingProviderId !== p.id"
+                @click="syncProviderModels(p)"
+              >同步模型</el-button>
+              <el-checkbox v-model="syncOverrideManual[p.id]" class="sync-override-cb">覆盖手动/实测</el-checkbox>
+            </div>
+            <div v-if="syncOverrideManual[p.id]" class="sync-override-warn">
+              ⚠ 覆盖开启：本次同步将用同步值覆盖该供应商下模型的手动修改与实测（探测）能力，执行前需确认
+            </div>
+            <div v-if="syncResults[p.id]" class="sync-summary" :class="syncResults[p.id].level" role="status" aria-live="polite">
+              <div>{{ syncResults[p.id].text }}</div>
+              <div v-if="syncResults[p.id].warnings.length" class="sync-warn">⚠ {{ syncResults[p.id].warnings.join('；') }}</div>
+              <div v-if="syncResults[p.id].skippedItems.length" class="sync-skip">跳过：{{ syncResults[p.id].skippedItems.map((s) => s.model || s).join('、') }}</div>
             </div>
             <div v-if="provTestResult[p.id]" class="prov-test" :class="{ ok: provTestResult[p.id].ok }">
               <div v-for="(line, j) in provTestResult[p.id].lines" :key="j">{{ line }}</div>
@@ -171,6 +214,29 @@
             <a v-if="presetFillInfo.docs_url" :href="presetFillInfo.docs_url" target="_blank" rel="noopener noreferrer">查看文档</a>
           </div>
         </el-form-item>
+        <el-form-item label="预设标识">
+          <el-select v-model="provDialog.preset_key" clearable filterable style="width: 100%" placeholder="适配器只认 preset_key（如 volcengine）">
+            <el-option v-for="p in presetKeyOptions" :key="p.preset_key" :label="`${p.label}（${p.preset_key}）`" :value="p.preset_key" />
+          </el-select>
+          <div class="cfg-hint">决定在线同步适配器与能力目录；custom = 无官方列表，仅目录/手动</div>
+        </el-form-item>
+        <el-form-item label="模型列表地址">
+          <el-input v-model="provDialog.models_url" placeholder="https://…/models（可留空）" />
+          <div class="cfg-hint">仅允许 http(s)；留空 = 无官方列表，同步时按能力目录兜底并如实标注</div>
+        </el-form-item>
+        <template v-if="needsAkSk">
+          <el-form-item label="管控 Access Key">
+            <el-input v-model="provDialog.sync_access_key" type="password" show-password placeholder="可选；编辑时留空 = 保留现值" autocomplete="off" />
+          </el-form-item>
+          <el-form-item label="管控 Secret Key">
+            <el-input v-model="provDialog.sync_secret_key" type="password" show-password placeholder="可选；编辑时留空 = 保留现值" autocomplete="off" />
+            <div class="cfg-hint">管控面凭证（如火山 AK/SK）：密封存储、任何界面不回传；仅用于拉取官方基础模型列表，绝不发推理请求</div>
+          </el-form-item>
+        </template>
+        <div v-if="presetPlanHint" class="cfg-hint plan-hint">
+          {{ presetPlanHint.text }}
+          <a v-if="presetPlanHint.docs_url" :href="presetPlanHint.docs_url" target="_blank" rel="noopener noreferrer">查看文档</a>
+        </div>
         <el-form-item v-if="presetCandidateModels.length" label="候选模型">
           <el-select
             v-model="provDialog.presetModels"
@@ -220,6 +286,18 @@
         <el-form-item label="输出上限">
           <el-input-number v-model="modelDialog.max_tokens" :min="64" :step="64" :max="500000" style="width: 220px" />
         </el-form-item>
+        <el-form-item label="最大输入 tokens">
+          <el-input-number v-model="modelDialog.max_input_tokens" :min="0" :step="4096" :max="20000000" style="width: 220px" />
+          <div class="cfg-hint">0 = 未提供；通常由同步/探测回填，可手动覆盖</div>
+        </el-form-item>
+        <el-form-item label="工具调用">
+          <el-select v-model="modelDialog.supports_tools" style="width: 220px">
+            <el-option label="自动（未实测）" :value="-1" />
+            <el-option label="支持" :value="1" />
+            <el-option label="不支持" :value="0" />
+          </el-select>
+          <div class="cfg-hint">由「实测」按钮按本模型回写；未知不显示成红叉</div>
+        </el-form-item>
         <el-form-item label="温度">
           <el-input-number v-model="modelDialog.temperature" :min="0" :max="2" :step="0.1" :value-on-clear="null" style="width: 220px" />
           <div class="cfg-hint">范围 0-2；留空 = 跟随后端默认</div>
@@ -245,6 +323,26 @@
             <el-option v-for="lv in THINKING_LEVEL_OPTIONS" :key="lv" :label="lv" :value="lv" />
           </el-select>
         </el-form-item>
+        <el-form-item label="默认思考档">
+          <el-select v-model="modelDialog.default_thinking_level" clearable style="width: 220px" placeholder="跟随模型（不指定）">
+            <el-option v-for="lv in THINKING_LEVEL_OPTIONS" :key="lv" :label="lv" :value="lv" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="思考可关闭">
+          <el-select v-model="modelDialog.thinking_can_disable" style="width: 220px">
+            <el-option label="未知" :value="null" />
+            <el-option label="可关闭" :value="true" />
+            <el-option label="强制思考（不可关）" :value="false" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="思考参数风格">
+          <el-select v-model="modelDialog.reasoning_style" clearable style="width: 220px" placeholder="跟随协议默认">
+            <el-option label="effort（档位字符串）" value="effort" />
+            <el-option label="budget（token 预算）" value="budget" />
+            <el-option label="toggle（开关）" value="toggle" />
+          </el-select>
+          <div class="cfg-hint">由同步写入；手动填写后记入手动覆盖，同步默认不覆盖</div>
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="modelDialog.note" maxlength="200" placeholder="模型用途、计费方式等备注" />
         </el-form-item>
@@ -265,42 +363,23 @@
 </template>
 
 <script>
-// 模型能力探测的纯逻辑：徽章计算 / k 格式化 / 级别解析 / 结论文案
-// 放在普通 <script> 块中导出，便于 vitest 直接单测（当前测试环境为 node，无法渲染组件）
-export const THINKING_LEVEL_OPTIONS = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+// 模型能力探测的纯逻辑：徽章计算 / k 格式化 / 级别解析 / 结论文案。
+// 格式化和档位解析等通用纯函数已下沉到 utils/modelCapabilities.js（聊天区动态思考下拉同源），
+// 此处重新导出保持既有导入路径不变；放在普通 <script> 块中导出，便于 vitest 直接单测
+// （当前测试环境为 node，无法渲染组件）
+import {
+  CANONICAL_LEVELS,
+  capabilityBadges,
+  formatK,
+  parseLevels,
+  probeAtShort,
+  syncSummary,
+} from '../../utils/modelCapabilities'
 
-export function thinkingBadge(supports) {
-  if (supports === 1) return { text: '思考✓', type: 'success', effect: 'plain', dashed: false }
-  if (supports === 0) return { text: '思考✗', type: 'info', effect: 'plain', dashed: false }
-  return { text: '未探测', type: 'info', effect: 'plain', dashed: true }
-}
+export { CANONICAL_LEVELS, capabilityBadges, formatK, parseLevels, probeAtShort, syncSummary }
 
-export function formatK(n) {
-  const v = Number(n)
-  if (!Number.isFinite(v) || v <= 0) return ''
-  const k = Math.round(v / 1024)
-  if (k < 1024) return `${k}k`
-  return `${Math.round((v / 1048576) * 10) / 10}m`
-}
-
-export function parseLevels(v) {
-  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' && x.trim())
-  if (typeof v !== 'string' || !v.trim()) return []
-  try {
-    const parsed = JSON.parse(v)
-    if (Array.isArray(parsed)) return parsed.filter((x) => typeof x === 'string' && x.trim())
-    return []
-  } catch {
-    if (!v.includes(',')) return []
-    return v.split(',').map((s) => s.trim()).filter(Boolean)
-  }
-}
-
-export function probeAtShort(v) {
-  if (!v) return ''
-  const m = String(v).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/)
-  return m ? `${m[1]} ${m[2]}` : String(v)
-}
+// 手动编辑模型的思考档位候选：与 canonical 七档一致（Task 6B 起后端保存同白名单）
+export const THINKING_LEVEL_OPTIONS = CANONICAL_LEVELS
 
 // 当前生效模型文案（供应商页顶部展示）：来源=界面供应商激活模型 / .env 兜底
 // teamConfig 为脱敏后的 config（含 model/provider_name/api_key_set）；未配置时引导去下方添加
@@ -522,8 +601,107 @@ async function saveGlobals() {
 }
 
 // ---------------- 供应商卡片 ----------------
-const testingProvId = ref(null)
+const testingId = ref(null)
 const provTestResult = ref({})
+
+// ---------------- 在线模型列表同步 ----------------
+// 每供应商独立 loading 键（syncingProviderId）；partial/truncated 以 warning 如实标注，
+// ok=false（整批回滚）只报错不刷新——失败保留原列表，不假成功
+const syncingProviderId = ref(null)
+const syncResults = reactive({})
+// override_manual 勾选（每供应商独立，默认 false）：勾选后同步前弹确认，
+// 明确警告同步值会覆盖手动修改与实测（探测）能力；不同步下线模型的 include_disabled 不暴露
+const syncOverrideManual = reactive({})
+
+async function syncProviderModels(p) {
+  if (syncingProviderId.value) return  // 忙态防连点（任一供应商同步中即锁）
+  const overrideManual = !!syncOverrideManual[p.id]
+  if (overrideManual) {
+    try {
+      await ElMessageBox.confirm(
+        '覆盖开启：本次同步将用同步值覆盖该供应商下模型的手动修改与实测（探测）能力，原手动值不会保留。确定仍要覆盖？',
+        '确认覆盖手动与实测能力',
+        { type: 'warning', confirmButtonText: '仍然覆盖', cancelButtonText: '取消' },
+      )
+    } catch {
+      return  // 用户取消：不发请求、不置忙态
+    }
+  }
+  syncingProviderId.value = p.id
+  try {
+    const { data } = await assistantApi.providers.syncModels(p.id, { override_manual: overrideManual })
+    const summary = syncSummary(data)
+    syncResults[p.id] = summary
+    if (summary.level === 'error') ElMessage.error(summary.text)
+    else if (summary.level === 'warning') ElMessage.warning(summary.text)
+    else ElMessage.success(summary.text)
+    if (summary.ok) emit('refresh')  // 回滚/失败不刷新：本地列表保持原状
+  } catch {
+    /* 拦截器已提示后端 detail；失败不写摘要、不刷新 */
+  } finally {
+    syncingProviderId.value = null
+  }
+}
+
+// ---------------- 模型列表：搜索与分批渲染 ----------------
+const MODEL_PAGE_SIZE = 20
+// 首屏外的复杂模型卡延迟渲染（content-visibility: auto + contain-intrinsic-size）；
+// 前 3 条在首屏内保持常规渲染（指南：不要对首屏内元素用 content-visibility）
+const DEFERRED_ROW_FROM = 3
+const modelQueries = reactive({})
+const modelLimits = reactive({})
+
+function filteredModels(p) {
+  const q = String(modelQueries[p.id] || '').trim().toLowerCase()
+  const list = Array.isArray(p?.models) ? p.models : []
+  if (!q) return list
+  return list.filter((m) => String(m.model || '').toLowerCase().includes(q))
+}
+
+function visibleModels(p) {
+  const limit = modelLimits[p.id] || MODEL_PAGE_SIZE
+  return filteredModels(p).slice(0, limit)
+}
+
+function filteredModelCount(p) {
+  return filteredModels(p).length
+}
+
+function hiddenModelCount(p) {
+  return Math.max(0, filteredModelCount(p) - visibleModels(p).length)
+}
+
+function setModelQuery(p, q) {
+  modelQueries[p.id] = String(q || '')
+}
+
+function expandModels(p) {
+  modelLimits[p.id] = (modelLimits[p.id] || MODEL_PAGE_SIZE) + MODEL_PAGE_SIZE
+}
+
+function hasManualOverrides(m) {
+  const cap = m?.capability
+  return Array.isArray(cap?.manual_fields) && cap.manual_fields.length > 0
+}
+
+async function resetModelOverrides(m) {
+  if (resettingModelId.value) return  // 忙态防连点
+  if (!hasManualOverrides(m)) {
+    ElMessage.warning('该模型没有手动覆盖字段，无需恢复')
+    return
+  }
+  resettingModelId.value = m.id
+  try {
+    const { data } = await assistantApi.models.resetOverrides(m.id)
+    const cleared = Array.isArray(data?.cleared) ? data.cleared : []
+    ElMessage.success(`已恢复同步值${cleared.length ? '：' + cleared.join('、') : '（手动覆盖已清除）'}`)
+    emit('refresh')
+  } catch {
+    /* 拦截器已提示后端 detail */
+  } finally {
+    resettingModelId.value = null
+  }
+}
 
 // ---------------- 供应商预设（providerPresetsApi） ----------------
 const presetOptions = ref([])
@@ -560,12 +738,9 @@ const PROBE_FN = {
   output: modelProbeApi.probeOutput,
 }
 
-function thinkingLevelsOf(m) {
-  return parseLevels(m.thinking_levels)
-}
-
 function modelTip(m) {
-  return `上下文 ${m.context_size} · 输出 ${m.max_tokens}${m.multimodal || m.supports_vision ? ' · 支持视觉' : ''}${m.note ? ' · 备注：' + m.note : ''}`
+  const caps = capabilityBadges(m).map((b) => b.text).join(' · ')
+  return `上下文 ${m.context_size} · 输出 ${m.max_tokens}${caps ? ' · ' + caps : ''}${m.note ? ' · 备注：' + m.note : ''}`
 }
 
 function applyProbeData(m, data) {
@@ -681,6 +856,40 @@ const presetNote = computed(() => {
   return p ? p.note : ''
 })
 
+// 预设标识候选（props.presets 与后端加载的 presetOptions 合并去重）
+const presetKeyOptions = computed(() => {
+  const map = new Map()
+  for (const p of [...props.presets, ...presetOptions.value]) {
+    if (p?.preset_key && !map.has(p.preset_key)) map.set(p.preset_key, p)
+  }
+  return [...map.values()]
+})
+
+// 管控面凭证（AK/SK）：仅 ak_sk 套餐需要；密码输入可粘贴不回显，留空=保留现值
+const needsAkSk = computed(() => {
+  const key = provDialog.preset_key
+  if (!key) return false
+  const p = presetKeyOptions.value.find((x) => x.preset_key === key)
+  return p?.auth_scheme === 'ak_sk'
+})
+
+// 套餐提示：独立 Key / 地域 / 交互限制 + 文档链接
+const presetPlanHint = computed(() => {
+  const key = provDialog.preset_key
+  if (!key) return null
+  const p = presetKeyOptions.value.find((x) => x.preset_key === key)
+  if (!p) return null
+  let text = ''
+  if (p.usage_scope === 'plan_interactive_only') {
+    text = '套餐限制：交互式专属，Key 与按量不通用；禁止定时任务使用'
+  } else if (p.usage_scope === 'plan_api_allowed') {
+    text = '套餐限制：官方允许第三方 API 调用（可用于定时任务）'
+  }
+  if (p.note) text = text ? `${text}；${p.note}` : p.note
+  if (!text && !p.docs_url) return null
+  return { text, docs_url: p.docs_url || '' }
+})
+
 // ---- 供应商表单 ----
 const provDialog = reactive({
   visible: false,
@@ -692,12 +901,17 @@ const provDialog = reactive({
   protocol: 'openai',
   base_url: '',
   api_key: '',
+  // 同步适配器定位（适配器只认 preset_key）与可选管控凭证（火山 AK/SK，空=保留现值）
+  preset_key: '',
+  models_url: '',
+  sync_access_key: '',
+  sync_secret_key: '',
   enabled: true,
   saving: false,
 })
 
 function openProviderForm() {
-  Object.assign(provDialog, { visible: true, id: null, preset: null, presetFill: null, presetModels: [], name: '', protocol: 'openai', base_url: '', api_key: '', enabled: true, saving: false })
+  Object.assign(provDialog, { visible: true, id: null, preset: null, presetFill: null, presetModels: [], name: '', protocol: 'openai', base_url: '', api_key: '', preset_key: '', models_url: '', sync_access_key: '', sync_secret_key: '', enabled: true, saving: false })
   presetCandidateModels.value = []
   presetFillInfo.value = null
 }
@@ -713,6 +927,11 @@ function editProvider(p) {
     protocol: p.protocol,
     base_url: p.base_url,
     api_key: '',
+    preset_key: p.preset_key || '',
+    models_url: p.models_url || '',
+    // 管控凭证任何 GET 不回传：编辑时留空 = 保留现值（后端同口径）
+    sync_access_key: '',
+    sync_secret_key: '',
     enabled: p.enabled,
     saving: false,
   })
@@ -760,7 +979,12 @@ async function saveProvider() {
       name: provDialog.name.trim(),
       protocol: provDialog.protocol,
       base_url: provDialog.base_url,
+      // 同步适配器定位与管控凭证（空串 = 清除/无；后端对 AK/SK 空值保留现值）
+      preset_key: provDialog.preset_key || '',
+      models_url: provDialog.models_url || '',
       api_key: provDialog.api_key || undefined,
+      sync_access_key: provDialog.sync_access_key || undefined,
+      sync_secret_key: provDialog.sync_secret_key || undefined,
       enabled: provDialog.enabled,
     })
     // 新供应商：把预设里勾选的候选模型一并添加（单个失败不阻塞其余）
@@ -829,12 +1053,18 @@ const modelDialog = reactive({
   model: '',
   context_size: 128000,
   max_tokens: 2048,
+  max_input_tokens: 0,
+  supports_tools: -1,
   supports_vision: false,
   enabled: true,
   temperature: null,
   note: '',
   supports_thinking: -1,
   thinking_levels: [],
+  default_thinking_level: '',
+  thinking_can_disable: null,
+  reasoning_style: '',
+  base: null,
   saving: false,
 })
 
@@ -846,6 +1076,9 @@ function openModelForm(p, m) {
     model: m ? m.model : '',
     context_size: m ? m.context_size : 128000,
     max_tokens: m ? m.max_tokens : 2048,
+    // 能力契约字段（Task 3）：缺省按未知/空处理，不猜
+    max_input_tokens: m ? m.max_input_tokens ?? 0 : 0,
+    supports_tools: m ? m.supports_tools ?? -1 : -1,
     // 视觉开关：supports_vision 缺省时回退读旧的 multimodal 字段
     supports_vision: m ? !!(m.supports_vision ?? m.multimodal) : false,
     enabled: m ? m.enabled !== false : true,
@@ -853,8 +1086,69 @@ function openModelForm(p, m) {
     note: m ? m.note || '' : '',
     supports_thinking: m ? m.supports_thinking ?? -1 : -1,
     thinking_levels: m ? parseLevels(m.thinking_levels) : [],
+    default_thinking_level: m ? m.default_thinking_level || '' : '',
+    thinking_can_disable: m ? m.thinking_can_disable ?? null : null,
+    reasoning_style: m ? m.reasoning_style || m.capability?.reasoning_style || '' : '',
     saving: false,
+    // 打开表单时的能力字段快照：保存时逐项比对，未变化的能力字段不提交
+    //（后端只对「提交了」的字段记 manual；仅改备注不该把能力字段重新标记成手动）
+    base: modelCapabilitySnapshot(m),
   })
+}
+
+// 能力字段快照（与 modelDialog 的同名字段一一对应，供差量比对）
+function modelCapabilitySnapshot(m) {
+  return {
+    context_size: m ? m.context_size ?? 128000 : 128000,
+    max_tokens: m ? m.max_tokens ?? 2048 : 2048,
+    max_input_tokens: m ? m.max_input_tokens ?? 0 : 0,
+    supports_tools: m ? m.supports_tools ?? -1 : -1,
+    supports_thinking: m ? m.supports_thinking ?? -1 : -1,
+    thinking_levels: m ? parseLevels(m.thinking_levels) : [],
+    default_thinking_level: m ? m.default_thinking_level || '' : '',
+    thinking_can_disable: m ? m.thinking_can_disable ?? null : null,
+    reasoning_style: m ? m.reasoning_style || m.capability?.reasoning_style || '' : '',
+    supports_vision: m ? !!(m.supports_vision ?? m.multimodal) : false,
+  }
+}
+
+// 编辑时只提交实际发生变化的能力字段；新模型（无快照）提交完整默认值
+function changedCapabilityFields() {
+  if (!modelDialog.id) {
+    return {
+      context_size: modelDialog.context_size,
+      max_tokens: modelDialog.max_tokens,
+      max_input_tokens: modelDialog.max_input_tokens || 0,
+      supports_tools: modelDialog.supports_tools,
+      supports_thinking: modelDialog.supports_thinking,
+      thinking_levels: modelDialog.supports_thinking === 1 ? modelDialog.thinking_levels : [],
+      default_thinking_level: modelDialog.default_thinking_level || '',
+      thinking_can_disable: modelDialog.thinking_can_disable,
+      reasoning_style: modelDialog.reasoning_style || '',
+    }
+  }
+  const base = modelDialog.base || {}
+  const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+  const out = {}
+  for (const k of ['context_size', 'max_tokens', 'max_input_tokens', 'supports_tools', 'supports_thinking']) {
+    if (!eq(Number(modelDialog[k] ?? 0), Number(base[k] ?? 0))) out[k] = modelDialog[k]
+  }
+  for (const k of ['default_thinking_level', 'reasoning_style']) {
+    if (!eq(String(modelDialog[k] ?? ''), String(base[k] ?? ''))) out[k] = String(modelDialog[k] ?? '')
+  }
+  if (!eq(modelDialog.thinking_can_disable ?? null, base.thinking_can_disable ?? null)) {
+    out.thinking_can_disable = modelDialog.thinking_can_disable ?? null
+  }
+  const curLevels = [...(modelDialog.thinking_levels || [])].sort()
+  const baseLevels = [...(base.thinking_levels || [])].sort()
+  if (modelDialog.supports_thinking === 1) {
+    // 标记「支持」时：级别实际变化才提交
+    if (!eq(curLevels, baseLevels)) out.thinking_levels = modelDialog.thinking_levels || []
+  } else if (baseLevels.length || curLevels.length) {
+    // 回到自动/不支持：显式传空数组清掉旧档位（旧约定，避免残留档位继续门控）
+    out.thinking_levels = []
+  }
+  return out
 }
 
 async function saveModel() {
@@ -865,21 +1159,20 @@ async function saveModel() {
   }
   modelDialog.saving = true
   try {
+    const cap = changedCapabilityFields()
+    // 视觉开关：新模型或实际变化时才提交（旧字段 multimodal 同步保持一致）
+    if (!modelDialog.id || !!modelDialog.supports_vision !== !!(modelDialog.base || {}).supports_vision) {
+      cap.supports_vision = !!modelDialog.supports_vision
+      cap.multimodal = !!modelDialog.supports_vision
+    }
     await assistantApi.providers.saveModel(modelDialog.providerId, {
       model_id: modelDialog.id || undefined,
       model: modelDialog.model.trim(),
-      context_size: modelDialog.context_size,
-      max_tokens: modelDialog.max_tokens,
-      // 视觉开关：新字段 supports_vision 为准，旧字段 multimodal 同步保持一致
-      supports_vision: modelDialog.supports_vision,
-      multimodal: modelDialog.supports_vision,
+      ...cap,
       enabled: modelDialog.enabled,
       // 温度留空传空串 = 跟随系统默认（后端约定）
       temperature: modelDialog.temperature ?? '',
       note: modelDialog.note.trim(),
-      supports_thinking: modelDialog.supports_thinking,
-      // 思考级别仅在手动标记「支持」时有意义，其余情况传空数组
-      thinking_levels: modelDialog.supports_thinking === 1 ? modelDialog.thinking_levels : [],
     })
     emit('refresh')
     modelDialog.visible = false
@@ -890,6 +1183,9 @@ async function saveModel() {
     modelDialog.saving = false
   }
 }
+
+// 恢复同步值：忙态在确认前生效，连点不会重复占锁
+const resettingModelId = ref(null)
 
 // 删除模型：破坏性操作，先弹可取消确认（取消 = 零请求）；
 // 忙态在确认前生效，连点不会重复占锁/重复删除
@@ -914,34 +1210,43 @@ async function removeModel(p, m) {
   emit('refresh')  // 与既有口径一致：失败也刷新，拉取后端真实模型列表
 }
 
-async function testProvider(p, kind) {
-  if (testingProvId.value) return  // 忙态防连点
-  const key = p.id + ':' + kind
-  testingProvId.value = key
+// 连通/工具/图片实测：工具与图片必须带该模型 model_id（不只测供应商第一个模型），
+//  verdict 三态（supported/rejected/unknown）：401/403/404/408/429/网络错误 = unknown，
+//  不显示成「❌ 不支持」，只如实说明未获得结论
+async function testProvider(p, kind, model) {
+  if (testingId.value) return  // 忙态防连点
+  const key = model ? model.id + ':' + kind : p.id + ':' + kind
+  testingId.value = key
   try {
     const { data } = await assistantApi.config.test({
       provider_id: p.id,
+      model_id: model ? model.id : undefined,
       test_tools: kind === 'tools',
       include_image: kind === 'image',
     })
     const lines = []
+    const target = model ? `（${model.model}）` : ''
     if (kind === 'text') {
       const t = data.text
       lines.push(t.ok ? `连通 ✅ ${t.latency_ms}ms · 回复：${t.reply}` : `连通 ❌ ${t.error}`)
     } else if (kind === 'tools') {
       const t = data.text, tt = data.tools
       if (!t.ok) lines.push(`连通失败：${t.error}`)
-      else lines.push(tt.ok ? `工具调用 ✅ ${tt.latency_ms}ms · 发起调用：${(tt.tool_calls || []).join(', ')}` : `工具调用 ❌ ${tt.error || '未发起调用'}`)
+      else if (tt.ok) lines.push(`工具调用 ✅ ${tt.latency_ms}ms${target} · 发起调用：${(tt.tool_calls || []).join(', ')}`)
+      else if (tt.verdict === 'unknown') lines.push(`工具调用 未确认${target}：${tt.error || '请求失败或超时，未获得结论'}`)
+      else lines.push(`工具调用 ❌${target} ${tt.error || '模型未发起调用'}`)
     } else {
       const t = data.text, img = data.image
       if (!t.ok) lines.push(`连通失败：${t.error}`)
-      else lines.push(img.ok ? `图片识别 ✅ ${img.latency_ms}ms · 识别：${img.reply}` : `图片识别 ❌ ${img.error || '模型不支持或无法识别'}`)
+      else if (img.ok) lines.push(`图片识别 ✅ ${img.latency_ms}ms${target} · 识别：${img.reply}`)
+      else if (img.verdict === 'unknown') lines.push(`图片识别 未确认${target}：${img.error || '请求失败或超时，未获得结论'}`)
+      else lines.push(`图片识别 ❌${target} ${img.error || '模型不支持或无法识别'}`)
     }
     provTestResult.value[p.id] = { ok: lines.every((l) => l.includes('✅')), lines }
   } catch {
     /* 拦截器已提示后端 detail；失败不写检测结果 */
   } finally {
-    testingProvId.value = null
+    testingId.value = null
   }
 }
 </script>
@@ -1003,6 +1308,54 @@ async function testProvider(p, kind) {
 
 .model-row.off {
   opacity: 0.55;
+}
+
+/* 首屏外的复杂模型卡延迟渲染：跳过布局/绘制直到临近视口。
+   必须配对 contain-intrinsic-size，否则离屏时高度塌缩造成滚动跳动。
+   不支持的浏览器忽略该属性，自然回退为常规渲染。 */
+.model-row--deferred {
+  content-visibility: auto;
+  contain-intrinsic-size: auto none 76px;
+}
+
+.model-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.model-search {
+  width: 200px;
+}
+
+.models-count {
+  font-size: 11px;
+  color: #909399;
+}
+
+.sync-summary {
+  font-size: 12px;
+  margin-top: 4px;
+  color: #529b2e;
+  word-break: break-all;
+}
+
+.sync-summary.warning {
+  color: #e6a23c;
+}
+
+.sync-summary.error {
+  color: #f56c6c;
+}
+
+.sync-warn,
+.sync-skip {
+  color: #909399;
+}
+
+.plan-hint {
+  margin-bottom: 4px;
 }
 
 .model-row-main {
@@ -1069,6 +1422,23 @@ async function testProvider(p, kind) {
 
 .prov-ops {
   margin-top: 4px;
+}
+
+.sync-override-cb {
+  margin-left: 8px;
+}
+
+.sync-override-cb :deep(.el-checkbox__label) {
+  font-size: 12px;
+  color: #e6a23c;
+}
+
+.sync-override-warn {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e6a23c;
+  word-break: break-all;
 }
 
 .prov-test {

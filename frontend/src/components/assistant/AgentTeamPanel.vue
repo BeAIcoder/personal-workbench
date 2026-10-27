@@ -12,7 +12,15 @@
           <el-button :loading="routeTesting" @click="runRouteTest">测试路由</el-button>
         </template>
       </el-input>
-      <div v-if="routeResult" class="route-result">
+      <el-checkbox v-model="routeIncludeLlm" :disabled="routeTesting" class="route-llm-option">
+        测试时调用 AI 仲裁
+      </el-checkbox>
+      <div v-if="routeResult" class="route-result" aria-live="polite">
+        <div class="route-summary">
+          <span class="route-state" :class="routePreviewState.kind">{{ routePreviewState.label }}</span>
+          <span class="route-need">{{ routeNeedsText }}</span>
+          <span class="route-by">（{{ routeResult.matched_by }}）</span>
+        </div>
         <template v-if="routeResult.matches && routeResult.matches.length">
           <span
             v-for="m in routeResult.matches"
@@ -20,11 +28,10 @@
             class="route-hit"
             :class="{ top: routeResult.routed === m.name }"
           >
-            {{ m.display_name }} · 命中 {{ m.hits }} · 得分 {{ m.score }}
+            {{ m.display_name }} · 命中 {{ m.hits }} · 得分 {{ m.score }} · {{ m.confidence === 'high' ? '高置信' : '低置信' }}
           </span>
-          <span class="route-by">（{{ routeResult.matched_by }}）</span>
         </template>
-        <span v-else class="route-none">无命中关键词，将走兜底专家 / 智能路由</span>
+        <span v-else class="route-none">无关键词候选</span>
       </div>
     </div>
 
@@ -167,8 +174,26 @@ const togglingId = ref(null)
 const routeText = ref('')
 const routeTesting = ref(false)
 const routeResult = ref(null)
+const routeIncludeLlm = ref(false)
 
 const hitNames = computed(() => new Set((routeResult.value?.matches || []).map((m) => m.name)))
+const routePreviewState = computed(() => {
+  const result = routeResult.value
+  if (!result) return { kind: '', label: '' }
+  if (result.matched_by === 'AI 调度') return { kind: 'direct', label: 'AI 仲裁' }
+  if (result.needs_llm) {
+    return result.include_llm
+      ? { kind: 'fallback', label: '回退' }
+      : { kind: 'pending', label: '待 AI 仲裁' }
+  }
+  if (result.matched_by === '默认' || result.matched_by === '关键词回退') {
+    return { kind: 'fallback', label: '回退' }
+  }
+  return { kind: 'direct', label: '直接匹配' }
+})
+const routeNeedsText = computed(() => (
+  routeResult.value ? `需要 AI 仲裁：${routeResult.value.needs_llm ? '是' : '否'}` : ''
+))
 
 async function runRouteTest() {
   const text = routeText.value.trim()
@@ -178,7 +203,7 @@ async function runRouteTest() {
   }
   routeTesting.value = true
   try {
-    const { data } = await assistantApi.agents.routeTest(text)
+    const { data } = await assistantApi.agents.routeTest(text, routeIncludeLlm.value)
     routeResult.value = data
   } catch {
     /* 拦截器已提示 */
@@ -371,6 +396,10 @@ defineExpose({ reload: loadAgents })
   margin-bottom: 12px;
 }
 
+.route-llm-option {
+  margin-top: 6px;
+}
+
 .route-result {
   margin-top: 6px;
   font-size: 12px;
@@ -378,6 +407,22 @@ defineExpose({ reload: loadAgents })
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+
+.route-summary {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.route-state {
+  color: #303133;
+  font-weight: 600;
+}
+
+.route-need {
+  color: #606266;
 }
 
 .route-hit {
