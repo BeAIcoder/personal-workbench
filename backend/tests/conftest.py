@@ -64,11 +64,14 @@ from app.main import app
 
 @pytest.fixture()
 def client():
+    # 丢弃上一个测试遗留的池化连接：避免后台线程持有旧连接与本次 DDL 并发（Windows access violation）
+    engine.dispose()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as c:
         yield c
     Base.metadata.drop_all(bind=engine)
+    engine.dispose()
 
 
 def pytest_sessionfinish(session, exitstatus):
