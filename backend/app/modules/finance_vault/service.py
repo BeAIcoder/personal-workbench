@@ -261,11 +261,13 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
                 ).fetchone()
             )
             if mode == "append" and exists:
-                con.execute(f'INSERT INTO "{table}" BY NAME SELECT * FROM staging_df')
+                # 关系 API 按列名追加（等价 INSERT ... BY NAME），表名不进 SQL 文本
+                con.append(table, df, by_name=True)
             else:
                 con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM staging_df')
-            rows = con.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
-            cols = [{"name": r[0], "type": str(r[1])} for r in con.execute(f'DESCRIBE "{table}"').fetchall()]
+            rel = con.table(table)
+            rows = rel.aggregate("count(*)").fetchone()[0]
+            cols = [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)]
         except ValueError:
             raise
         except duckdb.Error as exc:
