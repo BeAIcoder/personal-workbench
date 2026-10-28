@@ -15,6 +15,8 @@ pandas>=2.2,<3
 pdfplumber>=0.11,<1
 duckdb>=1.1,<2
 xlrd>=2.0,<3
+# xlsx 内部 XML 解析防实体扩展（financial_data_importer 上传文件解析）
+defusedxml>=0.7,<1
 # 纳税申报表 PDF 导出（services/tax_form_generator.export_a200000_pdf）
 reportlab>=4.0,<5
 # DPAPI（API Key 静态加密）硬依赖，仅 Windows 平台；缺失时应用拒绝启动（N-1/P0-4）

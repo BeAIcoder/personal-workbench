@@ -646,7 +646,6 @@ def export_a200000_excel(
 
 def export_a200000_pdf(
     form_data: A200000FormData,
-    output_path: Optional[str] = None,
 ) -> bytes:
     """
     导出A200000预缴申报表为PDF文件（使用reportlab）
@@ -658,10 +657,9 @@ def export_a200000_pdf(
 
     Args:
         form_data: A200000申报表数据
-        output_path: 输出文件路径（可选）
 
     Returns:
-        PDF文件的字节数据
+        PDF文件的字节数据（落盘由调用方决定，本函数不写文件系统）
     """
     try:
         from reportlab.lib.pagesizes import A4
@@ -868,12 +866,6 @@ def export_a200000_pdf(
     # 获取字节数据
     buffer.seek(0)
     pdf_bytes = buffer.read()
-
-    # 保存到文件
-    if output_path:
-        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
-        with open(output_path, "wb") as f:
-            f.write(pdf_bytes)
 
     return pdf_bytes
 

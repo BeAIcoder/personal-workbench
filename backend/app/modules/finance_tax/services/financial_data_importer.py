@@ -6,7 +6,6 @@ import io
 import logging
 import re
 import zipfile
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -24,6 +23,18 @@ except ImportError:  # pragma: no cover - 集成共享模块后不存在该分�
     MAX_IMPORT_ROWS = None
 
 logger = logging.getLogger(__name__)
+
+# XML 实体扩展防护：xlsx 内部 XML（sharedStrings/sheet）来自上传文件，统一经
+# defusedxml 解析（禁 DTD/实体扩展）；配合输入大小上限封死 billion-laughs 面。
+_XLSX_XML_MAX_BYTES = 64 * 1024 * 1024
+from defusedxml import ElementTree as _SafeET
+
+
+def _parse_xlsx_xml(data: bytes, part: str):
+    """解析 xlsx 内部 XML 部件（defusedxml：拒绝 DTD/实体扩展），data 超限同样拒绝。"""
+    if len(data) > _XLSX_XML_MAX_BYTES:
+        raise ValueError(f"xlsx 部件 {part} 过大（{len(data)} 字节 > {_XLSX_XML_MAX_BYTES}），已拒绝解析")
+    return _SafeET.fromstring(data)
 
 
 class ImportRowLimitExceeded(ValueError):
@@ -204,14 +215,14 @@ class FinancialSystemXmlParser:
             ss_xml = zf.read("xl/sharedStrings.xml")
         except KeyError:
             return []
-        root = ET.fromstring(ss_xml)
+        root = _parse_xlsx_xml(ss_xml, "xl/sharedStrings.xml")
         return [t.text for t in root.findall(".//ss:t", cls.SPREADSHEET_NS)]
 
     @classmethod
     def _read_sheet(cls, zf: zipfile.ZipFile, shared_strings: List[str]) -> List[Dict[str, Any]]:
         """读取工作表数据"""
         sheet_xml = zf.read("xl/worksheets/sheet1.xml")
-        root = ET.fromstring(sheet_xml)
+        root = _parse_xlsx_xml(sheet_xml, "xl/worksheets/sheet1.xml")
         rows = []
         for row in root.findall(".//ss:row", cls.SPREADSHEET_NS):
             cells = {}
