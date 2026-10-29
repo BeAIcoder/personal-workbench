@@ -375,16 +375,29 @@ RAG 笔记检索（BM25 + 中文 bigram 分词，零外部依赖离线可用；�
 
 记忆字段：`content` 内容（必填，≤2000 字）、`source` 来源（`manual` 手动 / `auto` 对话抽取）、`tags` 标签数组、`pinned` 是否置顶、`hit_count` 命中次数（召回命中自动累计）、`created_at`。与既有记忆近重复（前 80 字互相包含）时拒存，返回 400。
 
-#### GET /api/knowledge/memories?keyword=
-记忆列表（置顶在前、id 倒序，最多 100 条；`keyword` 按内容过滤）：`{ "items": [ { "id", "content", "source", "session_id", "tags", "pinned", "hit_count", "created_at" } ] }`
+#### GET /api/knowledge/memories?keyword=&type=
+记忆列表（置顶在前、id 倒序，最多 100 条；`keyword` 按内容过滤，`type` 按类型过滤 v1.17.0）：`{ "items": [ { "id", "content", "source", "type", "session_id", "tags", "pinned", "hit_count", "created_at" } ] }`
 
 #### POST /api/knowledge/memories（返回 201）
 ```json
-{ "content": "企业所得税汇算清缴截止 5 月 31 日", "tags": ["税务"], "pinned": false }
+{ "content": "企业所得税汇算清缴截止 5 月 31 日", "tags": ["税务"], "pinned": false, "type": "reference" }
 ```
+`type` 可选：`user`（用户画像）/`feedback`（纠正偏好）/`project`（项目背景）/`reference`（参考线索）/空（未分类）；检索时 user/feedback 类加权 +0.5（v1.17.0）。
+
+#### GET /api/knowledge/memories/stats（v1.17.0）
+统计：`{ "total", "by_source", "by_type", "pinned", "top_hits": [{id, content, hit_count}] }`。
+
+#### GET /api/knowledge/memories/export.md（v1.17.0）
+导出全部记忆为 MEMORY.md 风格 Markdown（`## 类型` 分节 + `- 条目`，置顶带标记；zcode/WorkBuddy 兼容）。
+
+#### POST /api/knowledge/memories/import.md（v1.17.0）
+```json
+{ "text": "## project\n- 条目一\n- 条目二" }
+```
+`## 类型节` 解析为 type（仅四类白名单生效），`- 行` 为条目；近重复自动跳过。返回 `{added, skipped}`。
 
 #### PUT /api/knowledge/memories/{id}
-部分更新 `content` / `tags` / `pinned`；不存在返回 404，内容为空返回 400。
+部分更新 `content` / `tags` / `pinned` / `type`；不存在返回 404，内容为空返回 400。
 
 #### DELETE /api/knowledge/memories/{id}
 返回 `{"ok": true}`；不存在返回 404。
@@ -476,6 +489,10 @@ name 重复或必填缺失返回 400。
 | finance_board 报表看板 | `/api/finance/board` | `GET /snapshots`（快照列表，最多 50 条，时间倒序）、`POST /run`（触发管线）、`GET /latest`、`GET /snapshots/{id}/html`（iframe 嵌入） |
 | finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行，表单必填 `actual_month` 1~12）、`POST /runs/{id}/execute`、`GET /runs`（分页）、`GET /runs/{id}`（运行详情）、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP） |
 | finance_pos POS 对账 | `/api/finance/pos` | 同上（无 actual_month 参数），含 `GET /runs/{id}` 运行详情 |
+| finance_stamp_duty 印花税填报（v1.17.0） | `/api/finance/stamp-duty` | `GET /tax-items`（税目税率表）、`POST /filings`（period/taxpayer_name/half_discount/items[{tax_item,amount,exempt}] 创建并计算）、`GET /filings`、`GET /filings/{id}`、`DELETE /filings/{id}`、`POST /filings/{id}/export`、`GET /filings/{id}/download` |
+| finance_vat 增值税填报（v1.17.0） | `/api/finance/vat` | `POST /filings`（taxpayer_type=general：output_items[{business_type,amount,rate}] + input_vat；small_scale：sales_amount + levy_rate，季度 30 万免征与 1% 征收率按 19号公告有效期校验）、其余同上 CRUD/导出/下载 |
+| finance_iit 个人所得税填报（v1.17.0） | `/api/finance/iit` | `GET /standards`（专项附加扣除标准，国发〔2023〕13号）、`POST /filings`（year + rows[{month,name,salary,social_insurance,special_additional,other_deductions}]，累计预扣法逐月模拟）、其余同上 CRUD/导出/下载 |
+| finance_dsf 残保金填报（v1.17.0） | `/api/finance/dsf` | `POST /filings`（year/total_employees/total_salary/disabled_employees/ratio 默认 1.5%，30 人免征 + 分档减收按 8号公告校验）、其余同上 CRUD/导出/下载 |
 
 ### 财务模块上传与行数护栏
 
@@ -569,6 +586,16 @@ run_id 形如 `20261013-153000_recon`；有错误的页面/失败用例自动建
 - 专家团文件：`backend/data/expert-packs/<name>.md`（frontmatter: name/label/emoji/color/description/keywords/tools/sort + 正文角色提示词），导入为 upsert（工具白名单取并集，导入不缩减），导出把数据库专家写回文件
 - `GET /api/experts/packs` 每项含 `diff`（差异简述）与 `diff_fields`（差异字段名列表，如 `["显示名","角色提示词"]`，供界面列出具体差异项）
 - 模块工具预置：模块 manifest 声明 `preset_experts`，加载时把模块工具幂等合并进指定专家白名单（如财税专员自动获得全部财务模块工具）
+
+### WorkBuddy 同步导入（v1.17.0）
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/assistant/workbuddy/scan?home=` | 只读扫描本机 WorkBuddy 数据目录（默认 `~/.workbuddy`，可被设置/env `WORKBUDDY_HOME` 覆盖）：`{home, available, skills[], memories[], identity_files[]}` |
+| `POST /api/assistant/workbuddy/import` | `{home, skills, memories, identity, dry_run}` 执行幂等导入：技能包整目录进技能池（**新包默认停用**）、MEMORY.md 分节进 memories（source=import，agent-hub 托管块剔除）、SOUL/IDENTITY/USER/BOOTSTRAP → 专家包草稿 `workbuddy-*.md`；返回三组 added/updated/skipped/failed |
+| `GET/PUT /api/assistant/workbuddy/settings` | 导入设置（home 路径）与上次导入结果（`backend/data/workbuddy_import.json`） |
+
+CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] [--skills-only]`。
 
 ### 模型能力探测与厂商预设（v1.14.0）
 

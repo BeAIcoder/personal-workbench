@@ -2,6 +2,16 @@
 
 > 本文件是项目级长期记忆：跨会话保持的状态、约定与待办。Hub 级记忆（脱敏钥匙等）见 Agent Hub，不在此重复。
 
+## 2026-10-30 五部分工作轮（实测/政策/四填报/WorkBuddy/知识记忆）
+
+- **Part A 实测**：八项现有功能（数据仓/费用/发票/个人记账/BIP/企业所得税/现金流 + MCP/技能/专家团/知识记忆）以脱敏数据隔离实测 **31/31 全绿**（API+浏览器 0 console errors），现金流引擎 0.81–0.85s；发票**跨批次重复识别**与 BIP **幂等导入**为正确设计。证据 `backend/.pytest_tmp/verify-20261030-features/`。
+- **Part B 政策**：新 `finance_tax/config/policy_validity.py`——9 条政策统一登记公告号+生效/失效（POLICY_REGISTRY + policy_status 三态），税率项/优惠规则补 policy_basis/expires_date；所得税计算器接 `tax_year`（过期小微 400 中文拒绝，不静默套 5%）；政策管理页可见有效期摘要。**新增填报模块计税前必须查 policy_status。**
+- **Part C 四填报模块**：`finance_stamp_duty`（印花税 13 税目+六税两费减半）、`finance_vat`（一般/小规模双模式，1% 与 30 万免征按期校验）、`finance_iit`（累计预扣法逐月模拟+国发13号标准）、`finance_dsf`（残保金 30 人免征+分档减收）；每模块 计算落库+openpyxl 底稿导出+中文 400；菜单 order 81-84。
+- **Part D WorkBuddy 同步**：`agents/workbuddy_sync.py` + `/api/assistant/workbuddy/{scan,import,settings}` + CLI `scripts/import_workbuddy.py`；技能包导入**默认停用**、记忆走近重复去重、SOUL/IDENTITY/USER/BOOTSTRAP → 专家包草稿；MEMORY.md 的 **agent-hub 托管块剔除**；设置持久化 `backend/data/workbuddy_import.json`。真实导入 11 技能+6 记忆+4 身份草稿已执行，幂等复跑全 updated/skipped。
+- **Part E 知识记忆**：memories `type` 四类（user/feedback/project/reference，检索加权 +0.5）、`/memories/stats`、`export.md`/`import.md`（zcode/WorkBuddy 兼容格式）、`agent_settings.memory_inject_max` 注入预算。**坑：0 是合法预算值，save/recall 两侧必须 `is None` 判定（falsy bug 已修并有测试锁定）。**
+- **Part F 三绿**：后端 **1205 passed**、前端 **777 passed**、构建通过。真实数据终检 196 文件全部可归因（导入产物 + 2 处预期状态变化）；新表/新列待服务重启自动迁移。
+- **工程约定补充**：① 新前端视图的请求必须过 `no-unhandled-request` 静态守卫（一律 try/catch）；② 新增填报类模块参照四模块样板（manifest requires finance_tax + calc 落库 + xlsx 导出）；③ pre-commit 扫描器（Mimosa）对 dev-CLI 的 argv→文件系统污点链敏感——CLI 参数入口要么经边界收敛要么删除；④ 编辑长文件易损坏，**写后必须 py_compile/vitest/build 验证**（本轮自纠 10+ 处占位符噪声）。
+
 ## 项目
 
 Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLite / Vue 3 + Vite + Element Plus）。开发进度与验证史见 `progress.md`（本地文件，gitignore 管理，不入库）。
