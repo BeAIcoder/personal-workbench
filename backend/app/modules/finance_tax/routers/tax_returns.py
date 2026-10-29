@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from ....database import get_db
 from ..models import TaxReturn, TaxAdjustment, Enterprise
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 from datetime import datetime
 from fastapi.responses import StreamingResponse
 import io
@@ -75,8 +75,7 @@ class TaxReturnResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 def calculate_tax(return_data: dict) -> dict:
     """计算税额"""

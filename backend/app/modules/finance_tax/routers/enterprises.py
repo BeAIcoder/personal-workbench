@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from ....database import get_db
 from ..models import Enterprise
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
 router = APIRouter(prefix="/enterprises", tags=["企业信息"])
@@ -44,8 +44,7 @@ class EnterpriseResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 @router.get("/", response_model=List[EnterpriseResponse])
 async def get_enterprises(skip: int = Query(0, ge=0, description="跳过记录数"),

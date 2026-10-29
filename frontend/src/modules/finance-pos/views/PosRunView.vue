@@ -57,7 +57,7 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import { takeFiles } from '../../_shared/fileInput'
 
@@ -132,14 +132,34 @@ async function create() {
   }
 }
 
-async function execute(row) {
+async function execute(row, project = '') {
   runningId.value = row.id
   try {
-    const { data } = await api.post(`/finance/pos/runs/${row.id}/execute`, {}, { timeout: 600000 })
+    const query = project && project.trim() ? `?project=${encodeURIComponent(project.trim())}` : ''
+    const { data } = await api.post(`/finance/pos/runs/${row.id}/execute${query}`, {}, { timeout: 600000 })
     ElMessage.success(data.status === 'ok' ? `执行完成，产物 ${data.artifacts.length} 个` : `执行失败：${data.error}`)
     await load()
-  } catch {
-    /* 拦截器已统一提示 */
+  } catch (err) {
+    // 引擎无法从辅助明细账自动识别项目（错误要求 --project）时，后端支持 project 参数
+    // 但此前 UI 无处填写——弹窗补填后带参重试一次，其余错误维持拦截器统一提示
+    const detail = err?.response?.data?.detail || ''
+    if (!project && (detail.includes('--project') || detail.includes('识别项目'))) {
+      try {
+        const { value } = await ElMessageBox.prompt(
+          '引擎无法自动识别或匹配项目，请输入台账中的项目名（可用项目名见错误提示）后重试',
+          '指定项目',
+          { confirmButtonText: '重试执行', cancelButtonText: '取消' },
+        )
+        if (value && value.trim()) {
+          runningId.value = null
+          return execute(row, value)
+        }
+      } catch {
+        /* 用户取消 */
+      }
+    } else {
+      /* 拦截器已统一提示 */
+    }
     await load()
   } finally {
     runningId.value = null

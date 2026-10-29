@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -297,7 +298,22 @@ def execute_run(db: Session, run_id: int, project: str | None = None) -> dict:
     except subprocess.CalledProcessError as exc:
         run.status = "failed"
         run.error = f"引擎步骤失败：{exc.cmd}"
-        run.log_tail = "\n".join(logs) + "\n" + (exc.stderr or "")[-2000:]
+        stderr_text = exc.stderr or ""
+        run.log_tail = "\n".join(logs) + "\n" + stderr_text[-2000:]
+        # 引擎项目识别/匹配失败时，把「需指定项目 + 可用项目名」并入 error/503 detail：
+        # 前端据此弹窗补填项目名后带 ?project 重试（否则 UI 用户无法满足 --project 要求）。
+        # 可用项目名从引擎 stderr 的「项目汇总: 脱敏街区:2天 / 园城:0天 / 金阶:0天」行解析。
+        if "识别项目" in stderr_text or "--project" in stderr_text or "未找到项目" in stderr_text:
+            names = ""
+            m = re.search(r"项目汇总[:：]\s*(.+)", stderr_text)
+            if m:
+                names = "/".join(
+                    part.split(":", 1)[0].strip()
+                    for part in re.split(r"[/／|]", m.group(1))
+                    if part.split(":", 1)[0].strip()
+                )
+            run.error += "（引擎无法自动识别项目，需指定项目名后重试"
+            run.error += f"；可用项目名：{names}）" if names else "）"
         run.elapsed_sec = round(time.perf_counter() - t0, 2)
         db.commit()
         raise EngineUnavailableError(run.error) from None

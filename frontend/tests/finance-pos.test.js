@@ -20,6 +20,7 @@ vi.mock('vue', async (importOriginal) => {
 
 vi.mock('element-plus', () => ({
   ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
+  ElMessageBox: { prompt: vi.fn() },
 }))
 
 vi.mock('../src/api', () => {
@@ -33,7 +34,7 @@ vi.mock('../src/api', () => {
   return { default: api, API_BASE: '/api' }
 })
 
-const { ElMessage } = await import('element-plus')
+const { ElMessage, ElMessageBox } = await import('element-plus')
 const PosRunView = (await import('../src/modules/finance-pos/views/PosRunView.vue')).default
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -124,5 +125,75 @@ describe('finance-pos 上传前大小提示（swarm pos-hardening）', () => {
     const tpl = src.split('<script setup>')[0]
     expect(tpl).toContain('50MB')
     expect(tpl).toContain('100MB')
+  })
+})
+
+describe('finance-pos 执行失败补填项目重试（--project）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function mount() {
+    return PosRunView.setup({}, { expose: () => {}, emit: () => {} })
+  }
+
+  const row = { id: 7, status: 'uploaded' }
+  const PROJECT_ERR = { response: { status: 503, data: { detail: '引擎步骤失败：analyze_pos_reconciliation.py' } } }
+  const okResp = { data: { status: 'ok', artifacts: ['POS项目台账.xlsx'], error: null } }
+
+  it('识别失败（detail 含 --project）→ 弹窗补填 → 带 ?project 重试且成功', async () => {
+    const api = (await import('../src/api')).default
+    api.get.mockResolvedValue({ data: { items: [] } })
+    api.post
+      .mockRejectedValueOnce({ ...PROJECT_ERR, response: { ...PROJECT_ERR.response, data: { detail: 'ValueError: 无法从辅助明细账识别项目，请使用 --project 指定' } } })
+      .mockResolvedValueOnce(okResp)
+    ElMessageBox.prompt.mockResolvedValue({ value: '脱敏街区' })
+
+    const ctx = mount()
+    await ctx.execute(row)
+
+    expect(ElMessageBox.prompt).toHaveBeenCalledTimes(1)
+    expect(ElMessageBox.prompt.mock.calls[0][0]).toContain('识别或匹配项目')
+    expect(api.post).toHaveBeenCalledTimes(2)
+    expect(api.post.mock.calls[1][0]).toBe('/finance/pos/runs/7/execute?project=%E8%8C%B6%E9%A9%AC%E8%8A%B1%E8%A1%97')
+    expect(ElMessage.success).toHaveBeenCalledWith('执行完成，产物 1 个')
+  })
+
+  it('首次执行成功时不弹窗、POST 不带 query 参数（既有行为不变）', async () => {
+    const api = (await import('../src/api')).default
+    api.get.mockResolvedValue({ data: { items: [] } })
+    api.post.mockResolvedValueOnce(okResp)
+
+    const ctx = mount()
+    await ctx.execute(row)
+
+    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(api.post.mock.calls[0][0]).toBe('/finance/pos/runs/7/execute')
+    expect(ElMessageBox.prompt).not.toHaveBeenCalled()
+  })
+
+  it('非项目类失败不弹窗', async () => {
+    const api = (await import('../src/api')).default
+    api.get.mockResolvedValue({ data: { items: [] } })
+    api.post.mockRejectedValueOnce(PROJECT_ERR)
+
+    const ctx = mount()
+    await ctx.execute(row)
+
+    expect(ElMessageBox.prompt).not.toHaveBeenCalled()
+    expect(api.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('弹窗取消或留空 → 不重试', async () => {
+    const api = (await import('../src/api')).default
+    api.get.mockResolvedValue({ data: { items: [] } })
+    api.post.mockRejectedValueOnce({ ...PROJECT_ERR, response: { ...PROJECT_ERR.response, data: { detail: '请使用 --project 指定' } } })
+    ElMessageBox.prompt.mockRejectedValueOnce(new Error('cancel'))
+
+    const ctx = mount()
+    await ctx.execute(row)
+
+    expect(ElMessageBox.prompt).toHaveBeenCalledTimes(1)
+    expect(api.post).toHaveBeenCalledTimes(1)
   })
 })

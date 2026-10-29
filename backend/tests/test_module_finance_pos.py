@@ -356,3 +356,54 @@ def test_shared_upload_reader_wired_into_pos_router():
     from app.upload import read_upload_limited as shared_reader
 
     assert pos_router.read_upload_limited is shared_reader
+
+
+STUB_ANALYZE_NEEDS_PROJECT = '''
+import argparse, sys
+from pathlib import Path
+p = argparse.ArgumentParser()
+p.add_argument("--root", type=Path)
+p.add_argument("--project", default=None)
+p.add_argument("--pos", type=Path, default=None)
+a = p.parse_args()
+sys.stderr.write("项目汇总: 脱敏街区:2天 / 园城:0天 / 金阶:0天\\n")
+if not a.project:
+    sys.stderr.write("ValueError: 无法从辅助明细账识别项目，请使用 --project 指定\\n")
+    sys.exit(1)
+if a.project not in ("脱敏街区", "园城", "金阶"):
+    sys.stderr.write("ValueError: POS 台账里未找到项目 %s 的原始明细。\\n" % a.project)
+    sys.exit(1)
+(a.root / "POS差异分析_标注.xlsx").write_text("stub-diff", encoding="utf-8")
+(a.root / "差异分析报告.md").write_text("# stub diff report", encoding="utf-8")
+print("stub analyze done")
+'''
+
+
+def test_execute_project_inference_failure_marks_error_for_retry(client, pos_dir):
+    """引擎要求 --project 时：503 detail 与运行记录 error 均带「识别项目」与可用项目名，
+    前端据此弹窗补填项目名后带 ?project 重试（此前 UI 无处填写，用户无解）。"""
+    engine = pos_dir.parent / "pos_engine"
+    (engine / "analyze_pos_reconciliation.py").write_text(STUB_ANALYZE_NEEDS_PROJECT, encoding="utf-8")
+    r = client.post(f"{P}/runs", files=[
+        ("files", _xlsx("认领记录.xlsx")),
+        ("files", _xlsx("辅助明细账.xlsx")),
+    ])
+    assert r.status_code == 201
+    run_id = r.json()["id"]
+
+    ex = client.post(f"{P}/runs/{run_id}/execute")
+    assert ex.status_code == 503
+    detail = ex.json()["detail"]
+    assert "识别项目" in detail and "可用项目名：脱敏街区/园城/金阶" in detail, detail
+
+    runs = {x["id"]: x for x in client.get(f"{P}/runs").json()["items"]}
+    assert "需指定项目名" in runs[run_id]["error"]
+
+    # 带错误项目名重试：仍失败但再次给出可用项目名（可继续修正）
+    ex_bad = client.post(f"{P}/runs/{run_id}/execute?project=脱敏街区")
+    assert ex_bad.status_code == 503 and "可用项目名" in ex_bad.json()["detail"]
+
+    # 带正确项目名重试：--project 透传引擎，执行成功、可重跑
+    ex2 = client.post(f"{P}/runs/{run_id}/execute?project=脱敏街区")
+    assert ex2.status_code == 200, ex2.text
+    assert ex2.json()["status"] == "ok"

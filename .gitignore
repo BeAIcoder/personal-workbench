@@ -100,3 +100,6 @@ backend/teeth_debug/
 backend/xls_smoke__*/
 backend/xls_smoke_*/
 脱敏数据/
+
+# Playwright MCP 页面快照（调试产物：含真实业务名的无障碍快照，永不入库）
+.playwright-mcp/
