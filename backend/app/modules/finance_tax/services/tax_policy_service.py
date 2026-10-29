@@ -2,6 +2,7 @@
 税收政策服务模块
 提供税率和税收优惠规则的查询服务
 """
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from ..config.tax_rates import (
@@ -44,6 +45,24 @@ from ..config.tax_rules import (
     calculate_employee_education_limit,
     calculate_labor_union_fund_limit,
 )
+from ..config.policy_validity import POLICY_REGISTRY, policy_status
+
+
+def policy_validity_summary() -> list[dict]:
+    """政策有效期登记表快照（Part B）：政策依据 + 生效/失效期 + 当前年度状态。"""
+    current_year = datetime.now().year
+    items = []
+    for key, pv in POLICY_REGISTRY.items():
+        status = policy_status(key, current_year)
+        items.append({
+            "policy_key": key,
+            "policy_basis": pv.policy_basis,
+            "effective_date": pv.effective_date,
+            "expires_date": pv.expires_date,
+            "current_status": status["status"],
+            "message": status["message"],
+        })
+    return items
 
 
 class TaxPolicyService:
@@ -526,4 +545,5 @@ class TaxPolicyService:
                     "machine_tool": f"{int(get_rd_deduction_rate('工业母机企业') * 100)}%",
                 },
             },
+            "policy_validity": policy_validity_summary(),
         }

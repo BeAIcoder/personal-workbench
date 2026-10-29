@@ -77,6 +77,7 @@ class EnterpriseInfo:
     is_high_tech: bool = False           # 是否高新技术企业
     enterprise_type: str = "一般企业"     # 企业类型（用于研发加计扣除）
     advertising_industry: IndustryType = IndustryType.GENERAL  # 广告费行业类型
+    tax_year: str = ""                   # 所属年度（可选）：小微优惠政策有效期校验用
 
 
 @dataclass
@@ -118,6 +119,7 @@ class CalculationResult:
 
     # 税额计算
     tax_amount: float = 0.0                 # 应纳所得税额（万元）
+    policy_status: str = ""                 # 优惠政策有效期状态（valid，未校验时空）
 
 
 # ============================================================
@@ -686,6 +688,7 @@ class CorporateIncomeTaxCalculator:
     def calculate_tax_amount(
         taxable_income_wan: float,
         enterprise_tax_type: EnterpriseTaxType,
+        tax_year: str | int | None = None,
     ) -> Dict[str, Any]:
         """
         计算应纳所得税额
@@ -693,9 +696,11 @@ class CorporateIncomeTaxCalculator:
         Args:
             taxable_income_wan: 应纳税所得额（万元）
             enterprise_tax_type: 企业类型
+            tax_year: 所属年度（可选）；传参时对小微优惠做政策有效期校验
+                （过期/未生效时抛 ValueError 中文提示，不静默套用 5%）
 
         Returns:
-            税额计算结果
+            税额计算结果（含 policy_status 政策状态，未传 tax_year 时不校验）
         """
         if taxable_income_wan <= 0:
             return {
@@ -707,15 +712,24 @@ class CorporateIncomeTaxCalculator:
             }
 
         rate = CorporateIncomeTaxCalculator.get_applicable_tax_rate(enterprise_tax_type)
-        tax_amount = taxable_income_wan * rate
 
-        # 小型微利企业特殊说明
+        # 小型微利企业特殊说明（tax_year 传参时校验 12号公告有效期）
+        policy_status_value = ""
         reason = ""
         if enterprise_tax_type == EnterpriseTaxType.SMALL_MICRO:
+            if tax_year is not None:
+                from ..config.policy_validity import policy_status
+                status = policy_status("small_micro_5pct", tax_year)
+                if not status["valid"]:
+                    raise ValueError(status["message"])
+                policy_status_value = status["status"]
             reason = (
                 f"小型微利企业优惠：应纳税所得额{taxable_income_wan:.2f}万元 "
                 f"× 25%（计入应纳税所得额比例）× 20%（优惠税率）= 实际税负5%"
             )
+            if tax_year is not None:
+                from ..config.policy_validity import POLICY_REGISTRY
+                reason += f"（{POLICY_REGISTRY['small_micro_5pct'].policy_basis}，至 2027-12-31）"
         elif enterprise_tax_type == EnterpriseTaxType.HIGH_TECH:
             reason = "高新技术企业优惠税率15%"
         else:
@@ -725,8 +739,9 @@ class CorporateIncomeTaxCalculator:
             "taxable_income_wan": taxable_income_wan,
             "enterprise_tax_type": enterprise_tax_type.value,
             "applicable_rate": rate,
-            "tax_amount_wan": round(tax_amount, 2),
+            "tax_amount_wan": round(tax_amount_wan := taxable_income_wan * rate, 2),
             "reason": reason,
+            "policy_status": policy_status_value,
         }
 
     # ============================================================
@@ -825,7 +840,9 @@ class CorporateIncomeTaxCalculator:
         tax_result = CorporateIncomeTaxCalculator.calculate_tax_amount(
             taxable_income_wan=result.taxable_income_after_loss,
             enterprise_tax_type=enterprise_tax_type,
+            tax_year=enterprise_info.tax_year or None,
         )
         result.tax_amount = tax_result["tax_amount_wan"]
+        result.policy_status = tax_result.get("policy_status", "")
 
         return result

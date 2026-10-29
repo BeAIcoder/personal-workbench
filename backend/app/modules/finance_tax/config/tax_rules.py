@@ -41,6 +41,10 @@ class SmallMicroEnterpriseCriteria:
     restricted_industries: List[str] = field(default_factory=lambda: [
         "国家限制和禁止行业",
     ])
+    # 政策依据与有效期（Part B：12号公告至 2027-12-31）
+    policy_basis: str = "财政部 税务总局公告2023年第12号"
+    effective_date: str = "2023-01-01"
+    expires_date: str = "2027-12-31"
 
     def is_qualified(
         self,
@@ -111,6 +115,10 @@ class RDExpenseSuperDeductionRule:
     deduction_rate: float  # 加计扣除比例，1.0 表示 100%，1.2 表示 120%
     applicable_enterprises: List[str]  # 适用企业类型
     description: str
+    # 政策依据与有效期（Part B）：7号公告长期；44号公告至 2027-12-31
+    policy_basis: str = ""
+    effective_date: str = "2023-01-01"
+    expires_date: Optional[str] = None
 
 
 RD_EXPENSE_SUPER_DEDUCTION_RULES: List[RDExpenseSuperDeductionRule] = [
@@ -119,18 +127,24 @@ RD_EXPENSE_SUPER_DEDUCTION_RULES: List[RDExpenseSuperDeductionRule] = [
         deduction_rate=1.0,  # 100%加计扣除
         applicable_enterprises=["一般企业"],
         description="一般企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，在按规定据实扣除的基础上，再按照实际发生额的100%在税前加计扣除",
+        policy_basis="财政部 税务总局公告2023年第7号",
+        expires_date=None,
     ),
     RDExpenseSuperDeductionRule(
         name="集成电路企业研发费用加计扣除",
         deduction_rate=1.2,  # 120%加计扣除
         applicable_enterprises=["集成电路企业"],
         description="集成电路企业和工业母机企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，在按规定据实扣除的基础上，再按照实际发生额的120%在税前加计扣除",
+        policy_basis="财政部 税务总局 国家发展改革委 工业和信息化部公告2023年第44号",
+        expires_date="2027-12-31",
     ),
     RDExpenseSuperDeductionRule(
         name="工业母机企业研发费用加计扣除",
         deduction_rate=1.2,  # 120%加计扣除
         applicable_enterprises=["工业母机企业"],
         description="集成电路企业和工业母机企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，在按规定据实扣除的基础上，再按照实际发生额的120%在税前加计扣除",
+        policy_basis="财政部 税务总局 国家发展改革委 工业和信息化部公告2023年第44号",
+        expires_date="2027-12-31",
     ),
 ]
 

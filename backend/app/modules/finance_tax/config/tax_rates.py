@@ -43,6 +43,9 @@ class TaxRateItem:
     effective_date: str = "2026-01-01"
     is_preferential: bool = False  # 是否为优惠税率
     conditions: Optional[Dict[str, any]] = None  # 适用条件
+    # 政策依据（公告号/法条）与失效期（None=长期）——Part B 政策有效期登记
+    policy_basis: str = ""
+    expires_date: Optional[str] = None
 
 
 @dataclass
@@ -68,6 +71,7 @@ CORPORATE_INCOME_TAX_RATES = TaxRateConfig(
             rate=0.25,
             description="企业所得税标准税率",
             is_preferential=False,
+            policy_basis="《中华人民共和国企业所得税法》第四条",
         ),
         TaxRateItem(
             name="高新技术企业优惠税率",
@@ -78,6 +82,7 @@ CORPORATE_INCOME_TAX_RATES = TaxRateConfig(
                 "require_certification": True,
                 "certification_type": "高新技术企业",
             },
+            policy_basis="《中华人民共和国企业所得税法》第二十八条",
         ),
         TaxRateItem(
             name="小型微利企业实际税负",
@@ -90,6 +95,8 @@ CORPORATE_INCOME_TAX_RATES = TaxRateConfig(
                 "taxable_income_max": 3_000_000,  # 300万
                 "not_restricted_industry": True,
             },
+            policy_basis="财政部 税务总局公告2023年第12号",
+            expires_date="2027-12-31",
         ),
     ],
 )
@@ -111,6 +118,7 @@ VALUE_ADDED_TAX_RATES = TaxRateConfig(
             description="销售或者进口货物（除另有规定外）",
             is_preferential=False,
             conditions={"taxpayer_type": VATTaxpayerType.GENERAL, "business_type": "销售货物"},
+            policy_basis="《中华人民共和国增值税暂行条例》第二条",
         ),
         TaxRateItem(
             name="一般纳税人-交通运输",
@@ -118,6 +126,7 @@ VALUE_ADDED_TAX_RATES = TaxRateConfig(
             description="交通运输服务、邮政服务、基础电信服务、建筑服务、不动产租赁服务、销售不动产、转让土地使用权",
             is_preferential=False,
             conditions={"taxpayer_type": VATTaxpayerType.GENERAL, "business_type": "交通运输等"},
+            policy_basis="《中华人民共和国增值税暂行条例》第二条",
         ),
         TaxRateItem(
             name="一般纳税人-现代服务",
@@ -125,14 +134,17 @@ VALUE_ADDED_TAX_RATES = TaxRateConfig(
             description="现代服务（研发和技术服务、信息技术服务、文化创意服务、物流辅助服务、鉴证咨询服务等）、生活服务、金融服务、无形资产（除土地使用权外）",
             is_preferential=False,
             conditions={"taxpayer_type": VATTaxpayerType.GENERAL, "business_type": "现代服务"},
+            policy_basis="《中华人民共和国增值税暂行条例》第二条",
         ),
         # 小规模纳税人征收率
         TaxRateItem(
             name="小规模纳税人征收率",
             rate=0.01,
-            description="2026年小规模纳税人增值税优惠政策，减按1%征收率征收",
+            description="小规模纳税人适用3%征收率的应税销售收入减按1%征收率征收（优惠延续至2027年底）",
             is_preferential=True,
             conditions={"taxpayer_type": VATTaxpayerType.SMALL_SCALE},
+            policy_basis="财政部 税务总局公告2023年第19号",
+            expires_date="2027-12-31",
         ),
         # 免税政策
         TaxRateItem(
@@ -145,6 +157,8 @@ VALUE_ADDED_TAX_RATES = TaxRateConfig(
                 "monthly_sales_max": 100_000,
                 "quarterly_sales_max": 300_000,
             },
+            policy_basis="财政部 税务总局公告2023年第19号",
+            expires_date="2027-12-31",
         ),
     ],
 )
@@ -166,6 +180,7 @@ ADDITIONAL_TAX_RATES = TaxRateConfig(
             description="纳税人所在地在市区的，按7%征收",
             is_preferential=False,
             conditions={"city_tier": CityTier.URBAN},
+            policy_basis="《中华人民共和国城市维护建设税法》第四条",
         ),
         TaxRateItem(
             name="城市维护建设税-县镇",
@@ -173,6 +188,7 @@ ADDITIONAL_TAX_RATES = TaxRateConfig(
             description="纳税人所在地在县镇的，按5%征收",
             is_preferential=False,
             conditions={"city_tier": CityTier.COUNTY_TOWN},
+            policy_basis="《中华人民共和国城市维护建设税法》第四条",
         ),
         TaxRateItem(
             name="城市维护建设税-其他",
@@ -180,6 +196,7 @@ ADDITIONAL_TAX_RATES = TaxRateConfig(
             description="纳税人所在地不在市区、县镇的，按1%征收",
             is_preferential=False,
             conditions={"city_tier": CityTier.OTHER},
+            policy_basis="《中华人民共和国城市维护建设税法》第四条",
         ),
         # 教育费附加
         TaxRateItem(
@@ -187,6 +204,7 @@ ADDITIONAL_TAX_RATES = TaxRateConfig(
             rate=0.03,
             description="按实际缴纳的增值税和消费税税额的3%征收",
             is_preferential=False,
+            policy_basis="《征收教育费附加的暂行规定》",
         ),
         # 地方教育附加
         TaxRateItem(
@@ -194,6 +212,7 @@ ADDITIONAL_TAX_RATES = TaxRateConfig(
             rate=0.02,
             description="按实际缴纳的增值税和消费税税额的2%征收",
             is_preferential=False,
+            policy_basis="财综〔2010〕98号",
         ),
     ],
 )

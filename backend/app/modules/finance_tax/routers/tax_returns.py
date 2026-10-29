@@ -228,6 +228,8 @@ class CalculationRequest(BaseModel):
     is_high_tech: bool = False
     enterprise_type: str = "一般企业"
     advertising_industry: str = "一般行业"
+    # 所属年度（可选）：传入时按 12号公告校验小微优惠有效期（Part B）
+    tax_year: str = ""
     # 以前年度亏损
     prior_year_losses: dict = {}          # {year: amount}
 
@@ -294,6 +296,8 @@ class CalculationResultResponse(BaseModel):
     taxable_income_after_loss_wan: float = 0.0
     tax_amount_wan: float = 0.0
     tax_reason: str = ""
+    # 优惠政策有效期状态（valid / 空=未校验）
+    policy_status: str = ""
     # 计算步骤
     calculation_steps: list = []
     # 税收优惠
@@ -453,7 +457,7 @@ def build_calculation_result(calc_request: CalculationRequest, enterprise: Enter
             "amount_wan": eq_detail.get("one_time_deduction_wan", 0),
         })
 
-    # 税额计算说明
+    # 税额计算说明（含政策有效期状态：valid 时空串处理）
     tax_reason = ""
     if calc_result.enterprise_tax_type == EnterpriseTaxType.SMALL_MICRO:
         tax_reason = (
@@ -489,6 +493,7 @@ def build_calculation_result(calc_request: CalculationRequest, enterprise: Enter
         "taxable_income_after_loss_wan": calc_result.taxable_income_after_loss,
         "tax_amount_wan": calc_result.tax_amount,
         "tax_reason": tax_reason,
+        "policy_status": getattr(calc_result, "policy_status", ""),
         "calculation_steps": steps,
         "preferential_policies": preferential_policies,
     }
@@ -532,6 +537,7 @@ async def calculate_tax_detail(
             is_high_tech=request.is_high_tech,
             enterprise_type=request.enterprise_type,
             advertising_industry=IndustryType(request.advertising_industry) if request.advertising_industry in ["一般企业", "化妆品制造或销售", "医药制造", "饮料制造", "烟草", "限制行业"] else IndustryType.GENERAL,
+            tax_year=request.tax_year,
         )
 
         # 构建纳税调整项输入
@@ -567,6 +573,9 @@ async def calculate_tax_detail(
 
         return build_calculation_result(request, enterprise, calc_result)
 
+    except ValueError as e:
+        # 政策有效期拒绝（小微优惠过期/未生效）等业务校验：400 中文提示
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"计算失败：{str(e)}")
 
