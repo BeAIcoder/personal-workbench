@@ -87,19 +87,36 @@ popd
 echo       前端构建完成。
 
 :start_server
+rem 服务已在运行（端口已监听）时不再重复启动，直接打开浏览器（与开机自启动.vbs 同口径）
+netstat -ano | findstr /r /c:"127.0.0.1:8000 .*LISTENING" >nul 2>nul
+if not errorlevel 1 (
+    echo.
+    echo 检测到服务已在运行，无需重复启动。
+    start http://127.0.0.1:8000
+    echo 已打开 http://127.0.0.1:8000 ，本窗口可以关闭。
+    pause
+    exit /b 0
+)
 echo [4/4] 正在启动服务（会弹出一个后端控制台窗口，请勿关闭它）...
 start "个人工作台-后端服务" /D "%~dp0backend" cmd /k ""%~dp0backend\venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+echo 正在等待后端就绪（最长 60 秒，开机后首次启动可能较慢）...
 set "backend_up="
-for /l %%i in (1,1,10) do (
+for /l %%i in (1,1,60) do (
     if not defined backend_up (
         netstat -ano | findstr /r /c:"127.0.0.1:8000 .*LISTENING" >nul 2>nul
         if not errorlevel 1 set "backend_up=1"
-        if not defined backend_up ping 127.0.0.1 -n 2 >nul
+        if not defined backend_up (
+            <nul set /p "=."
+            ping 127.0.0.1 -n 2 >nul
+        )
     )
 )
+echo.
 if not defined backend_up (
     echo.
-    echo 错误：后端服务未能正常启动，请查看"个人工作台-后端服务"窗口中的错误提示。
+    echo 提示：60 秒内未检测到后端端口监听，后端可能仍在启动（开机后首次启动较慢）。
+    echo       请查看"个人工作台-后端服务"窗口：若仍在输出启动信息，请稍等片刻后
+    echo       手动访问 http://127.0.0.1:8000 ；若窗口中有错误提示，请按提示处理。
     echo       若提示缺少 pywin32，可运行 backend\venv\Scripts\python.exe -m pip install pywin32 后重试。
     pause
     exit /b 1

@@ -48,9 +48,9 @@ End If
 sh.CurrentDirectory = root & "\backend"
 sh.Run """" & root & "\backend\venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port 8000", 2, False
 
-' 4) 等待端口就绪（最长 30 秒，与启动工作台.bat 相同的探测方式），就绪即开浏览器
+' 4) 等待端口就绪（最长 60 秒，与启动工作台.bat 相同的探测方式），就绪即开浏览器
 Dim i
-For i = 1 To 30
+For i = 1 To 60
     WScript.Sleep 1000
     If PortListening() Then
         sh.Run "http://127.0.0.1:8000"
