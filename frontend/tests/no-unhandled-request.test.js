@@ -35,8 +35,11 @@ const PROMISE_COMBINATORS = new Set(['all', 'race', 'allSettled'])
 const SRC = fileURLToPath(new URL('../src', import.meta.url))
 
 function sourceFiles(dir, out = []) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name)
+  const root = path.resolve(dir)
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    // 防目录穿越：拼接后必须仍位于本目录内（basename 白名单语义）
+    const full = path.resolve(root, entry.name)
+    if (full !== root && !full.startsWith(root + path.sep)) continue
     if (entry.isDirectory()) sourceFiles(full, out)
     else if (/\.(vue|js)$/.test(entry.name)) out.push(full)
   }

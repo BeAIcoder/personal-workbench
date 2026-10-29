@@ -91,3 +91,57 @@ def test_memory_context_injection(client):
     # 无命中：原样返回
     plain = _with_memory_context("量子引力波探测器")
     assert plain == "量子引力波探测器"
+
+
+# ---------- Part E：类型/统计/导入导出/注入预算 ----------
+
+def test_memory_type_roundtrip_and_filter(client):
+    r = client.post(f"{P}/memories", json={
+        "content": "用户偏好证据优先的结论呈现（PartE 测试）", "type": "feedback"})
+    assert r.status_code == 201, r.text
+    mid = r.json()["id"]
+    assert r.json()["type"] == "feedback"
+
+    # 非法类型归空
+    r2 = client.post(f"{P}/memories", json={"content": "非法类型测试条目xyz", "type": "hack"})
+    assert r2.status_code == 201 and r2.json()["type"] == ""
+
+    # 类型过滤
+    lst = client.get(f"{P}/memories", params={"type": "feedback"}).json()["items"]
+    assert any(i["id"] == mid for i in lst)
+
+    # 更新类型
+    r3 = client.put(f"{P}/memories/{mid}", json={"type": "user"})
+    assert r3.status_code == 200 and r3.json()["type"] == "user"
+    client.delete(f"{P}/memories/{mid}")
+    client.delete(f"{P}/memories/{r2.json()['id']}")
+
+
+def test_memory_stats_and_export_import(client):
+    r = client.post(f"{P}/memories", json={
+        "content": "导出往返测试条目（PartE）", "type": "project", "pinned": True})
+    mid = r.json()["id"]
+
+    stats = client.get(f"{P}/memories/stats").json()
+    assert stats["total"] >= 1
+    assert "by_type" in stats and "by_source" in stats
+    assert stats["pinned"] >= 1
+
+    md = client.get(f"{P}/memories/export.md").text
+    assert "## project" in md and "导出往返测试条目（PartE）" in md
+
+    # 导入（近重复应跳过刚导出的条目）
+    imp = client.post(f"{P}/memories/import.md", json={"text": md}).json()
+    assert imp["skipped"] >= 1
+    client.delete(f"{P}/memories/{mid}")
+
+
+def test_memory_inject_budget(client):
+    # 预算 0 → 注入不返回任何记忆
+    r = client.put("/api/assistant/config", json={"memory_inject_max": 0})
+    assert r.status_code in (200, 201), r.text
+    try:
+        from app.agents import memory as m
+        assert m.recall_for_context("偏好 证据优先") == []
+    finally:
+        client.put("/api/assistant/config", json={"memory_inject_max": 3})
