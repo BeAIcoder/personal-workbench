@@ -5,7 +5,8 @@
 - B2：创建申报记录 tax_period/quarter 无校验 → ValueError/CheckConstraint 500；
 - B3：企业创建静默丢 legal_person/contact_phone/address/tax_type（模型无列、创建不映射）；
 - B4：发票批次解析异常状态永留 uploaded + 接口 500；
-- B5：clone_policy 同一 new_version 克隆两次 → policy_number 唯一约束 500。
+- B5：clone_policy 同一 new_version 克隆两次 → policy_number 唯一约束 500；
+- B6：export_a200000_pdf 落盘分支移除后，export_to_file 的 pdf 分支仍按旧双参签名调用 → TypeError。
 """
 from urllib.parse import quote
 
@@ -204,3 +205,30 @@ def test_b5_clone_policy_duplicate_version_400(client):
     second = client.post(f"{P}/policies/{pid}/clone", params={"new_version": "2.0"})
     assert second.status_code == 400, second.text
     assert "已存在" in second.json()["detail"]
+
+
+# ---------------- B6：export_to_file pdf 分支按旧双参签名调用 ----------------
+
+def test_b6_export_to_file_pdf_writes_bytes(tmp_path):
+    """B6：export_a200000_pdf 的落盘分支被安全专项移除后，export_to_file 的 pdf
+    分支仍按旧双参签名调用 → TypeError。现由 export_to_file 自行落盘，与 excel 分支持径一致。"""
+    from app.modules.finance_tax.services.tax_form_generator import (
+        A200000FormData,
+        EnterpriseInfo,
+        TaxPeriod,
+        export_to_file,
+    )
+
+    form_data = A200000FormData(
+        enterprise=EnterpriseInfo(
+            name="测试修复科技有限公司", tax_number="91110108BUGFIX0009"
+        ),
+        tax_period=TaxPeriod(year=2026, quarter=3),
+    )
+    form_data.calculate()
+
+    out = tmp_path / "nested" / "A200000.pdf"
+    returned = export_to_file(form_data, str(out), format="pdf")
+    assert returned == str(out)
+    assert out.exists()
+    assert out.read_bytes().startswith(b"%PDF-")

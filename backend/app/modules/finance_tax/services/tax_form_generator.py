@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -1008,7 +1009,13 @@ def export_to_file(
     if fmt == "excel" or fmt == "xlsx":
         export_a200000_excel(form_data, output_path)
     elif fmt == "pdf":
-        export_a200000_pdf(form_data, output_path)
+        # export_a200000_pdf 只返字节（2026-10-29 安全专项已移除其落盘分支），
+        # 落盘由本函数统一负责，与 excel 分支口径一致
+        pdf_bytes = export_a200000_pdf(form_data)
+        out = Path(output_path)
+        if not out.parent.exists():
+            out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(pdf_bytes)
     else:
         raise ValueError(f"不支持的导出格式: {format}，支持格式: excel, pdf")
 
