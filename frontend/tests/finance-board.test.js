@@ -53,6 +53,21 @@ describe('finance-board 管线失败后的列表刷新', () => {
   })
 })
 
+// 管线整跑约 80-100s（m02 脱敏抽取为主），全局 axios 超时 10s 不够，run() 必须覆盖
+describe('finance-board 管线运行的请求超时', () => {
+  it('run() 给 /finance/board/run 设置 >=90s 的超时（覆盖全局 10s）', () => {
+    const src = readFileSync(
+      new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
+      'utf8',
+    )
+    const runBody = src.match(/async function run\(\) \{[\s\S]*?\n\}/)?.[0] || ''
+    expect(runBody).toContain('/finance/board/run')
+    const m = runBody.match(/timeout:\s*(\d+)/)
+    expect(m).toBeTruthy()
+    expect(Number(m[1])).toBeGreaterThanOrEqual(90000)
+  })
+})
+
 // 与 bugfix-frontend-finance 同范式的静态断言：无 jsdom/@vue/test-utils，
 // 通过读取 .vue 源码校验失败快照日志查看接线。
 describe('finance-board 失败快照日志查看（log_tail）', () => {

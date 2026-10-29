@@ -86,7 +86,9 @@ async function load() {
 async function run() {
   running.value = true
   try {
-    const { data } = await api.post('/finance/board/run')
+    // 管线整跑约 80-100s（m02 脱敏抽取为主），覆盖全局 10s 超时；与后端
+    // TASK_CHANNEL_TIMEOUT=600s 同数量级，取 5 分钟覆盖正常运行
+    const { data } = await api.post('/finance/board/run', {}, { timeout: 300000 })
     ElMessage.success(`运行完成（${data.elapsed_sec}s），已归档快照 ${data.stamp}`)
     await load()
     selected.value = data.id

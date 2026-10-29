@@ -250,6 +250,8 @@ def board_env(client, tmp_path, monkeypatch):
     (pdir / "output" / board_svc.DASHBOARD_NAME).write_text("<html>ok</html>", encoding="utf-8")
     monkeypatch.setattr(board_svc, "pipeline_dir", lambda: pdir)
     monkeypatch.setattr(board_svc, "get_finance_data_dir", lambda: tmp_path / "finance")
+    # 固定走「直接执行」分支：本机注册了真实计划任务，不拦就会触发真管线（80s+ 且写真实数据）
+    monkeypatch.setattr(board_svc, "_scheduled_task_available", lambda: False)
     return client
 
 
@@ -297,3 +299,26 @@ def test_b6_sequential_runs_both_ok(board_env, monkeypatch):
     r2 = board_env.post("/api/finance/board/run")
     assert r1.status_code == 200
     assert r2.status_code == 200
+
+
+def test_b6_scheduled_task_channel_used_when_available(board_env, monkeypatch):
+    """有计划任务时走任务通道：不再调 _run_step（直接执行被安全软件进程树拦截）。"""
+    monkeypatch.setattr(board_svc, "_scheduled_task_available", lambda: True)
+    monkeypatch.setattr(board_svc, "_run_steps_via_scheduled_task", lambda: "== 计划任务通道 ==\nfake")
+    r = board_env.post("/api/finance/board/run")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+
+def test_b6_scheduled_task_channel_failure_returns_503(board_env, monkeypatch):
+    """任务通道失败：503 + 落 failed 快照（页面日志可见）。"""
+    monkeypatch.setattr(board_svc, "_scheduled_task_available", lambda: True)
+
+    def boom() -> str:
+        raise board_svc.PipelineUnavailableError("触发计划任务失败：合成错误")
+
+    monkeypatch.setattr(board_svc, "_run_steps_via_scheduled_task", boom)
+    r = board_env.post("/api/finance/board/run")
+    assert r.status_code == 503
+    items = board_env.get("/api/finance/board/snapshots").json()["items"]
+    assert any(s["status"] == "failed" for s in items)
