@@ -73,6 +73,7 @@ class GlobalsPayload(BaseModel):
     max_iters: Optional[int] = Field(None, ge=1, le=20)
     enable_memory: Optional[bool] = None
     history_inject: Optional[int] = Field(None, ge=0, le=100)
+    memory_inject_max: Optional[int] = Field(None, ge=0, le=10, description="记忆注入条数预算（0=不注入）")
     enable_skills: Optional[bool] = Field(None, description="启用本地技能池（SKILL.md）")
     skills_dir: Optional[str] = Field(None, max_length=300, description="技能池目录")
     enable_bash: Optional[bool] = Field(None, description="允许 Agent 使用 Bash 执行技能脚本")

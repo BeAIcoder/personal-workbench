@@ -106,8 +106,10 @@ const saving = ref(false)
 const resultTitle = ref('')
 
 async function loadList() {
-  const { data } = await api.get('/finance/vat/filings')
-  list.value = data.items || []
+  try {
+    const { data } = await api.get('/finance/vat/filings')
+    list.value = data.items || []
+  } catch { /* 拦截器已提示 */ }
 }
 
 async function submit() {
@@ -123,14 +125,16 @@ async function submit() {
       ? `销项 ¥${c.output_vat} − 进项 ¥${c.input_vat} = 应纳税额 ¥${c.payable}`
       : (c.exempt ? '季度销售额未超 30 万，免征' : `应纳税额 ¥${c.payable}`)
     await loadList()
-  } finally {
+  } catch { /* 拦截器已提示 */ } finally {
     saving.value = false
   }
 }
 
 async function exportXlsx(row) {
-  await api.post(`/finance/vat/filings/${row.id}/export`)
-  await loadList()
+  try {
+    await api.post(`/finance/vat/filings/${row.id}/export`)
+    await loadList()
+  } catch { /* 拦截器已提示 */ }
 }
 
 function download(row) {
@@ -138,8 +142,10 @@ function download(row) {
 }
 
 async function remove(row) {
-  await api.delete(`/finance/vat/filings/${row.id}`)
-  await loadList()
+  try {
+    await api.delete(`/finance/vat/filings/${row.id}`)
+    await loadList()
+  } catch { /* 拦截器已提示 */ }
 }
 
 onMounted(loadList)

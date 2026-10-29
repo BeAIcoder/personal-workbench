@@ -35,6 +35,7 @@ from .routers import (
     search,
     skills,
     tasks,
+    workbuddy,
 )
 from .seed import seed_agent_specs, seed_if_empty
 from .scheduler import scheduler_loop
@@ -123,6 +124,7 @@ def _ensure_sqlite_columns() -> None:
     patches = {
         "chat_messages": {"thinking": "TEXT DEFAULT ''"},
         "agent_sessions": {"archived": "INTEGER DEFAULT 0"},
+        "memories": {"type": "TEXT DEFAULT ''"},
         "agent_settings": {
             "active_profile_id": "INTEGER",
             "active_model_id": "INTEGER",
@@ -132,6 +134,7 @@ def _ensure_sqlite_columns() -> None:
             "enable_plugins": "INTEGER DEFAULT 0",
             "plugins_dir": "TEXT DEFAULT ''",
             "reasoning_effort": "TEXT DEFAULT ''",
+            "memory_inject_max": "INTEGER DEFAULT 3",
         },
         "scheduled_jobs": {
             "cron_expr": "TEXT DEFAULT ''",
@@ -426,6 +429,8 @@ app.include_router(mcp.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")
 app.include_router(skills.router, prefix="/api")
 app.include_router(experts.router, prefix="/api")
+# WorkBuddy 同步导入（Part D）：技能包/记忆/身份文件 → 平台
+app.include_router(workbuddy.router, prefix="/api")
 # 模型能力探测：/api/models/{id}/probe/*（同步执行，探测失败以 200 + error 返回）
 app.include_router(model_probe.router, prefix="/api")
 # 预设列表按契约挂 /api/providers/presets；同时挂一份 /api/models/providers/presets 别名，

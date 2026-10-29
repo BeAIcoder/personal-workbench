@@ -7,4 +7,5 @@ export function openCreateMem(memDialog, memForm) {
   memDialog.visible = true
   memForm.content = ''
   memForm.pinned = false
+  if ('type' in memForm) memForm.type = ''
 }

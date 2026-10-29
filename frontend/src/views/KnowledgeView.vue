@@ -21,16 +21,29 @@
 
         <el-tab-pane label="长期记忆" name="memory">
           <div class="mem-bar">
-            <el-input v-model="memKeyword" placeholder="关键词过滤" style="width: 220px" clearable @input="debouncedLoadMemories" />
+            <el-input v-model="memKeyword" placeholder="关键词过滤" style="width: 200px" clearable @input="debouncedLoadMemories" />
+            <el-select v-model="memType" style="width: 140px" placeholder="全部类型" clearable @change="loadMemories">
+              <el-option value="user" label="用户画像 user" />
+              <el-option value="feedback" label="纠正偏好 feedback" />
+              <el-option value="project" label="项目背景 project" />
+              <el-option value="reference" label="参考线索 reference" />
+            </el-select>
             <el-button type="primary" @click="onCreateMem">新建记忆</el-button>
+            <el-button @click="exportMemories">导出 MD</el-button>
+            <el-button @click="importMemories">导入 MD</el-button>
           </div>
+          <el-alert v-if="memStats.total" type="info" :closable="false" style="margin-bottom: 10px"
+            :title="`共 ${memStats.total} 条（来源 手动${memStats.by_source.manual || 0}/抽取${memStats.by_source.auto || 0}/导入${memStats.by_source.import || 0}，置顶 ${memStats.pinned}）`" />
           <el-table :data="memories" size="small" empty-text="暂无记忆">
             <el-table-column label="置顶" width="60" align="center">
               <template #default="{ row }">
                 <el-button size="small" link :type="row.pinned ? 'warning' : 'info'" @click="togglePin(row)">★</el-button>
               </template>
             </el-table-column>
-            <el-table-column prop="content" label="内容" min-width="380" show-overflow-tooltip />
+            <el-table-column prop="content" label="内容" min-width="340" show-overflow-tooltip />
+            <el-table-column label="类型" width="100">
+              <template #default="{ row }">{{ typeLabel(row.type) }}</template>
+            </el-table-column>
             <el-table-column prop="source" label="来源" width="80">
               <template #default="{ row }">{{ { manual: '手动', auto: '抽取', import: '导入' }[row.source] || row.source }}</template>
             </el-table-column>
@@ -49,6 +62,12 @@
 
     <el-dialog v-model="memDialog.visible" :title="memDialog.id ? '编辑记忆' : '新建记忆'" width="560px">
       <el-input v-model="memForm.content" type="textarea" :rows="4" maxlength="2000" show-word-limit placeholder="值得跨会话记住的事实/偏好/经验，每条一个主题" />
+      <el-select v-model="memForm.type" style="width: 100%; margin-top: 10px" placeholder="类型（可选）" clearable>
+        <el-option value="user" label="用户画像 user" />
+        <el-option value="feedback" label="纠正偏好 feedback" />
+        <el-option value="project" label="项目背景 project" />
+        <el-option value="reference" label="参考线索 reference" />
+      </el-select>
       <template #footer>
         <el-button @click="memDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="memDialog.saving" @click="saveMem">保存</el-button>
@@ -111,16 +130,48 @@ async function doRebuild() {
 // ---- 记忆 ----
 const memories = ref([])
 const memKeyword = ref('')
+const memType = ref('')
+const memStats = reactive({ total: 0, by_source: {}, by_type: {}, pinned: 0, top_hits: [] })
 const memDialog = reactive({ visible: false, id: null, saving: false })
-const memForm = reactive({ content: '', pinned: false })
+const memForm = reactive({ content: '', pinned: false, type: '' })
+
+const TYPE_LABELS = { user: '用户画像', feedback: '纠正偏好', project: '项目背景', reference: '参考线索' }
+function typeLabel(t) {
+  return TYPE_LABELS[t] || '未分类'
+}
 
 async function loadMemories() {
   try {
-    const { data } = await api.get('/knowledge/memories', { params: { keyword: memKeyword.value } })
+    const { data } = await api.get('/knowledge/memories', {
+      params: { keyword: memKeyword.value, type: memType.value },
+    })
     memories.value = data.items || []
   } catch {
     memories.value = []
   }
+}
+
+async function loadMemStats() {
+  try {
+    const { data } = await api.get('/knowledge/memories/stats')
+    Object.assign(memStats, data)
+  } catch { /* 忽略 */ }
+}
+
+function exportMemories() {
+  window.open(`${api.defaults.baseURL}/knowledge/memories/export.md`, '_blank')
+}
+
+async function importMemories() {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '粘贴 MEMORY.md 风格 Markdown（## 类型节 + - 条目行），近重复自动跳过',
+      '导入记忆', { inputType: 'textarea', inputPlaceholder: '## project\n- 条目一\n- 条目二' })
+    if (!value || !value.trim()) return
+    const { data } = await api.post('/knowledge/memories/import.md', { text: value })
+    ElMessage.success(`导入完成：新增 ${data.added}，近重复跳过 ${data.skipped}`)
+    await Promise.all([loadMemories(), loadMemStats()])
+  } catch { /* 取消或请求失败（拦截器已提示） */ }
 }
 
 // 关键词过滤防抖：避免逐键发请求
@@ -140,6 +191,7 @@ function openEditMem(row) {
   memDialog.id = row.id
   memForm.content = row.content
   memForm.pinned = row.pinned
+  memForm.type = row.type || ''
   memDialog.visible = true
 }
 
@@ -151,13 +203,17 @@ async function saveMem() {
   memDialog.saving = true
   try {
     if (memDialog.id) {
-      await api.put(`/knowledge/memories/${memDialog.id}`, { content: memForm.content.trim() })
+      await api.put(`/knowledge/memories/${memDialog.id}`, {
+        content: memForm.content.trim(), type: memForm.type || '',
+      })
     } else {
-      await api.post('/knowledge/memories', { content: memForm.content.trim() })
+      await api.post('/knowledge/memories', {
+        content: memForm.content.trim(), type: memForm.type || '',
+      })
     }
     ElMessage.success('已保存')
     memDialog.visible = false
-    await loadMemories()
+    await Promise.all([loadMemories(), loadMemStats()])
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -191,6 +247,7 @@ async function removeMem(row) {
 onMounted(() => {
   loadStats()
   loadMemories()
+  loadMemStats()
 })
 </script>
 

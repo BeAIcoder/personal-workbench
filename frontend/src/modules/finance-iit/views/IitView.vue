@@ -105,19 +105,23 @@ async function submit() {
     const t = data.calc_result?.totals?.tax_withheld ?? 0
     resultTitle.value = `合计应预扣预缴 ¥${t.toLocaleString()}（按累计预扣法逐月模拟）`
     await loadList()
-  } finally {
+  } catch { /* 拦截器已提示 */ } finally {
     saving.value = false
   }
 }
 
 async function loadList() {
-  const { data } = await api.get('/finance/iit/filings')
-  list.value = data.items || []
+  try {
+    const { data } = await api.get('/finance/iit/filings')
+    list.value = data.items || []
+  } catch { /* 拦截器已提示 */ }
 }
 
 async function exportXlsx(row) {
-  await api.post(`/finance/iit/filings/${row.id}/export`)
-  await loadList()
+  try {
+    await api.post(`/finance/iit/filings/${row.id}/export`)
+    await loadList()
+  } catch { /* 拦截器已提示 */ }
 }
 
 function download(row) {
@@ -125,8 +129,10 @@ function download(row) {
 }
 
 async function remove(row) {
-  await api.delete(`/finance/iit/filings/${row.id}`)
-  await loadList()
+  try {
+    await api.delete(`/finance/iit/filings/${row.id}`)
+    await loadList()
+  } catch { /* 拦截器已提示 */ }
 }
 
 onMounted(loadList)

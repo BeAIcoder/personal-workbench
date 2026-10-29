@@ -27,7 +27,7 @@ RECALL_TOP_K = 5
 
 def add_memory(db: Session, content: str, source: str = "manual",
                session_id: str = "", tags: list[str] | None = None,
-               pinned: bool = False) -> dict:
+               pinned: bool = False, type: str = "") -> dict:
     content = (content or "").strip()
     if not content:
         raise ValueError("记忆内容不能为空")
@@ -36,11 +36,21 @@ def add_memory(db: Session, content: str, source: str = "manual",
     if _is_duplicate(db, content):
         raise ValueError("已存在基本相同的记忆，未重复保存")
     row = Memory(content=content, source=source, session_id=session_id,
-                 tags=tags or [], pinned=bool(pinned))
+                 tags=tags or [], pinned=bool(pinned),
+                 type=_norm_type(type))
     db.add(row)
     db.commit()
     db.refresh(row)
     return _out(row)
+
+
+MEMORY_TYPES = ("user", "feedback", "project", "reference")
+
+
+def _norm_type(t: str | None) -> str:
+    """类型归一：仅接受四类白名单，非法值归空（未分类）。"""
+    t = str(t or "").strip().lower()
+    return t if t in MEMORY_TYPES else ""
 
 
 def _is_duplicate(db: Session, content: str) -> bool:
@@ -68,6 +78,8 @@ def update_memory(db: Session, memory_id: int, data: dict) -> dict:
         row.tags = data["tags"]
     if "pinned" in data and data["pinned"] is not None:
         row.pinned = bool(data["pinned"])
+    if "type" in data and data["type"] is not None:
+        row.type = _norm_type(data["type"])
     db.commit()
     db.refresh(row)
     return _out(row)
@@ -81,12 +93,16 @@ def delete_memory(db: Session, memory_id: int) -> None:
     db.commit()
 
 
-def list_memories(db: Session, keyword: str = "", limit: int = 100) -> list[dict]:
+def list_memories(db: Session, keyword: str = "", limit: int = 100,
+                  type: str = "") -> list[dict]:
     q = db.query(Memory)
     if keyword:
         # 关键词按字面匹配：% / _ / 反斜杠经 escape_like 转义 + 显式 escape，
         # 不通配放大结果集（审计台账 A08）
         q = q.filter(Memory.content.like(f"%{escape_like(keyword)}%", escape="\\"))
+    t = _norm_type(type)
+    if t:
+        q = q.filter(Memory.type == t)
     rows = q.order_by(Memory.pinned.desc(), Memory.id.desc()).limit(min(limit, 500)).all()
     return [_out(r) for r in rows]
 
@@ -96,6 +112,7 @@ def _out(r: Memory) -> dict:
         "id": r.id,
         "content": r.content,
         "source": r.source,
+        "type": r.type or "",
         "session_id": r.session_id,
         "tags": r.tags or [],
         "pinned": bool(r.pinned),
@@ -140,6 +157,8 @@ def recall(query: str, top_k: int = RECALL_TOP_K) -> list[dict]:
             score = overlap * 1.0
             if r.pinned:
                 score += 2.0
+            if getattr(r, "type", "") in ("user", "feedback"):
+                score += 0.5  # 用户画像与纠正类记忆权重略高（zcode 四类口径）
             score += min(r.hit_count or 0, 10) * 0.05
             scored.append((score, r))
         if not scored:
@@ -154,10 +173,84 @@ def recall(query: str, top_k: int = RECALL_TOP_K) -> list[dict]:
 
 
 def recall_for_context(message: str, top_k: int = 3) -> list[dict]:
-    """编排器注入用：从用户消息提取关键词检索（不过度消耗，top_k 默认 3）。"""
+    """编排器注入用：从用户消息提取关键词检索，条数受 agent_settings.memory_inject_max 预算约束。"""
     if not message or not message.strip():
         return []
-    return recall(message, top_k=top_k)
+    budget = 3
+    try:
+        from ..database import SessionLocal as _SL
+        from ..models import AgentSettings
+        with _SL() as s:
+            row = s.query(AgentSettings).first()
+            if row is not None and row.memory_inject_max is not None:
+                budget = max(0, min(int(row.memory_inject_max), 10))
+    except Exception:  # noqa: BLE001  设置不可读时用默认预算
+        budget = 3
+    if budget <= 0:
+        return []
+    return recall(message, top_k=min(top_k, budget))
+
+
+# ---------- 统计 / 导出 / 导入（Part E） ----------
+
+def memory_stats(db: Session) -> dict:
+    """记忆统计：总数/来源分布/类型分布/置顶数/命中 Top5。"""
+    rows = db.query(Memory).all()
+    by_source: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    for r in rows:
+        by_source[r.source or "manual"] = by_source.get(r.source or "manual", 0) + 1
+        t = r.type or "未分类"
+        by_type[t] = by_type.get(t, 0) + 1
+    top_hits = sorted(rows, key=lambda r: -(r.hit_count or 0))[:5]
+    return {
+        "total": len(rows),
+        "by_source": by_source,
+        "by_type": by_type,
+        "pinned": sum(1 for r in rows if r.pinned),
+        "top_hits": [
+            {"id": r.id, "content": (r.content or "")[:60], "hit_count": r.hit_count}
+            for r in top_hits if (r.hit_count or 0) > 0
+        ],
+    }
+
+
+def export_markdown() -> str:
+    """导出全部记忆为 MEMORY.md 风格 Markdown（zcode/WorkBuddy 兼容形态）。"""
+    with SessionLocal() as db:
+        rows = db.query(Memory).order_by(Memory.type.asc(), Memory.id.desc()).all()
+    lines = ["# MEMORY.md（工作台记忆导出）", ""]
+    current_type = None
+    for r in rows:
+        t = r.type or "未分类"
+        if t != current_type:
+            lines.append(f"## {t}")
+            current_type = t
+        pinned_mark = " [置顶]" if r.pinned else ""
+        lines.append(f"- {r.content}{pinned_mark}")
+    return "\n".join(lines) + "\n"
+
+
+def import_markdown(db: Session, text: str) -> dict:
+    """导入 MEMORY.md 风格 Markdown：## 节=类型，- 列表行=记忆条目（近重复跳过）。"""
+    added, skipped = 0, 0
+    current_type = ""
+    for raw in (text or "").splitlines():
+        line = raw.rstrip()
+        if line.startswith("## "):
+            head = line[3:].strip()
+            current_type = head if head in MEMORY_TYPES else ""
+        elif line.startswith("- "):
+            content = line[2:].strip()
+            content = content.replace(" [置顶]", "")
+            if not content:
+                continue
+            try:
+                add_memory(db, content, source="import", type=current_type)
+                added += 1
+            except ValueError:
+                skipped += 1
+    return {"added": added, "skipped": skipped}
 
 
 # ---------- LLM 抽取（一次性动作） ----------

@@ -408,6 +408,7 @@ def load() -> dict:
                 "max_iters": row.max_iters,
                 "enable_memory": row.enable_memory,
                 "history_inject": row.history_inject,
+                "memory_inject_max": row.memory_inject_max,
                 "enable_skills": row.enable_skills,
                 "skills_dir": row.skills_dir or "",
                 "enable_bash": row.enable_bash,
@@ -533,6 +534,10 @@ def save_globals(data: dict) -> None:
             row.enable_memory = bool(data["enable_memory"])
         if "history_inject" in data:
             row.history_inject = max(0, min(int(data["history_inject"] or 12), 100))
+        if "memory_inject_max" in data:
+            raw = data.get("memory_inject_max")
+            raw = 3 if raw is None else raw
+            row.memory_inject_max = max(0, min(int(raw), 10))
         if "enable_skills" in data:
             row.enable_skills = bool(data["enable_skills"])
         if "skills_dir" in data:

@@ -11,6 +11,14 @@ const DIST_ENTRY = 'dist/index.html'
 const SOURCE_DIRS = ['src']
 const SOURCE_FILES = ['index.html', 'vite.config.js', 'package.json', 'package-lock.json']
 
+// 目录遍历统一入口：拼接后必须仍位于 rootDir 内（防穿越边界校验）
+function safeJoin(rootDir, ...segments) {
+  const target = path.resolve(rootDir, ...segments)
+  const rel = path.relative(rootDir, target)
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null
+  return target
+}
+
 // 递归取目录内最新文件（相对路径 + mtimeMs）；目录本身 mtime 不可靠，必须走文件。
 function newestFile(rootDir, dirRel) {
   let newest = null
@@ -22,7 +30,8 @@ function newestFile(rootDir, dirRel) {
       return
     }
     for (const entry of entries) {
-      const full = path.join(current, entry.name)
+      const full = safeJoin(rootDir, path.relative(rootDir, current), entry.name)
+      if (full === null) continue
       let stat
       try {
         stat = fs.statSync(full)
@@ -36,7 +45,8 @@ function newestFile(rootDir, dirRel) {
       }
     }
   }
-  walk(path.join(rootDir, dirRel))
+  const start = safeJoin(rootDir, dirRel)
+  if (start !== null) walk(start)
   return newest
 }
 
@@ -78,7 +88,9 @@ export function checkNeedsBuild(rootDir) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const root = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(import.meta.dirname, '..')
+  // CLI 只支持无参运行：根目录固定为本脚本上级（frontend），
+  // 不接收外部路径参数（消除命令行参数→文件系统的穿越污点入口）。
+  const root = path.resolve(import.meta.dirname, '..')
   const result = checkNeedsBuild(root)
   if (result.needsBuild) {
     console.log('NEEDS_BUILD')

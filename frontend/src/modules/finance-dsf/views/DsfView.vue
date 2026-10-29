@@ -79,8 +79,10 @@ const resultTitle = ref('')
 const resultType = ref('success')
 
 async function loadList() {
-  const { data } = await api.get('/finance/dsf/filings')
-  list.value = data.items || []
+  try {
+    const { data } = await api.get('/finance/dsf/filings')
+    list.value = data.items || []
+  } catch { /* 拦截器已提示 */ }
 }
 
 async function submit() {
@@ -95,14 +97,16 @@ async function submit() {
     resultType.value = c.exempt ? 'success' : 'warning'
     resultTitle.value = c.exempt ? c.note : `${c.note}；应缴费额 ¥${c.payable.toLocaleString()}`
     await loadList()
-  } finally {
+  } catch { /* 拦截器已提示 */ } finally {
     saving.value = false
   }
 }
 
 async function exportXlsx(row) {
-  await api.post(`/finance/dsf/filings/${row.id}/export`)
-  await loadList()
+  try {
+    await api.post(`/finance/dsf/filings/${row.id}/export`)
+    await loadList()
+  } catch { /* 拦截器已提示 */ }
 }
 
 function download(row) {
@@ -110,8 +114,10 @@ function download(row) {
 }
 
 async function remove(row) {
-  await api.delete(`/finance/dsf/filings/${row.id}`)
-  await loadList()
+  try {
+    await api.delete(`/finance/dsf/filings/${row.id}`)
+    await loadList()
+  } catch { /* 拦截器已提示 */ }
 }
 
 onMounted(loadList)

@@ -211,6 +211,8 @@ class AgentSettings(Base):
     # 记忆管理：是否注入历史 + 注入条数
     enable_memory: Mapped[bool] = mapped_column(Boolean, default=True)
     history_inject: Mapped[int] = mapped_column(Integer, default=12)
+    # 记忆注入条数预算（recall_for_context 的 top_k 上限，Part E）
+    memory_inject_max: Mapped[int] = mapped_column(Integer, default=3)
     # 当前激活的模型（指向 provider_models.id；None = .env 兜底）
     active_model_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 本地技能池（SKILL.md 格式，如 QwenPaw skill_pool）
@@ -283,6 +285,8 @@ class Memory(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # 来源：manual（手动保存）/ auto（对话抽取）/ import
     source: Mapped[str] = mapped_column(String(20), default="manual")
+    # 类型（zcode/WorkBuddy 风格四类）：user/feedback/project/reference；空 = 未分类
+    type: Mapped[str] = mapped_column(String(20), default="")
     # 来源会话 id（auto 时回溯）
     session_id: Mapped[str] = mapped_column(String(64), default="")
     tags: Mapped[list] = mapped_column(JSON, default=list)

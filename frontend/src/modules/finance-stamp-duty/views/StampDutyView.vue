@@ -92,13 +92,17 @@ const saving = ref(false)
 const resultTitle = ref('')
 
 async function loadItems() {
-  const { data } = await api.get('/finance/stamp-duty/tax-items')
-  taxItems.value = data
+  try {
+    const { data } = await api.get('/finance/stamp-duty/tax-items')
+    taxItems.value = data
+  } catch { /* 拦截器已提示 */ }
 }
 
 async function loadList() {
-  const { data } = await api.get('/finance/stamp-duty/filings')
-  list.value = data.items || []
+  try {
+    const { data } = await api.get('/finance/stamp-duty/filings')
+    list.value = data.items || []
+  } catch { /* 拦截器已提示 */ }
 }
 
 function addItem() {
@@ -120,14 +124,16 @@ async function submit() {
     const c = data.calc_result
     resultTitle.value = `应纳税额 ¥${c.total_tax}（减半前 ¥${c.raw_total}，节省 ¥${c.half_saved}）`
     await loadList()
-  } finally {
+  } catch { /* 拦截器已提示 */ } finally {
     saving.value = false
   }
 }
 
 async function exportXlsx(row) {
-  await api.post(`/finance/stamp-duty/filings/${row.id}/export`)
-  await loadList()
+  try {
+    await api.post(`/finance/stamp-duty/filings/${row.id}/export`)
+    await loadList()
+  } catch { /* 拦截器已提示 */ }
 }
 
 function download(row) {
@@ -135,8 +141,10 @@ function download(row) {
 }
 
 async function remove(row) {
-  await api.delete(`/finance/stamp-duty/filings/${row.id}`)
-  await loadList()
+  try {
+    await api.delete(`/finance/stamp-duty/filings/${row.id}`)
+    await loadList()
+  } catch { /* 拦截器已提示 */ }
 }
 
 onMounted(async () => {

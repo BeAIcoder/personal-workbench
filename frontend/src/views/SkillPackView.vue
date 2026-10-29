@@ -7,6 +7,7 @@
           <div>
             <el-button size="small" @click="rescan" :loading="loading">重新扫描</el-button>
             <el-button size="small" type="primary" @click="openCreate">新建技能包</el-button>
+            <el-button size="small" type="success" plain @click="openWorkbuddy">从 WorkBuddy 导入</el-button>
           </div>
         </div>
       </template>
@@ -63,6 +64,29 @@
       </el-select>
       <pre v-loading="fileDialog.loading" class="file-content">{{ fileDialog.content }}</pre>
     </el-dialog>
+
+    <el-dialog v-model="wbDialog.visible" title="从 WorkBuddy 导入" width="640px">
+      <el-form label-width="150px">
+        <el-form-item label="WorkBuddy 数据目录">
+          <el-input v-model="wbDialog.home" placeholder="默认 C:/Users/Administrator/.workbuddy" />
+        </el-form-item>
+        <el-form-item label="导入内容">
+          <el-checkbox-group v-model="wbDialog.kinds">
+            <el-checkbox value="skills">技能包（默认停用导入）</el-checkbox>
+            <el-checkbox value="memories">记忆（MEMORY.md 分节）</el-checkbox>
+            <el-checkbox value="identity">身份文件（SOUL/IDENTITY/USER/BOOTSTRAP）</el-checkbox>
+          </el-checkbox-group>
+        </el-form-item>
+        <el-alert v-if="wbDialog.scan" :closable="false" type="info"
+          :title="`扫描：技能包 ${wbDialog.scan.skills.length} 个，记忆 ${wbDialog.scan.memories.length} 节，身份文件 ${wbDialog.scan.identity_files.length} 个`" />
+        <el-alert v-if="wbDialog.result" :closable="false" type="success" :title="wbDialog.resultTitle" />
+      </el-form>
+      <template #footer>
+        <el-button @click="wbDialog.visible = false">关闭</el-button>
+        <el-button :loading="wbDialog.scanning" @click="wbScan">扫描预览</el-button>
+        <el-button type="primary" :loading="wbDialog.importing" @click="wbImport">执行导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -110,6 +134,54 @@ async function toggleEnabled(row) {
 }
 
 const createDialog = reactive({ visible: false, saving: false })
+const wbDialog = reactive({
+  visible: false, scanning: false, importing: false,
+  home: '', kinds: ['skills', 'memories', 'identity'], scan: null, result: null, resultTitle: '',
+})
+
+function openWorkbuddy() {
+  wbDialog.scan = null
+  wbDialog.result = null
+  wbDialog.visible = true
+  api.get('/assistant/workbuddy/settings').then(({ data }) => {
+    if (data && data.home) wbDialog.home = data.home
+  }).catch(() => {})
+}
+
+async function wbScan() {
+  wbDialog.scanning = true
+  try {
+    const { data } = await api.get('/assistant/workbuddy/scan', { params: { home: wbDialog.home } })
+    wbDialog.scan = data
+    if (!data.available) ElMessage.warning(data.message || '未找到 WorkBuddy 数据目录')
+  } catch { /* 拦截器已提示 */ } finally {
+    wbDialog.scanning = false
+  }
+}
+
+async function wbImport() {
+  if (!wbDialog.kinds.length) {
+    ElMessage.warning('请至少勾选一类导入内容')
+    return
+  }
+  wbDialog.importing = true
+  try {
+    const { data } = await api.post('/assistant/workbuddy/import', {
+      home: wbDialog.home,
+      skills: wbDialog.kinds.includes('skills'),
+      memories: wbDialog.kinds.includes('memories'),
+      identity: wbDialog.kinds.includes('identity'),
+    })
+    wbDialog.result = data
+    wbDialog.resultTitle = `导入完成：技能 新增${data.skills.added.length}/更新${data.skills.updated.length}；`
+      + `记忆 新增${data.memories.added}/跳过${data.memories.skipped}；`
+      + `身份 新增${data.identity.added.length}/更新${data.identity.updated.length}`
+    ElMessage.success('WorkBuddy 导入完成')
+    await load()
+  } catch { /* 拦截器已提示 */ } finally {
+    wbDialog.importing = false
+  }
+}
 const createForm = reactive({ name: '', description: '', body: '' })
 
 function openCreate() {
