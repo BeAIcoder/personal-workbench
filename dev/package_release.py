@@ -14,7 +14,8 @@
        README 去掉 progress.md 文档行（该文件不入库、包里不存在，避免悬空引用）
     4. 数据骨架：backend/data、uploads、finance 只留空目录（.gitkeep）
     5. 前端重建：staging/frontend 内 npm ci + npm run build
-       （用脱敏后的源码构建，产物天然脱敏，且 mtime 新于源码）
+       （用脱敏后的源码构建，产物天然脱敏；postbuild 写入内容哈希印章
+       dist/.build-stamp.json，收件人端 needs-build 判 UP_TO_DATE，无需 Node 重建）
     6. 敏感串扫描（任一硬失败即中止、不产包）：
        - 脱敏映射表全部真实值逐条反查包内文本文件（含 dist 产物）
        - 密钥/隐私正则（合成值上下文降级为警告）
@@ -235,7 +236,7 @@ def build_frontend(staging: Path, npm: str) -> None:
     if not (dist / "index.html").exists() or not any((dist / "assets").glob("*.js")):
         raise PackageError("前端构建后未得到 dist/index.html 或 assets/*.js")
     shutil.rmtree(frontend / "node_modules", ignore_errors=True)
-    log("      dist 就绪（mtime 新于源码，收件人端 needs-build 判 UP_TO_DATE）；构建依赖 node_modules 已移除，不进包")
+    log("      dist 就绪（含内容哈希印章，收件人端 needs-build 判 UP_TO_DATE，无需 Node 重建）；构建依赖 node_modules 已移除，不进包")
 
 
 # ---------------------------------------------------------------- 扫描
