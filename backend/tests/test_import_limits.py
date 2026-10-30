@@ -248,19 +248,18 @@ def test_expense_service_wired_to_shared_import_rows():
 def test_assistant_xlsx_over_limit_aborts_conversion(tmp_path, monkeypatch):
     """首表行数（含表头）超上限：转换函数可检测中止（_RowLimitExceeded）。"""
     src = _write_xlsx(tmp_path / "many.xlsx", [["a", "b"], [1, 2], [3, 4], [5, 6]])
-    dst = tmp_path / "many.csv"
     monkeypatch.setattr(assistant_router, "MAX_IMPORT_ROWS", 3, raising=False)
     with pytest.raises(assistant_router._RowLimitExceeded, match="上限"):
-        assistant_router._xlsx_first_sheet_to_csv(src, dst, assistant_router.MAX_IMPORT_ROWS)
+        assistant_router._xlsx_first_sheet_to_csv(src, assistant_router.MAX_IMPORT_ROWS)
 
 
 def test_assistant_xlsx_at_limit_converts(tmp_path, monkeypatch):
     """首表行数恰好等于上限（含表头）：正常转换并返回写入行数（边界不误拒）。"""
     src = _write_xlsx(tmp_path / "ok.xlsx", [["a", "b"], [1, 2], [3, 4], [5, 6]])
-    dst = tmp_path / "ok.csv"
     monkeypatch.setattr(assistant_router, "MAX_IMPORT_ROWS", 4, raising=False)
-    written = assistant_router._xlsx_first_sheet_to_csv(src, dst, assistant_router.MAX_IMPORT_ROWS)
+    written, dst = assistant_router._xlsx_first_sheet_to_csv(src, assistant_router.MAX_IMPORT_ROWS)
     assert written == 4
+    assert dst == src.with_suffix(".csv")
     assert len(dst.read_text(encoding="utf-8-sig").splitlines()) == 4
 
 

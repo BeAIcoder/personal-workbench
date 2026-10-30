@@ -1,4 +1,7 @@
-"""MCP 服务器管理接口：/api/mcp（连接、工具清单、测试调用）。"""
+"""MCP 服务器管理接口：/api/mcp（连接、工具清单、测试调用、内置服务器目录）。"""
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -37,6 +40,59 @@ class McpServerUpdate(BaseModel):
 class TestCallIn(BaseModel):
     tool: str = Field(min_length=1, description="工具名（服务器上的原名）")
     arguments: dict = Field(default_factory=dict)
+
+
+# ---------- 服务器目录（v1.18.0：移植 Qoder/官方 MCP 市场形态，离线内置） ----------
+
+_CATALOG_PATH = Path(__file__).resolve().parent.parent / "mcp_catalog.json"
+
+
+def _load_catalog() -> dict:
+    try:
+        return json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"version": 0, "servers": []}
+
+
+class CatalogAddIn(BaseModel):
+    name: str = Field(min_length=1, max_length=50, description="服务器名（默认目录 id，可改）")
+    command: str | None = Field(None, max_length=500, description="覆盖命令（默认用目录模板）")
+    args: list[str] | None = None
+    env: dict | None = None
+    enabled: bool = False
+
+
+@router.get("/catalog", summary="MCP 服务器目录（内置常用服务器模板，一键添加）")
+def catalog_list(db: Session = Depends(get_db)):
+    """内置离线目录 + 已添加状态（按同名 server 判断）。"""
+    data = _load_catalog()
+    from ..models import McpServer
+    existing = {r.name for r in db.query(McpServer).all()}
+    return {"version": data.get("version", 1),
+            "servers": [{**s, "installed": s.get("name") in existing}
+                        for s in data.get("servers", [])]}
+
+
+@router.post("/catalog/{catalog_id}/add", status_code=201,
+             summary="按目录模板一键添加 MCP 服务器（默认停用，可先编辑再启用）")
+def catalog_add(catalog_id: str, payload: CatalogAddIn, db: Session = Depends(get_db)):
+    data = _load_catalog()
+    entry = next((s for s in data.get("servers", []) if s.get("id") == catalog_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"目录里没有这个服务器：{catalog_id}")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="服务器名不能为空")
+    try:
+        row = create_server(db, name=name, command=payload.command or entry["command"],
+                            args=payload.args if payload.args is not None else list(entry.get("args") or []),
+                            env=payload.env if payload.env is not None else dict(entry.get("env") or {}),
+                            enabled=payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except McpError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "server": row, "catalog_id": catalog_id}
 
 
 @router.get("/servers", summary="MCP 服务器列表（含工具清单，env 脱敏）")

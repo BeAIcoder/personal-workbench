@@ -5,6 +5,7 @@
         <div class="card-head">
           <span>MCP 服务器</span>
           <el-button size="small" type="primary" @click="openCreate">新增服务器</el-button>
+          <el-button size="small" type="warning" plain @click="openCatalog">服务器目录</el-button>
         </div>
       </template>
       <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
@@ -84,6 +85,28 @@
         <el-button type="primary" :loading="testDialog.calling" @click="runTest">调用</el-button>
       </template>
       <pre v-if="testDialog.result" class="result">{{ testDialog.result }}</pre>
+    </el-dialog>
+
+    <el-dialog v-model="catalogDialog.visible" title="MCP 服务器目录（内置常用服务器模板）" width="720px">
+      <el-table :data="catalogDialog.items" size="small" height="380" v-loading="catalogDialog.loading"
+                empty-text="目录为空">
+        <el-table-column prop="label" label="名称" min-width="150" />
+        <el-table-column prop="description" label="说明" min-width="280" show-overflow-tooltip />
+        <el-table-column prop="command" label="启动命令" min-width="140" show-overflow-tooltip />
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.installed ? 'success' : 'info'">{{ row.installed ? '已添加' : '未添加' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" :disabled="row.installed"
+                       :loading="catalogDialog.adding === row.id" @click="catalogAdd(row)">添加</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-alert type="info" :closable="false" style="margin-top: 10px"
+        title="按目录模板一键添加（默认停用）：添加后在列表里「编辑」可改命令/参数/环境变量，「连接」注册工具。" />
     </el-dialog>
   </div>
 </template>
@@ -253,6 +276,31 @@ async function runTest() {
 }
 
 onMounted(load)
+
+const catalogDialog = reactive({ visible: false, loading: false, adding: '', items: [] })
+
+async function openCatalog() {
+  catalogDialog.visible = true
+  catalogDialog.loading = true
+  try {
+    const { data } = await api.get('/mcp/catalog')
+    catalogDialog.items = data.servers || []
+  } catch { /* 拦截器已提示 */ } finally {
+    catalogDialog.loading = false
+  }
+}
+
+async function catalogAdd(row) {
+  catalogDialog.adding = row.id
+  try {
+    await api.post(`/mcp/catalog/${row.id}/add`, { name: row.name })
+    ElMessage.success(`${row.label} 已添加（默认停用），请在列表中编辑并连接`)
+    row.installed = true
+    await load()
+  } catch { /* 拦截器已提示 */ } finally {
+    catalogDialog.adding = ''
+  }
+}
 </script>
 
 <style scoped>

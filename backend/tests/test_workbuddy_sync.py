@@ -71,7 +71,7 @@ def test_import_all_and_idempotent(env):
     with SessionLocal() as db:
         res = wb.import_all(db, home=str(env["home"]))
         assert res["skills"]["added"] == ["wb-demo-skill"]
-        assert res["identity"]["added"] == ["workbuddy-soul", "workbuddy-user"]
+        assert res["identity"]["added"] == ["workbuddy_soul", "workbuddy_user"]
         assert res["memories"]["added"] == 2
 
         # 幂等：技能 updated、记忆近重复跳过、身份 updated
@@ -80,7 +80,7 @@ def test_import_all_and_idempotent(env):
         assert res2["skills"]["added"] == []
         assert res2["memories"]["added"] == 0
         assert res2["memories"]["skipped"] == 2
-        assert res2["identity"]["updated"] == ["workbuddy-soul", "workbuddy-user"]
+        assert res2["identity"]["updated"] == ["workbuddy_soul", "workbuddy_user"]
 
     # 技能包新包默认停用
     assert "wb-demo-skill" in skill_store.disabled_packs(env["store"])
@@ -93,18 +93,28 @@ def test_import_dry_run_writes_nothing(env):
         assert res["skills"]["added"] == ["wb-demo-skill"]
         assert res["memories"]["added"] == 2
     assert not (env["store"] / "wb-demo-skill").exists()
-    assert not (env["packs"] / "workbuddy-soul.md").exists()
+    assert not (env["packs"] / "workbuddy_soul.md").exists()
     assert not env["settings"].exists()
 
 
 def test_import_identity_draft_format(env):
     from app.database import SessionLocal
+    from app.agents import expert_packs
     with SessionLocal() as db:
         wb.import_all(db, home=str(env["home"]), skills=False, memories=False)
-    text = (env["packs"] / "workbuddy-soul.md").read_text(encoding="utf-8")
+    # SOUL.md 夹具含自身 frontmatter：草稿正文须剥离嵌套 frontmatter
+    (env["home"] / "SOUL.md").write_text("---\nsummary: x\n---\n\n# 人设正文\n", encoding="utf-8")
+    with SessionLocal() as db:
+        wb.import_all(db, home=str(env["home"]), skills=False, memories=False)
+    text = (env["packs"] / "workbuddy_soul.md").read_text(encoding="utf-8")
     assert text.startswith("---\n")
-    assert "name: workbuddy-soul" in text
+    assert "name: workbuddy_soul" in text
     assert "# 人设正文" in text
+    # 生成草稿必须能通过 expert_packs 解析（name 规则/字段格式合法）且不残留嵌套 frontmatter
+    parsed = expert_packs.parse_pack_file(env["packs"] / "workbuddy_soul.md")
+    assert parsed["name"] == "workbuddy_soul"
+    assert parsed["label"] == "WorkBuddy 人设"
+    assert "---" not in parsed["body"][:5]
 
 
 def test_settings_roundtrip(env):

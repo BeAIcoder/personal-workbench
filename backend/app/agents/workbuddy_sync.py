@@ -255,10 +255,12 @@ def _import_identity(root: Path, result, dry_run: bool) -> None:
         if text is None:
             continue
         stem = fname[:-3].lower()
-        pack_name = f"workbuddy-{stem}"
+        # 专家包 name 规则：小写字母开头，仅小写字母/数字/下划线（expert_packs 校验口径），
+        # 因此用下划线而非连字符
+        pack_name = f"workbuddy_{stem}"
         label = {"soul": "WorkBuddy 人设", "identity": "WorkBuddy 身份",
                  "user": "WorkBuddy 用户档案", "bootstrap": "WorkBuddy 引导"}.get(stem, stem)
-        body = text.strip()[:_MAX_BODY]
+        body = _strip_frontmatter(text).strip()[:_MAX_BODY]
         if dry_run:
             (bucket["updated"] if _expert_pack_exists(pack_name) else bucket["added"]).append(pack_name)
             continue
@@ -268,10 +270,10 @@ def _import_identity(root: Path, result, dry_run: bool) -> None:
                 "---\n"
                 f"name: {pack_name}\n"
                 f"label: {label}\n"
-                f"emoji: 🤖\n"
-                f"color: \"#409EFF\"\n"
-                f"description: 从腾讯 WorkBuddy 导入的 {label}（{fname}）草稿\n"
-                "keywords: []\n"
+                "emoji: 🤖\n"
+                "color: \"#409EFF\"\n"
+                f"description: \"从腾讯 WorkBuddy 导入的 {label}（{fname}）草稿\"\n"
+                "keywords: \"workbuddy,导入\"\n"
                 "---\n\n"
                 f"{body}\n"
             )
@@ -281,6 +283,18 @@ def _import_identity(root: Path, result, dry_run: bool) -> None:
             (bucket["updated"] if existed else bucket["added"]).append(pack_name)
         except OSError as exc:
             bucket["failed"].append({"name": pack_name, "error": str(exc)})
+
+
+def _strip_frontmatter(text: str) -> str:
+    """剥离文件自身开头的一对 --- frontmatter（导入正文时避免嵌套 frontmatter）。"""
+    if not text.startswith("---"):
+        return text
+    lines = text.splitlines()
+    if len(lines) >= 2 and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                return "\n".join(lines[i + 1:])
+    return text
 
 
 def _expert_pack_exists(name: str) -> bool:

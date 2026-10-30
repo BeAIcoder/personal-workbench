@@ -434,14 +434,18 @@ def _remove_quietly(*paths: Path) -> None:
             logger.warning("清理上传残留文件失败：%s", p, exc_info=True)
 
 
-def _xlsx_first_sheet_to_csv(src: Path, dst: Path, max_rows: int) -> int:
-    """把 xlsx 第一张工作表流式写为 CSV（utf-8-sig），返回写入行数。
+def _xlsx_first_sheet_to_csv(src: Path, max_rows: int) -> tuple[int, Path]:
+    """把 xlsx 第一张工作表流式写为 CSV（utf-8-sig），返回（写入行数, CSV 路径）。
 
     同步函数：经 asyncio.to_thread 卸载，避免慢转换阻塞事件循环；
     行数（含表头）超过 max_rows 立即中止，不产出巨型/半成品 CSV。
+    CSV 路径在函数内部由源路径派生（src.with_suffix('.csv')）——不接收外部
+    输出路径参数，杜绝输出路径穿越面。
     """
     import openpyxl
 
+    src = Path(src)
+    dst = src.with_suffix(".csv")
     wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
     written = 0
     try:
@@ -455,7 +459,7 @@ def _xlsx_first_sheet_to_csv(src: Path, dst: Path, max_rows: int) -> int:
                 writer.writerow(["" if c is None else c for c in row])
     finally:
         wb.close()
-    return written
+    return written, dst
 
 
 @router.post("/upload", summary="上传聊天附件（图片/文本/Excel/Office/PDF；上限 10MB）")
@@ -505,8 +509,10 @@ async def upload_attachment(
             raise HTTPException(status_code=503, detail="Excel 行数上限服务暂不可用，请稍后重试")
         csv_path = dest.with_suffix(".csv")
         try:
-            # 慢转换卸载到线程（事件循环不被阻塞）；行数超限即中止，不产出半成品
-            await asyncio.to_thread(_xlsx_first_sheet_to_csv, dest, csv_path, MAX_IMPORT_ROWS)
+            # 慢转换卸载到线程（事件循环不被阻塞）；行数超限即中止，不产出半成品。
+            # CSV 路径由函数内部从源派生并返回（不接外部输出路径）。
+            _, csv_path = await asyncio.to_thread(
+                _xlsx_first_sheet_to_csv, dest, MAX_IMPORT_ROWS)
             dest = csv_path
             kind, note = "csv_converted", f"已转换第一张工作表为 CSV：{dest.name}"
         except _RowLimitExceeded as exc:

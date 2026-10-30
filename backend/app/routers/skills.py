@@ -79,3 +79,26 @@ def read_file(name: str, filename: str):
 def rescan():
     seeded = ensure_seed_packs()
     return {"items": scan_packs(), "seeded": seeded}
+
+
+# ---------- 技能市场（v1.18.0：聚合本机技能源，浏览/搜索/一键安装） ----------
+
+class MarketInstallIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+@router.get("/market/scan", summary="技能市场扫描（QwenPaw 技能池 + WorkBuddy + 平台种子）")
+def market_scan(keyword: str = ""):
+    from ..agents import skill_market
+    return skill_market.scan_market(keyword)
+
+
+@router.post("/market/install", summary="从市场一键安装技能包进平台技能池（默认停用）")
+def market_install(payload: MarketInstallIn):
+    from ..agents import skill_market
+    try:
+        result = skill_market.install_from_market(payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    orchestrator.invalidate()  # 技能池已变：失效已缓存 Agent
+    return result

@@ -7,6 +7,7 @@
           <div>
             <el-button size="small" @click="rescan" :loading="loading">重新扫描</el-button>
             <el-button size="small" type="primary" @click="openCreate">新建技能包</el-button>
+            <el-button size="small" type="warning" plain @click="openMarket">技能市场</el-button>
             <el-button size="small" type="success" plain @click="openWorkbuddy">从 WorkBuddy 导入</el-button>
           </div>
         </div>
@@ -86,6 +87,41 @@
         <el-button :loading="wbDialog.scanning" @click="wbScan">扫描预览</el-button>
         <el-button type="primary" :loading="wbDialog.importing" @click="wbImport">执行导入</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="marketDialog.visible" title="技能市场（本机技能源聚合）" width="760px">
+      <div style="display: flex; gap: 8px; margin-bottom: 10px">
+        <el-input v-model="marketDialog.keyword" placeholder="搜索名称/描述" clearable
+                  @input="marketSearch" style="flex: 1" />
+        <el-button :loading="marketDialog.loading" @click="marketSearch">刷新</el-button>
+      </div>
+      <el-alert v-if="marketDialog.sources" type="info" :closable="false" style="margin-bottom: 10px"
+        :title="`来源：QwenPaw 技能池（${marketDialog.sources.qwenpaw?.available ? '可用' : '未找到'}）、WorkBuddy（${marketDialog.sources.workbuddy?.available ? '可用' : '未找到'}）、平台种子`" />
+      <el-table :data="marketDialog.items" size="small" height="380" v-loading="marketDialog.loading"
+                empty-text="没有匹配的技能包">
+        <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="description" label="描述" min-width="260" show-overflow-tooltip />
+        <el-table-column label="来源" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" :type="{ qwenpaw: 'warning', workbuddy: 'success', builtin: 'info' }[row.source]">
+              {{ { qwenpaw: 'QwenPaw', workbuddy: 'WorkBuddy', builtin: '内置' }[row.source] }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.installed ? 'success' : 'info'">{{ row.installed ? '已安装' : '未安装' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" :disabled="row.installed && !row._dirty"
+                       :loading="marketDialog.installing === row.name" @click="marketInstall(row)">
+              {{ row.installed ? '更新' : '安装' }}
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-dialog>
   </div>
 </template>
@@ -180,6 +216,45 @@ async function wbImport() {
     await load()
   } catch { /* 拦截器已提示 */ } finally {
     wbDialog.importing = false
+  }
+}
+
+const marketDialog = reactive({
+  visible: false, loading: false, installing: '',
+  keyword: '', items: [], sources: null,
+})
+let marketTimer = null
+
+function openMarket() {
+  marketDialog.visible = true
+  marketSearch()
+}
+
+function marketSearch() {
+  clearTimeout(marketTimer)
+  marketTimer = setTimeout(doMarketSearch, 250)
+}
+
+async function doMarketSearch() {
+  marketDialog.loading = true
+  try {
+    const { data } = await api.get('/skills/market/scan', { params: { keyword: marketDialog.keyword } })
+    marketDialog.items = data.items || []
+    marketDialog.sources = data.sources || null
+  } catch { /* 拦截器已提示 */ } finally {
+    marketDialog.loading = false
+  }
+}
+
+async function marketInstall(row) {
+  marketDialog.installing = row.name
+  try {
+    const { data } = await api.post('/skills/market/install', { name: row.name })
+    ElMessage.success(`${data.name} 已${data.updated ? '更新' : '安装'}（默认停用，请在列表中启用）`)
+    row.installed = true
+    await load()
+  } catch { /* 拦截器已提示 */ } finally {
+    marketDialog.installing = ''
   }
 }
 const createForm = reactive({ name: '', description: '', body: '' })

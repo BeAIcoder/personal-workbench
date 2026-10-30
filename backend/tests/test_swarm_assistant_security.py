@@ -218,10 +218,10 @@ def test_upload_xlsx_conversion_offloaded_to_thread(upload_dir, monkeypatch):
 
     started = threading.Event()
 
-    def slow_convert(src, dst, max_rows):
+    def slow_convert(src, max_rows):
         started.set()
         time.sleep(PARSE_SLEEP)
-        return real_convert(src, dst, max_rows)
+        return real_convert(src, max_rows)
 
     monkeypatch.setattr(assistant_router, "_xlsx_first_sheet_to_csv", slow_convert)
     _patch_reader(monkeypatch)
@@ -255,8 +255,8 @@ def test_upload_xlsx_conversion_failure_keeps_file_and_cleans_partial_csv(client
     _patch_reader(monkeypatch)
     _patch_row_limit(monkeypatch, 1000)
 
-    def partial_then_fail(src, dst, max_rows):
-        dst.write_text("partial", encoding="utf-8")
+    def partial_then_fail(src, max_rows):
+        src.with_suffix(".csv").write_text("partial", encoding="utf-8")
         raise RuntimeError("磁盘炸了")
 
     monkeypatch.setattr(assistant_router, "_xlsx_first_sheet_to_csv", partial_then_fail, raising=False)
