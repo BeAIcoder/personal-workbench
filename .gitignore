@@ -103,3 +103,6 @@ backend/xls_smoke_*/
 
 # Playwright MCP 页面快照（调试产物：含真实业务名的无障碍快照，永不入库）
 .playwright-mcp/
+
+# zcode 工具工作区（本地工具状态，永不入库）
+.zcode/
