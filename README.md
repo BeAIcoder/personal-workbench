@@ -48,6 +48,8 @@
 
 双击 **`启动工作台.bat`**，脚本会自动创建虚拟环境、安装依赖并启动服务，浏览器打开 <http://127.0.0.1:8000>。关闭服务双击 `停止服务.bat`。
 
+> **分发包（ZIP）已附带预构建的前端产物**：解压后即使没有安装 Node.js 也能直接启动；只有改动了前端源码、需要重新构建时才要求 Node.js 24+。
+
 ### 手动方式
 
 ```bash
@@ -58,7 +60,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 python -m uvicorn app.main:app --port 8000
 
-# 前端（Node.js 22+，另开终端构建静态文件，由后端托管）
+# 前端（Node.js 24+，另开终端构建静态文件，由后端托管）
 cd frontend
 npm install
 npm run build

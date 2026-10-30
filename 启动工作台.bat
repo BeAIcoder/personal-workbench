@@ -40,12 +40,22 @@ if errorlevel 1 (
 echo       后端依赖安装完成。
 
 :check_frontend
+rem 分发包已附带预构建的前端产物（frontend\dist）：本机没有 Node 时直接使用，
+rem 不强制安装 Node；装有 Node 时才按 mtime 判断源码是否有更新、需要重新构建。
+if exist "frontend\dist\index.html" goto dist_present
 where node >nul 2>nul
 if errorlevel 1 (
-    echo 错误：未找到 node 命令，请先安装 Node.js 22+。
+    echo 错误：未找到 node 命令，且包内没有预构建的前端产物（frontend\dist）。
+    echo       请先安装 Node.js 24+ 后重试（首次构建前端需要 Node）。
     pause
     exit /b 1
 )
+pushd frontend
+goto build_frontend
+
+:dist_present
+where node >nul 2>nul
+if errorlevel 1 goto start_server
 pushd frontend
 call node scripts\needs-build.js
 if errorlevel 1 goto build_frontend
@@ -53,12 +63,12 @@ popd
 goto start_server
 
 :build_frontend
-echo [2/4] 检测到前端需要构建（源码、配置或依赖有更新）...
+echo [2/4] 检测到前端需要构建（源码、配置或依赖有更新，或缺少构建产物）...
 if exist "node_modules" goto build_run
 echo       正在安装前端依赖...
 where npm >nul 2>nul
 if errorlevel 1 (
-    echo 错误：未找到 npm 命令，请先安装 Node.js 22+。
+    echo 错误：未找到 npm 命令，请先安装 Node.js 24+。
     popd
     pause
     exit /b 1
