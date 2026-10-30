@@ -49,6 +49,7 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - 提交信息用中文 conventional commits（`fix(assistant): …` / `docs: …` / `test: …`）。
 - 测试：后端 `cd backend && PYTHONIOENCODING=utf-8 venv/Scripts/python.exe -m pytest tests -q`；前端 `cd frontend && npm test` + `npm run build`。
 - **脱敏数据管线**（外部验证数据准备）：生成 `python dev/desensitize_finance_data.py {bip|pos|cash}`，校验 `python dev/verify_desensitized.py`（需 `VERIFY_ATTACH_DIR` 指向会话附件目录）。产物在 `脱敏数据/`（gitignore）。规则：保勾稽随机数（凭证借=贷、明细账余额链、余额表配平）；泛化命名**避开 BIP 表头关键词**（账簿/科目/日期/凭证号/借方/贷方/期初/期末/本期/摘要），否则污染 `_locate_header_row`。
+- **分发包制作（ZIP 脱敏分发）**：双击 `打包发布.bat`（或 `python dev/package_release.py`，`--skip-smoke` 可跳冒烟）。管线：预检（git 必须干净/node+npm/映射表/venv）→ `git archive HEAD` 导出脱敏树（**禁用 clone/bundle**：过滤器 2026-10-13 才引入，更早历史未脱敏）→ 剔内部文档（AGENTS.md、dated 报告、`20261012New/`；保留 README/使用说明/算法/拓扑/spec/API 等）→ `backend/data` 空骨架 → staging 内 `npm ci + build`（脱敏源码构建，`node_modules` 删掉不进包）→ 三重扫描（映射表 13 条真实值反查 + 密钥正则 + 结构红线，失败即中止）→ ZIP 到 `backups/releases/`（gitignore）→ 解压冒烟（仓库 venv 起 uvicorn，`/` 与 `/docs` 200、新库生成）。产物 2.9MB 左右、顶层单目录、**收件人只需 Python 3.12+**：`启动工作台.bat` 见 `frontend/dist/index.html` 存在且无 Node 时直接用预构建产物。needs-build 判定是**内容哈希 vs `dist/.build-stamp.json`**（postbuild 写入），不用 mtime——zip 解包不保留时间戳，mtime 语义会让收件人每次启动误重建。
 
 ## Task 4：在线模型同步适配器与同步端点（2026-10-26）
 
