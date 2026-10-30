@@ -1,89 +1,32 @@
 // 判断前端是否需要重新构建：比较 src、index.html、构建配置、
-// package.json/package-lock.json 与 dist 产物的修改时间。
-// dist 产物缺失或任一源更新时判定需要构建。
+// package.json/package-lock.json 的内容哈希与 dist 内的构建印章
+// （dist/.build-stamp.json，由 postbuild 写入）。
+// 不用 mtime 比较——ZIP 解包不保留文件时间戳（Python zipfile 即如此），
+// 分发包解包后所有文件时间戳趋同，mtime 语义会误判「源码较新」。
 // 供 启动工作台.bat 调用：退出码 0 = 产物最新（跳过构建），1 = 需要构建。
-// 无第三方依赖；命令行可传入前端根目录（默认取本脚本上级目录）。
+// 无第三方依赖；命令行无参运行，根目录固定为本脚本上级目录（frontend），
+// 不接收外部路径参数（消除命令行参数→文件系统的穿越污点入口）。
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { readStamp, sourcesHash, STAMP_REL } from './write-build-stamp.js'
 
 const DIST_ENTRY = 'dist/index.html'
-const SOURCE_DIRS = ['src']
-const SOURCE_FILES = ['index.html', 'vite.config.js', 'package.json', 'package-lock.json']
-
-// 目录遍历统一入口：拼接后必须仍位于 rootDir 内（防穿越边界校验）
-function safeJoin(rootDir, ...segments) {
-  const target = path.resolve(rootDir, ...segments)
-  const rel = path.relative(rootDir, target)
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return null
-  return target
-}
-
-// 递归取目录内最新文件（相对路径 + mtimeMs）；目录本身 mtime 不可靠，必须走文件。
-function newestFile(rootDir, dirRel) {
-  let newest = null
-  const walk = (current) => {
-    let entries
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      const full = safeJoin(rootDir, path.relative(rootDir, current), entry.name)
-      if (full === null) continue
-      let stat
-      try {
-        stat = fs.statSync(full)
-      } catch {
-        continue
-      }
-      if (stat.isDirectory()) {
-        walk(full)
-      } else if (newest === null || stat.mtimeMs > newest.mtimeMs) {
-        newest = { rel: path.relative(rootDir, full), mtimeMs: stat.mtimeMs }
-      }
-    }
-  }
-  const start = safeJoin(rootDir, dirRel)
-  if (start !== null) walk(start)
-  return newest
-}
 
 export function checkNeedsBuild(rootDir) {
   const reasons = []
-  let artifactMtimeMs = null
-  try {
-    artifactMtimeMs = fs.statSync(path.join(rootDir, DIST_ENTRY)).mtimeMs
-  } catch {
+  if (!fs.existsSync(path.join(rootDir, DIST_ENTRY))) {
     reasons.push('dist/index.html missing')
   }
-
-  const sources = []
-  for (const rel of SOURCE_DIRS) {
-    if (!fs.existsSync(path.join(rootDir, rel))) {
-      reasons.push(rel + '/ missing')
-      continue
-    }
-    const newest = newestFile(rootDir, rel)
-    if (newest) sources.push(newest)
+  const stamp = readStamp(rootDir)
+  if (!stamp) {
+    reasons.push('build stamp missing (' + STAMP_REL + ')')
+  } else if (stamp.sources !== sourcesHash(rootDir)) {
+    reasons.push('sources changed since last build')
   }
-  for (const rel of SOURCE_FILES) {
-    try {
-      sources.push({ rel, mtimeMs: fs.statSync(path.join(rootDir, rel)).mtimeMs })
-    } catch {
-      // 可选文件缺失时跳过
-    }
-  }
-
-  const stale =
-    artifactMtimeMs === null ? [] : sources.filter((s) => s.mtimeMs > artifactMtimeMs).map((s) => 'newer: ' + s.rel)
-
   return {
-    needsBuild: reasons.length > 0 || stale.length > 0,
-    reasons: [...reasons, ...stale],
-    artifactMtimeMs,
-    sources,
+    needsBuild: reasons.length > 0,
+    reasons,
   }
 }
 

@@ -10,6 +10,7 @@
     "dev": "vite",
     "prebuild": "node scripts/clean-dist.js",
     "build": "vite build",
+    "postbuild": "node scripts/write-build-stamp.js",
     "preview": "vite preview",
     "test": "vitest run"
   },

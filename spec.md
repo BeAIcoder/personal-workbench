@@ -717,8 +717,11 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **构建**：`npm run build` 通过（8.56s，2026-10-20 历史快照；各视图独立 chunk，两个 index chunk 1.28MB + 1.03MB 为
   Element Plus / ECharts 全量引入的大头，分包留作专项）。
   **构建检测**：`frontend/scripts/needs-build.js` 比较 `src/`、`index.html`、`vite.config.js`、
-  `package.json`、`package-lock.json` 与 `dist/index.html` 的修改时间——产物缺失或任一源更新即判定
+  `package.json`、`package-lock.json` 的**内容哈希**与 `dist/.build-stamp.json` 构建印章（由
+  `postbuild` 的 `write-build-stamp.js` 写入）——产物缺失、印章缺失或源码自构建后变化即判定
   需要构建（退出码 1，打印原因）；`启动工作台.bat` 每次启动先调用它，按需才执行 `npm run build`。
+  刻意不用 mtime 比较：ZIP 解包不保留文件时间戳（Python zipfile 即如此），分发包解包后
+  mtime 语义会把「产物较新」误判成「源码较新」，导致收件人端每次启动都重建前端。
   `prebuild` 的 `clean-dist.js` 手动递归清空 dist（规避本机 Node 24 `rmSync` 静默失效，见 R-11）。
 - **手动验收**：十个静态页 + 设置抽屉 + 专家团队 tab + 技能包/专家团文件页 + 知识与记忆页 + MCP 页
   + 财务分组菜单 + SSE 对话流 + 路由测试工具 + 会话归档/导出 + 聊天传图。

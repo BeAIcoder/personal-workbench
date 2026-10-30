@@ -4,8 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { checkNeedsBuild } from '../scripts/needs-build.js'
+import { sourcesHash, writeStamp } from '../scripts/write-build-stamp.js'
 
 // stale-build 任务：前端陈旧构建检测（needs-build.js + 启动工作台.bat 分支）。
+// 判定语义为「源码内容哈希 vs dist 构建印章」——不用 mtime，因为 ZIP 解包
+// 不保留文件时间戳（Python zipfile 即如此），分发包解包后 mtime 语义会误判。
 // 所有用例只使用临时目录，不触碰真实 dist/业务数据。
 
 afterEach(() => {
@@ -15,10 +18,6 @@ afterEach(() => {
   }
 })
 
-const BASE = new Date('2026-01-01T00:00:00Z')
-const OLDER = new Date(BASE.getTime() - 60_000)
-const NEWER = new Date(BASE.getTime() + 60_000)
-
 const tmpDirs = []
 
 function makeTmpRoot() {
@@ -27,23 +26,22 @@ function makeTmpRoot() {
   return dir
 }
 
-function write(file, content, mtime) {
+function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, content)
-  if (mtime) fs.utimesSync(file, mtime, mtime)
 }
 
-// 生成一个完整的最小前端工程；dist 产物默认与 BASE 同刻，源码默认早于产物。
-function makeProject(root, { withDist = true, distMtime = BASE } = {}) {
-  write(path.join(root, 'src', 'main.js'), '// main', OLDER)
-  write(path.join(root, 'src', 'utils', 'fmt.js'), '// fmt', OLDER)
-  write(path.join(root, 'index.html'), '<!DOCTYPE html><html></html>', OLDER)
-  write(path.join(root, 'vite.config.js'), 'export default {}', OLDER)
-  write(path.join(root, 'package.json'), '{"name":"x"}', OLDER)
-  write(path.join(root, 'package-lock.json'), '{"name":"x"}', OLDER)
+// 生成一个完整的最小前端工程；dist 产物存在与否由 withDist 控制。
+function makeProject(root, { withDist = true } = {}) {
+  write(path.join(root, 'src', 'main.js'), '// main')
+  write(path.join(root, 'src', 'utils', 'fmt.js'), '// fmt')
+  write(path.join(root, 'index.html'), '<!DOCTYPE html><html></html>')
+  write(path.join(root, 'vite.config.js'), 'export default {}')
+  write(path.join(root, 'package.json'), '{"name":"x"}')
+  write(path.join(root, 'package-lock.json'), '{"name":"x"}')
   if (withDist) {
-    write(path.join(root, 'dist', 'index.html'), '<!DOCTYPE html><html></html>', distMtime)
-    write(path.join(root, 'dist', 'assets', 'app.js'), '// built', distMtime)
+    write(path.join(root, 'dist', 'index.html'), '<!DOCTYPE html><html></html>')
+    write(path.join(root, 'dist', 'assets', 'app.js'), '// built')
   }
 }
 
@@ -66,67 +64,112 @@ describe('needs-build：dist 缺失', () => {
   })
 })
 
-describe('needs-build：源较新', () => {
-  it('src 顶层文件较新时判定需要构建', () => {
+describe('needs-build：构建印章', () => {
+  it('dist 存在但缺少构建印章时判定需要构建', () => {
     const root = makeTmpRoot()
     makeProject(root)
-    write(path.join(root, 'src', 'App.vue'), '<template></template>', NEWER)
     const result = checkNeedsBuild(root)
     expect(result.needsBuild).toBe(true)
-    expect(result.reasons.join(' ')).toContain('App.vue')
+    expect(result.reasons.join(' ')).toContain('stamp')
   })
 
-  it('src 嵌套子目录文件较新时判定需要构建', () => {
+  it('印章与当前源码一致时判定为最新', () => {
     const root = makeTmpRoot()
     makeProject(root)
-    write(path.join(root, 'src', 'views', 'deep', 'Page.vue'), '<template></template>', NEWER)
-    const result = checkNeedsBuild(root)
-    expect(result.needsBuild).toBe(true)
-    expect(result.reasons.join(' ')).toContain('Page.vue')
-  })
-
-  it('index.html 较新时判定需要构建', () => {
-    const root = makeTmpRoot()
-    makeProject(root)
-    write(path.join(root, 'index.html'), '<!DOCTYPE html><html></html>', NEWER)
-    expect(checkNeedsBuild(root).needsBuild).toBe(true)
-  })
-
-  it('vite.config.js 较新时判定需要构建', () => {
-    const root = makeTmpRoot()
-    makeProject(root)
-    write(path.join(root, 'vite.config.js'), 'export default {}', NEWER)
-    expect(checkNeedsBuild(root).needsBuild).toBe(true)
-  })
-
-  it('package.json 较新时判定需要构建', () => {
-    const root = makeTmpRoot()
-    makeProject(root)
-    write(path.join(root, 'package.json'), '{"name":"x"}', NEWER)
-    expect(checkNeedsBuild(root).needsBuild).toBe(true)
-  })
-
-  it('package-lock.json 较新时判定需要构建', () => {
-    const root = makeTmpRoot()
-    makeProject(root)
-    write(path.join(root, 'package-lock.json'), '{"name":"x"}', NEWER)
-    expect(checkNeedsBuild(root).needsBuild).toBe(true)
-  })
-})
-
-describe('needs-build：产物较新', () => {
-  it('所有源均旧于 dist/index.html 时判定为最新', () => {
-    const root = makeTmpRoot()
-    makeProject(root)
+    writeStamp(root)
     const result = checkNeedsBuild(root)
     expect(result.needsBuild).toBe(false)
     expect(result.reasons).toEqual([])
   })
 
-  it('源与产物时间戳完全相同时判定为最新（严格大于才需构建）', () => {
+  it('写入的印章 sources 等于当前源码哈希', () => {
     const root = makeTmpRoot()
-    makeProject(root, { distMtime: BASE })
-    write(path.join(root, 'src', 'main.js'), '// main', BASE)
+    makeProject(root)
+    const stamp = writeStamp(root)
+    expect(stamp.sources).toBe(sourcesHash(root))
+  })
+
+  it('印章损坏（非法 JSON）时判定需要构建', () => {
+    const root = makeTmpRoot()
+    makeProject(root)
+    writeStamp(root)
+    fs.writeFileSync(path.join(root, 'dist', '.build-stamp.json'), '{ not json')
+    expect(checkNeedsBuild(root).needsBuild).toBe(true)
+  })
+})
+
+describe('needs-build：源码变化', () => {
+  it('src 顶层文件内容变化时判定需要构建', () => {
+    const root = makeTmpRoot()
+    makeProject(root)
+    writeStamp(root)
+    write(path.join(root, 'src', 'App.vue'), '<template></template>')
+    const result = checkNeedsBuild(root)
+    expect(result.needsBuild).toBe(true)
+    expect(result.reasons.join(' ')).toContain('sources changed')
+  })
+
+  it('src 嵌套子目录文件内容变化时判定需要构建', () => {
+    const root = makeTmpRoot()
+    makeProject(root)
+    writeStamp(root)
+    write(path.join(root, 'src', 'views', 'deep', 'Page.vue'), '<template>changed</template>')
+    const result = checkNeedsBuild(root)
+    expect(result.needsBuild).toBe(true)
+    expect(result.reasons.join(' ')).toContain('sources changed')
+  })
+
+  it('index.html 内容变化时判定需要构建', () => {
+    const root = makeTmpRoot()
+    makeProject(root)
+    writeStamp(root)
+    write(path.join(root, 'index.html'), '<!DOCTYPE html><html><body>x</body></html>')
+    expect(checkNeedsBuild(root).needsBuild).toBe(true)
+  })
+
+  it('vite.config.js 内容变化时判定需要构建', () => {
+    const root = makeTmpRoot()
+    makeProject(root)
+    writeStamp(root)
+    write(path.join(root, 'vite.config.js'), 'export default { base: "./" }')
+    expect(checkNeedsBuild(root).needsBuild).toBe(true)
+  })
+
+  it('package.json 内容变化时判定需要构建', () => {
+    const root = makeTmpRoot()
+    makeProject(root)
+    writeStamp(root)
+    write(path.join(root, 'package.json'), '{"name":"y"}')
+    expect(checkNeedsBuild(root).needsBuild).toBe(true)
+  })
+
+  it('package-lock.json 内容变化时判定需要构建', () => {
+    const root = makeTmpRoot()
+    makeProject(root)
+    writeStamp(root)
+    write(path.join(root, 'package-lock.json'), '{"name":"y"}')
+    expect(checkNeedsBuild(root).needsBuild).toBe(true)
+  })
+})
+
+describe('needs-build：mtime 不影响判定（ZIP 解包回归）', () => {
+  it('所有文件时间戳被改乱（内容不变）时仍判定为最新', () => {
+    const root = makeTmpRoot()
+    makeProject(root)
+    writeStamp(root)
+    // 模拟 zip 解包：所有文件时间戳趋同/乱序（源码晚于产物也不再触发重建）
+    const future = new Date('2030-01-01T00:00:00Z')
+    const past = new Date('2000-01-01T00:00:00Z')
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else fs.utimesSync(full, future, future)
+      }
+    }
+    walk(root)
+    fs.utimesSync(path.join(root, 'dist', 'index.html'), past, past)
+    fs.utimesSync(path.join(root, 'src', 'main.js'), future, future)
     const result = checkNeedsBuild(root)
     expect(result.needsBuild).toBe(false)
   })
@@ -173,5 +216,15 @@ describe('启动工作台.bat：GBK 编码与构建分支', () => {
     // 原有启动流程保持不变
     expect(text).toContain(':start_server')
     expect(text).toContain('uvicorn app.main:app')
+  })
+
+  it('附带预构建 dist 时不强制 Node：无 node 命令也可直达启动分支', () => {
+    const text = new TextDecoder('gbk', { fatal: true }).decode(raw)
+    expect(text).toContain('if exist "frontend\\dist\\index.html" goto dist_present')
+    expect(text).toContain(':dist_present')
+    // dist 存在且本机无 node 时跳过构建直接启动
+    expect(text).toMatch(/if errorlevel 1 goto start_server/)
+    expect(text).toContain('Node.js 24+')
+    expect(text).not.toContain('Node.js 22+')
   })
 })
