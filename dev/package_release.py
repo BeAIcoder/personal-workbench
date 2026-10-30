@@ -143,6 +143,15 @@ def read_version() -> str:
 
 # ---------------------------------------------------------------- 预检
 
+def resolve_tool(name: str) -> str:
+    """解析 node/npm：Windows 上需经 PATHEXT 找到 npm.cmd 才能被 CreateProcess 执行。"""
+    for candidate in (name, name + ".cmd", name + ".exe", name + ".bat"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    raise PackageError(f"未找到 {name}（前端构建需要；请确认 Node.js 24+ 已安装并在 PATH 中）")
+
+
 def preflight() -> None:
     log("[1/8] 预检…")
     status = subprocess.run(
@@ -160,12 +169,9 @@ def preflight() -> None:
         raise PackageError(f"缺少脱敏映射表 {SANITIZE_MAP}（敏感串反查的钥匙），无法保证脱敏质量")
     if not VENV_PY.exists():
         raise PackageError(f"缺少仓库 venv（{VENV_PY}），冒烟验证需要它；确认无误可加 --skip-smoke")
-    for tool in ("node", "npm"):
-        try:
-            subprocess.run([tool, "--version"], capture_output=True, timeout=30)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            raise PackageError(f"未找到 {tool}（前端构建需要）") from exc
-    log("      git 干净 / 映射表在位 / node+npm 可用 / venv 在位")
+    node = resolve_tool("node")
+    npm = resolve_tool("npm")
+    log(f"      git 干净 / 映射表在位 / venv 在位 / node={node} / npm={npm}")
 
 
 # ---------------------------------------------------------------- 导出与整理
@@ -217,13 +223,13 @@ def prune_internal(staging: Path) -> list[str]:
 
 # ---------------------------------------------------------------- 前端重建
 
-def build_frontend(staging: Path) -> None:
+def build_frontend(staging: Path, npm: str) -> None:
     log("[4/8] 用脱敏后的源码重建前端产物…")
     frontend = staging / "frontend"
     if not (frontend / "package-lock.json").exists():
         raise PackageError("staging 内缺少 frontend/package-lock.json，无法可复现构建")
-    run(["npm", "ci", "--no-audit", "--no-fund"], cwd=frontend, what="npm ci")
-    run(["npm", "run", "build"], cwd=frontend, what="npm run build")
+    run([npm, "ci", "--no-audit", "--no-fund"], cwd=frontend, what="npm ci")
+    run([npm, "run", "build"], cwd=frontend, what="npm run build")
     dist = frontend / "dist"
     if not (dist / "index.html").exists() or not any((dist / "assets").glob("*.js")):
         raise PackageError("前端构建后未得到 dist/index.html 或 assets/*.js")
@@ -442,7 +448,7 @@ def main() -> int:
         staging.mkdir(parents=True)
         export_archive(staging)
         prune_internal(staging)
-        build_frontend(staging)
+        build_frontend(staging, resolve_tool("npm"))
         scan_secrets(staging)
         count, size, sha = make_zip(staging, zip_path)
         if args.skip_smoke:
