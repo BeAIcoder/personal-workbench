@@ -80,6 +80,7 @@ BINARY_EXTS = {
     ".woff", ".woff2", ".ttf", ".eot", ".otf",
     ".mp3", ".mp4", ".wav", ".zip", ".gz", ".pdf",
     ".db", ".sqlite", ".sqlite3", ".duckdb", ".xlsx", ".xls",
+    ".exe", ".node", ".wasm", ".bin", ".so", ".dll", ".dylib",
 }
 
 # 密钥/隐私正则（命中且上下文无合成标记 → 硬失败）
@@ -233,7 +234,8 @@ def build_frontend(staging: Path, npm: str) -> None:
     dist = frontend / "dist"
     if not (dist / "index.html").exists() or not any((dist / "assets").glob("*.js")):
         raise PackageError("前端构建后未得到 dist/index.html 或 assets/*.js")
-    log("      dist 就绪（mtime 新于源码，收件人端 needs-build 判 UP_TO_DATE）")
+    shutil.rmtree(frontend / "node_modules", ignore_errors=True)
+    log("      dist 就绪（mtime 新于源码，收件人端 needs-build 判 UP_TO_DATE）；构建依赖 node_modules 已移除，不进包")
 
 
 # ---------------------------------------------------------------- 扫描
@@ -245,6 +247,14 @@ def iter_text_files(root: Path):
         if path.suffix.lower() in BINARY_EXTS:
             continue
         yield path
+
+
+def read_text_strict(path: Path) -> str | None:
+    """严格 UTF-8 解码；失败即视为二进制（如 esbuild.exe），不参与文本扫描。"""
+    try:
+        return path.read_bytes().decode("utf-8")
+    except (UnicodeDecodeError, OSError):
+        return None
 
 
 def scan_secrets(staging: Path) -> list[str]:
@@ -262,9 +272,8 @@ def scan_secrets(staging: Path) -> list[str]:
 
     for path in iter_text_files(staging):
         rel = path.relative_to(staging).as_posix()
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        content = read_text_strict(path)
+        if content is None:
             continue
         for real in reals:
             if real in content:
