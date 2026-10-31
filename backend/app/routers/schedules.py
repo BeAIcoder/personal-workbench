@@ -71,7 +71,17 @@ def get_schedule(schedule_id: DbId, db: Session = Depends(get_db)):
 @router.put("/{schedule_id}", response_model=ScheduleOut, summary="更新日程（仅传需要修改的字段）")
 def update_schedule(schedule_id: DbId, payload: ScheduleUpdate, db: Session = Depends(get_db)):
     schedule = _get_or_404(db, schedule_id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    # 显式 null 不能写入非空列（否则 IntegrityError → 500）：统一 422 中文提示
+    labels = {
+        "title": "标题", "description": "描述", "location": "地点",
+        "all_day": "全天标记", "color": "颜色",
+        "start_time": "开始时间", "end_time": "结束时间",
+    }
+    for field in labels:
+        if field in data and data[field] is None:
+            raise HTTPException(status_code=422, detail=f"{labels[field]}不能为空")
+    for field, value in data.items():
         setattr(schedule, field, value)
     if schedule.start_time is None or schedule.end_time is None:
         raise HTTPException(status_code=422, detail="开始/结束时间不能为空")

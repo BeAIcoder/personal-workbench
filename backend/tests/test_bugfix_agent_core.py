@@ -141,6 +141,31 @@ def test_readonly_mode_keeps_readonly_flagged_tools(client):
         TOOL_SPECS.pop("zz_b1_write", None)
 
 
+def test_readonly_mode_does_not_inject_bash(client, monkeypatch):
+    """BUGfix AGT-01：开启 Bash 时，只读模式仍不得注入 Bash（标准模式应注入）。"""
+    pid = _mk_provider(client)
+    _activate(client, _mk_model(client, pid))
+
+    from app.agents import config_store
+
+    original_load = config_store.load
+    monkeypatch.setattr(
+        orchestrator.config_store, "load",
+        lambda: {**original_load(), "enable_bash": 1},
+    )
+    spec = AgentSpec(
+        name="b1bash", label="B1Bash", emoji="", color="", description="",
+        system_prompt="", tools=["query_tasks"],
+    )
+
+    def _names(mode: str) -> set[str]:
+        agent = asyncio.run(orchestrator._build_agent(spec, mode))
+        return {s["function"]["name"].lower() for s in asyncio.run(agent.toolkit.get_tool_schemas())}
+
+    assert not any("bash" in n for n in _names("readonly"))
+    assert any("bash" in n for n in _names("standard"))
+
+
 # ---------------- B2：技能包变更失效已缓存 Agent ----------------
 
 def test_skills_pack_endpoints_invalidate_agent_cache(sclient):

@@ -19,7 +19,14 @@ class EnterpriseCreate(BaseModel):
     contact_phone: str | None = None
     address: str | None = None
     industry: str | None = None
+    # 前端使用 industry_type 命名；两者都接收，落库统一到 industry_type
+    industry_type: str | None = None
     tax_type: str = "查账征收"
+    # 小型微利判定必需字段（BUGfix TAX-15 / FE-01）：原先 Schema 缺这三项，
+    # 前端提交后被 Pydantic 静默丢弃，库里恒为 NULL → 恒判小微
+    employee_count: int | None = None
+    total_assets: float | None = None
+    is_restricted_industry: bool | None = None
 
 class EnterpriseUpdate(BaseModel):
     name: str | None = None
@@ -27,7 +34,11 @@ class EnterpriseUpdate(BaseModel):
     contact_phone: str | None = None
     address: str | None = None
     industry: str | None = None
+    industry_type: str | None = None
     tax_type: str | None = None
+    employee_count: int | None = None
+    total_assets: float | None = None
+    is_restricted_industry: bool | None = None
 
 class EnterpriseResponse(BaseModel):
     id: int
@@ -40,7 +51,8 @@ class EnterpriseResponse(BaseModel):
     tax_type: str | None = None
     employee_count: int | None
     total_assets: float | None
-    is_restricted_industry: bool
+    # 历史行可能为 NULL：给默认值避免响应校验 500
+    is_restricted_industry: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -75,11 +87,14 @@ async def create_enterprise(enterprise: EnterpriseCreate, db: Session = Depends(
     db_enterprise = Enterprise(
         name=enterprise_data["name"],
         tax_number=enterprise_data["tax_number"],
-        industry_type=enterprise_data.get("industry"),
+        industry_type=enterprise_data.get("industry_type") or enterprise_data.get("industry"),
         legal_person=enterprise_data.get("legal_person"),
         contact_phone=enterprise_data.get("contact_phone"),
         address=enterprise_data.get("address"),
         tax_type=enterprise_data.get("tax_type"),
+        employee_count=enterprise_data.get("employee_count"),
+        total_assets=enterprise_data.get("total_assets"),
+        is_restricted_industry=enterprise_data.get("is_restricted_industry"),
     )
     db.add(db_enterprise)
     db.commit()
@@ -98,9 +113,10 @@ async def update_enterprise(
         raise HTTPException(status_code=404, detail="企业不存在")
 
     update_data = enterprise_update.model_dump(exclude_unset=True)
-    # 映射Pydantic字段名到SQLAlchemy字段名
+    # 映射Pydantic字段名到SQLAlchemy字段名（industry_type 与 industry 都归一到 industry_type）
     field_map = {
         "industry": "industry_type",
+        "industry_type": "industry_type",
     }
     for key, value in update_data.items():
         db_key = field_map.get(key, key)

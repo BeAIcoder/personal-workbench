@@ -77,32 +77,71 @@ class TaxReturnResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-def calculate_tax(return_data: dict) -> dict:
-    """计算税额"""
-    # 应纳税所得额 = 营业收入 + 其他收入 - 营业成本 - 期间费用 + 纳税调整 - 税收优惠
-    taxable_income = (
-        return_data.get("total_revenue", 0) +
-        return_data.get("other_income", 0) -
-        return_data.get("total_costs", 0) -
-        return_data.get("total_expenses", 0) +
-        return_data.get("tax_adjustments", 0) -
-        return_data.get("tax_preferential", 0)
+def calculate_tax(return_data: dict, enterprise: Enterprise | None = None) -> dict:
+    """按企业所得税引擎口径计算税额（单一税率来源，禁止本地税率阶梯）。
+
+    BUGfix TAX-01：原实现用 5%/10%/25% 自造阶梯落库——10% 档法定不存在，
+    且与 /calculate 的引擎展示口径不一致，保存后税额静默变错。
+    现在统一复用引擎判定：
+    - 小型微利（≤300 万所得、≤300 人、≤5000 万资产、非限制行业）→ 5%
+    - 高新技术 → 15%（企业档案暂未存高新标记，保留引擎能力）
+    - 其余 → 25%；所得 ≤ 0 不缴税
+    企业从业人数/资产总额缺失时不臆断小微，按标准税率并在 note 说明。
+    """
+    from ..services.corporate_income_tax_calculator import (
+        CorporateIncomeTaxCalculator,
+        EnterpriseTaxType,
     )
-    
-    # 确定税率（小微企业优惠）
-    if taxable_income <= 3000000:  # 300万以下
-        tax_rate = 0.05  # 实际税率5%
-    elif taxable_income <= 10000000:  # 1000万以下
-        tax_rate = 0.10  # 实际税率10%
+
+    taxable_income = float(
+        return_data.get("total_revenue", 0)
+        + return_data.get("other_income", 0)
+        - return_data.get("total_costs", 0)
+        - return_data.get("total_expenses", 0)
+        + return_data.get("tax_adjustments", 0)
+        - return_data.get("tax_preferential", 0)
+    )
+    if taxable_income <= 0:
+        return {
+            "taxable_income": round(taxable_income, 2),
+            "tax_rate": 0.0,
+            "tax_amount": 0.0,
+            "note": "应纳税所得额为零或负数，无需缴纳企业所得税",
+        }
+
+    note = ""
+    tax_type = EnterpriseTaxType.STANDARD
+    if (
+        enterprise is not None
+        and enterprise.employee_count is not None
+        and enterprise.total_assets is not None
+    ):
+        small_micro = CorporateIncomeTaxCalculator.check_small_micro_enterprise(
+            employee_count=int(enterprise.employee_count),
+            total_assets_wan=float(enterprise.total_assets),
+            taxable_income_wan=taxable_income / 10000.0,
+            is_restricted_industry=bool(enterprise.is_restricted_industry),
+            industry_name=enterprise.industry_type or "",
+        )
+        tax_type = CorporateIncomeTaxCalculator.determine_enterprise_tax_type(
+            is_high_tech=False,
+            small_micro_result=small_micro,
+        )
     else:
-        tax_rate = 0.25  # 标准税率25%
-    
-    tax_amount = taxable_income * tax_rate
-    
+        note = "企业从业人数/资产总额未填写，无法判定小型微利，已按标准税率计算"
+
+    # 小微优惠走政策有效期校验（过期/未生效时抛中文 ValueError，由路由转 400）
+    CorporateIncomeTaxCalculator.calculate_tax_amount(
+        taxable_income_wan=taxable_income / 10000.0,
+        enterprise_tax_type=tax_type,
+        tax_year=return_data.get("tax_period") or None,
+    )
+    rate = CorporateIncomeTaxCalculator.get_applicable_tax_rate(tax_type)
     return {
-        "taxable_income": max(0, taxable_income),
-        "tax_rate": tax_rate,
-        "tax_amount": max(0, tax_amount)
+        "taxable_income": round(taxable_income, 2),
+        "tax_rate": rate,
+        "tax_amount": round(taxable_income * rate, 2),
+        "note": note,
     }
 
 @router.get("/", response_model=List[TaxReturnResponse])
@@ -139,9 +178,12 @@ async def create_tax_return(
     if not enterprise:
         raise HTTPException(status_code=404, detail="企业不存在")
 
-    # 计算税额
+    # 计算税额（复用引擎口径；政策过期/未生效时引擎抛中文 ValueError）
     return_data = tax_return.model_dump()
-    tax_calc = calculate_tax(return_data)
+    try:
+        tax_calc = calculate_tax(return_data, enterprise)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # 将Pydantic字段映射到SQLAlchemy模型字段
     # tax_period (str "2024") -> year (int)
@@ -156,6 +198,20 @@ async def create_tax_return(
             quarter = None
     # report_type (str "A类") -> return_type (str "预缴"/"年度")
     return_type = "预缴" if tax_return.report_type == "A类" else "年度"
+
+    # 同一企业同一年度/季度/类型只允许一条申报记录（BUGfix TAX-17）：
+    # 旧实现每次 POST 都新建 draft，重复提交产生多条无法删除的脏数据。
+    dup = (db.query(TaxReturn)
+           .filter(TaxReturn.enterprise_id == tax_return.enterprise_id)
+           .filter(TaxReturn.year == year)
+           .filter(TaxReturn.quarter == quarter)
+           .filter(TaxReturn.return_type == return_type).first())
+    if dup is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该企业 {year} 年{'Q' + str(quarter) if quarter else '年度'} "
+                   f"{return_type}申报已存在（id={dup.id}），请修改原记录或先删除",
+        )
 
     # 创建申报记录（只使用SQLAlchemy模型中存在的字段）
     # tax_calc返回taxable_income、tax_rate、tax_amount，但TaxReturn模型只有
@@ -588,7 +644,7 @@ def _build_a200000_form_data(tax_return: TaxReturn, enterprise: Enterprise) -> A
         industry_type=enterprise.industry_type or "",
         total_assets=enterprise.total_assets or 0.0,
         employee_count=employee_count_or_zero(enterprise),
-        is_small_micro=_is_small_micro(enterprise),
+        is_small_micro=_is_small_micro(enterprise, tax_return.taxable_income or 0.0),
     )
     
     # 数据库模型中 quarter 是 int 类型 (1-4)，year 是 int
@@ -630,16 +686,26 @@ def employee_count_or_zero(enterprise: Enterprise) -> int:
     return enterprise.employee_count or 0
 
 
-def _is_small_micro(enterprise: Enterprise) -> bool:
-    """判断是否为小型微利企业"""
+def _is_small_micro(enterprise: Enterprise, taxable_income_yuan: float = 0.0) -> bool:
+    """判断是否为小型微利企业（复用引擎 criteria，含 300 万所得与限制行业）。
+
+    BUGfix TAX-02：原实现只看人数/资产，任意规模企业都会被判小微并按 5% 出表。
+    字段缺失时按「无法判定」处理（不臆断小微）。
+    """
     if not enterprise:
         return False
-    # 从业人数不超过300人，资产总额不超过5000万元
-    if (enterprise.employee_count or 0) > 300:
+    if enterprise.employee_count is None or enterprise.total_assets is None:
         return False
-    if (enterprise.total_assets or 0) > 5000:
-        return False
-    return True
+    from ..services.corporate_income_tax_calculator import CorporateIncomeTaxCalculator
+
+    result = CorporateIncomeTaxCalculator.check_small_micro_enterprise(
+        employee_count=int(enterprise.employee_count),
+        total_assets_wan=float(enterprise.total_assets),
+        taxable_income_wan=float(taxable_income_yuan or 0.0) / 10000.0,
+        is_restricted_industry=bool(enterprise.is_restricted_industry),
+        industry_name=enterprise.industry_type or "",
+    )
+    return bool(result.get("qualified"))
 
 
 def _export_filename(enterprise: Enterprise, tax_return: TaxReturn, suffix: str) -> str:

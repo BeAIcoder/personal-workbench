@@ -1229,21 +1229,21 @@ def test_multimodal_verdicts(monkeypatch):
     def urlopen_ok(req, timeout=None):
         return io.BytesIO(ok_body)
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen_ok)
+    monkeypatch.setattr(config_store, "_probe_urlopen", urlopen_ok)
     ok = asyncio.run(config_store.test_multimodal(cfg))
     assert ok["ok"] is True and ok["verdict"] == "supported"
 
     def urlopen_400(req, timeout=None):
         raise urllib.error.HTTPError("https://x/v1/chat/completions", 400, "Bad Request", {}, io.BytesIO(b"{}"))
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen_400)
+    monkeypatch.setattr(config_store, "_probe_urlopen", urlopen_400)
     rejected = asyncio.run(config_store.test_multimodal(cfg))
     assert rejected["ok"] is False and rejected["verdict"] == "rejected"
 
     def urlopen_down(req, timeout=None):
         raise urllib.error.URLError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen_down)
+    monkeypatch.setattr(config_store, "_probe_urlopen", urlopen_down)
     unknown = asyncio.run(config_store.test_multimodal(cfg))
     assert unknown["ok"] is False and unknown["verdict"] == "unknown"
 
@@ -1265,10 +1265,10 @@ def test_multimodal_verdicts_only_400_422_are_rejected(monkeypatch):
         return urlopen_err
 
     for code in (400, 422):
-        monkeypatch.setattr(urllib.request, "urlopen", _http_error(code))
+        monkeypatch.setattr(config_store, "_probe_urlopen", _http_error(code))
         assert asyncio.run(config_store.test_multimodal(cfg))["verdict"] == "rejected", code
     for code in (401, 403, 404, 408, 429, 500, 503):
-        monkeypatch.setattr(urllib.request, "urlopen", _http_error(code))
+        monkeypatch.setattr(config_store, "_probe_urlopen", _http_error(code))
         assert asyncio.run(config_store.test_multimodal(cfg))["verdict"] == "unknown", code
 
 
@@ -1292,10 +1292,10 @@ def test_multimodal_anthropic_verdicts_only_400_422_are_rejected(monkeypatch):
         return urlopen_err
 
     for code in (400, 422):
-        monkeypatch.setattr(urllib.request, "urlopen", _http_error(code))
+        monkeypatch.setattr(config_store, "_probe_urlopen", _http_error(code))
         assert asyncio.run(config_store.test_multimodal_anthropic(cfg))["verdict"] == "rejected", code
     for code in (401, 403, 404, 408, 429, 500):
-        monkeypatch.setattr(urllib.request, "urlopen", _http_error(code))
+        monkeypatch.setattr(config_store, "_probe_urlopen", _http_error(code))
         assert asyncio.run(config_store.test_multimodal_anthropic(cfg))["verdict"] == "unknown", code
 
 

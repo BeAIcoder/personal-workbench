@@ -217,7 +217,8 @@ class ValueAddedTaxCalculator:
         """
         一般纳税人应纳税额计算
 
-        公式：应纳税额 = 销项税额 - 可抵扣进项税额 - 进项税额转出
+        公式：应纳税额 = 销项税额 - 可抵扣进项税额 + 进项税额转出
+        （转出是已抵扣进项要加回，符号为 +）
 
         Args:
             sales_items: 销售明细列表
@@ -264,8 +265,9 @@ class ValueAddedTaxCalculator:
                 "non_deductible_reason": invoice.non_deductible_reason,
             })
 
-        # 应纳税额 = 销项税额 - 可抵扣进项税额 - 进项税额转出
-        vat_payable = total_output_tax - deductible_input_tax - input_tax_transferred_out
+        # 应纳税额 = 销项税额 - (可抵扣进项税额 - 进项税额转出)
+        # 进项转出是「已抵扣进项要加回」，符号必须为 +；原实现写成 - 会少计 2×转出额。
+        vat_payable = total_output_tax - deductible_input_tax + input_tax_transferred_out
 
         return GeneralTaxpayerResult(
             output_tax=round(total_output_tax, 2),

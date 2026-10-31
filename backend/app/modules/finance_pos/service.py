@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from datetime import datetime
@@ -21,10 +22,16 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
-from ...utils import engine_subprocess_env, repair_upload_mojibake, resolve_engine_root
+from ...utils import engine_subprocess_env, find_sibling_project, repair_upload_mojibake, resolve_engine_root
 from .models import PosRun
 
 logger = logging.getLogger(__name__)
+
+# 执行互斥：引擎会写同一个 run_dir/output，且 SQLite 检查-置 running 之间存在
+# TOCTOU 窗口；单机模块用进程内锁串行化所有执行（BUGfix POS-01）。
+_EXEC_LOCK = threading.Lock()
+# 崩溃/重启后 running 超过此时长视为陈旧，自动置 failed，允许重跑
+STALE_RUN_SECONDS = 2 * 3600
 
 LEDGER_SCRIPT = "generate_pos_ledger.py"
 ANALYZE_SCRIPT = "analyze_pos_reconciliation.py"
@@ -84,15 +91,14 @@ def _safe_member_segment(part: str) -> str:
 
 
 def engine_dir() -> Path:
-    """POS 台账项目目录：配置优先，否则按默认相对位置推导。"""
+    """POS 台账项目目录：配置优先，否则按资产锚点目录推导（settings.finance_asset_anchor）。"""
     if settings.finance_pos_engine_path:
         # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
         return resolve_engine_root(settings.finance_pos_engine_path)
-    base = Path(__file__).resolve()
-    for parent in base.parents:
-        if parent.name == "01-财税自动化":
-            return parent / "收款认领POS台账"
-    raise EngineUnavailableError("无法定位 POS 引擎目录，请配置 finance_pos_engine_path")
+    found = find_sibling_project("收款认领POS台账", Path(__file__))
+    if found is None:
+        raise EngineUnavailableError("无法定位 POS 引擎目录，请配置 finance_pos_engine_path")
+    return found
 
 
 def _runs_root() -> Path:
@@ -230,6 +236,12 @@ def _run_script(script: str, args: list[str], cwd: Path) -> str:
 
 
 def execute_run(db: Session, run_id: int, project: str | None = None) -> dict:
+    """执行入口：进程内串行化，避免同一运行被并发执行/同一目录互相覆盖。"""
+    with _EXEC_LOCK:
+        return _execute_run_locked(db, run_id, project)
+
+
+def _execute_run_locked(db: Session, run_id: int, project: str | None = None) -> dict:
     """执行：先台账后差异分析；产物 = output/* + input 下新生成的文件。
 
     project：可选，透传引擎 analyze --project（引擎按 POS 终端号硬编码映射项目名，
@@ -239,7 +251,13 @@ def execute_run(db: Session, run_id: int, project: str | None = None) -> dict:
     if run is None:
         raise LookupError("运行记录不存在")
     if run.status == "running":
-        raise ValueError("该运行正在执行中")
+        age = (datetime.now() - (run.updated_at or run.created_at)).total_seconds()
+        if age > STALE_RUN_SECONDS:
+            run.status = "failed"
+            run.error = "上次运行中断（进程退出/重启），已自动标记失败，可重新执行"
+            db.commit()
+        else:
+            raise ValueError("该运行正在执行中")
     edir = engine_dir()
     run_dir = Path(run.run_dir)
     input_dir = run_dir / "input"

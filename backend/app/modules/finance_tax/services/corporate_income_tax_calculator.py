@@ -84,8 +84,12 @@ class EnterpriseInfo:
 class LossCarryForward:
     """以前年度亏损信息（单位：万元）"""
     # 各年度可弥补亏损额，key为年度（如2021, 2022），value为可弥补亏损额
-    # 亏损最多可向后结转5年
+    # 亏损最多可向后结转5年（高新技术企业 10 年，由 carryforward_years 指定）
     losses_by_year: Dict[int, float] = field(default_factory=dict)
+    # 当前申报年度：传入后按「结转年限」排除过期亏损（BUGfix TAX-07）
+    tax_year: int | None = None
+    # 结转年限：一般企业 5 年；高新技术企业 10 年
+    carryforward_years: int = 5
 
     def get_total_available_loss(self) -> float:
         """获取可弥补亏损总额"""
@@ -111,6 +115,7 @@ class CalculationResult:
     # 弥补亏损
     loss_carry_forward_used: float = 0.0    # 本期弥补的以前年度亏损（万元）
     loss_carry_forward_remaining: Dict[int, float] = field(default_factory=dict)
+    loss_carry_forward_expired: Dict[int, float] = field(default_factory=dict)  # 已过期不可弥补
 
     # 核心计算结果
     accounting_profit: float = 0.0          # 利润总额（万元）
@@ -651,18 +656,27 @@ class CorporateIncomeTaxCalculator:
                 "taxable_income_after_loss_wan": taxable_income_before_loss_wan,
                 "remaining_losses": dict(losses.losses_by_year),
                 "used_by_year": {},
+                "expired_losses": {},
             }
 
         remaining_income = taxable_income_before_loss_wan
         remaining_losses = dict(losses.losses_by_year)
         used_by_year = {}
+        expired_losses: Dict[int, float] = {}
 
-        # 按年度从早到晚弥补（先亏先补）
+        # 按年度从早到晚弥补（先亏先补）；传入当前年度时，超过结转年限的亏损
+        # 不得再弥补（2020 年亏损可在 2021-2025 弥补，2026 年起过期）。
+        current_year = losses.tax_year
+        max_years = max(1, int(losses.carryforward_years or 5))
         for year in sorted(remaining_losses.keys()):
             if remaining_income <= 0:
                 break
             available_loss = remaining_losses[year]
             if available_loss <= 0:
+                continue
+            if current_year is not None and (int(current_year) - int(year)) > max_years:
+                expired_losses[int(year)] = round(available_loss, 2)
+                remaining_losses[year] = 0.0
                 continue
 
             used = min(remaining_income, available_loss)
@@ -680,6 +694,7 @@ class CorporateIncomeTaxCalculator:
                 y: v for y, v in remaining_losses.items()
             },
             "used_by_year": used_by_year,
+            "expired_losses": expired_losses,
         }
 
     # --- 5. 税额计算 ---
@@ -803,27 +818,7 @@ class CorporateIncomeTaxCalculator:
         )
         result.taxable_income_before_loss = taxable_income_before_loss
 
-        # 第3步：小型微利企业判定（使用弥补亏损前的应纳税所得额）
-        # 注：小型微利企业判定使用的应纳税所得额为弥补亏损前的金额
-        small_micro_result = CorporateIncomeTaxCalculator.check_small_micro_enterprise(
-            employee_count=enterprise_info.employee_count,
-            total_assets_wan=enterprise_info.total_assets,
-            taxable_income_wan=taxable_income_before_loss,
-            is_restricted_industry=enterprise_info.is_restricted_industry,
-            industry_name=enterprise_info.industry,
-        )
-        result.is_small_micro = small_micro_result["qualified"]
-        result.small_micro_details = small_micro_result
-
-        # 第4步：确定企业类型和适用税率
-        enterprise_tax_type = CorporateIncomeTaxCalculator.determine_enterprise_tax_type(
-            is_high_tech=enterprise_info.is_high_tech,
-            small_micro_result=small_micro_result,
-        )
-        result.enterprise_tax_type = enterprise_tax_type
-        result.applicable_tax_rate = CorporateIncomeTaxCalculator.get_applicable_tax_rate(enterprise_tax_type)
-
-        # 第5步：弥补亏损计算
+        # 第3步：弥补亏损（先算，因为小微判定要用弥补后的应纳税所得额）
         if losses is not None and losses.losses_by_year:
             loss_result = CorporateIncomeTaxCalculator.calculate_loss_carry_forward(
                 taxable_income_before_loss_wan=taxable_income_before_loss,
@@ -831,10 +826,32 @@ class CorporateIncomeTaxCalculator:
             )
             result.loss_carry_forward_used = loss_result["loss_used_wan"]
             result.loss_carry_forward_remaining = loss_result["remaining_losses"]
+            result.loss_carry_forward_expired = loss_result.get("expired_losses", {})
             result.taxable_income_after_loss = loss_result["taxable_income_after_loss_wan"]
         else:
             result.loss_carry_forward_used = 0.0
             result.taxable_income_after_loss = taxable_income_before_loss
+
+        # 第4步：小型微利企业判定（使用弥补亏损后的应纳税所得额）
+        # 《企业所得税法》第五条的「应纳税所得额」已扣除允许弥补的亏损，
+        # 小微条件应基于弥补后金额（BUGfix TAX-08）。
+        small_micro_result = CorporateIncomeTaxCalculator.check_small_micro_enterprise(
+            employee_count=enterprise_info.employee_count,
+            total_assets_wan=enterprise_info.total_assets,
+            taxable_income_wan=max(0.0, result.taxable_income_after_loss),
+            is_restricted_industry=enterprise_info.is_restricted_industry,
+            industry_name=enterprise_info.industry,
+        )
+        result.is_small_micro = small_micro_result["qualified"]
+        result.small_micro_details = small_micro_result
+
+        # 第5步：确定企业类型和适用税率
+        enterprise_tax_type = CorporateIncomeTaxCalculator.determine_enterprise_tax_type(
+            is_high_tech=enterprise_info.is_high_tech,
+            small_micro_result=small_micro_result,
+        )
+        result.enterprise_tax_type = enterprise_tax_type
+        result.applicable_tax_rate = CorporateIncomeTaxCalculator.get_applicable_tax_rate(enterprise_tax_type)
 
         # 第6步：税额计算（使用弥补亏损后的应纳税所得额）
         tax_result = CorporateIncomeTaxCalculator.calculate_tax_amount(

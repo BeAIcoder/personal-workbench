@@ -2,7 +2,7 @@
 """finance_dsf 模块接口：/api/finance/dsf。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ class DsfIn(BaseModel):
     total_salary: float = Field(ge=0)
     disabled_employees: int = Field(ge=0)
     ratio: float = Field(default=0.015, gt=0, le=0.5)
+    local_avg_wage: float | None = Field(default=None, gt=0, description="当地上年度社会平均工资（年，元）")
 
 
 def _out(f: DsfFiling) -> dict:
@@ -37,7 +38,7 @@ def create_filing(payload: DsfIn, db: Session = Depends(get_db)):
     try:
         calc = service.calc_dsf(payload.year, payload.total_employees,
                                 payload.total_salary, payload.disabled_employees,
-                                payload.ratio)
+                                payload.ratio, payload.local_avg_wage)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     filing = DsfFiling(
@@ -45,7 +46,8 @@ def create_filing(payload: DsfIn, db: Session = Depends(get_db)):
         inputs={"total_employees": payload.total_employees,
                 "total_salary": payload.total_salary,
                 "disabled_employees": payload.disabled_employees,
-                "ratio": payload.ratio},
+                "ratio": payload.ratio,
+                "local_avg_wage": payload.local_avg_wage},
         calc_result=calc, status="calculated")
     db.add(filing)
     db.commit()
@@ -54,7 +56,8 @@ def create_filing(payload: DsfIn, db: Session = Depends(get_db)):
 
 
 @router.get("/filings", summary="填报记录列表")
-def list_filings(page: int = 1, page_size: int = 20, db: Session = Depends(get_db)):
+def list_filings(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200),
+                 db: Session = Depends(get_db)):
     q = db.query(DsfFiling).order_by(DsfFiling.id.desc())
     total = q.count()
     rows = q.offset((page - 1) * page_size).limit(page_size).all()

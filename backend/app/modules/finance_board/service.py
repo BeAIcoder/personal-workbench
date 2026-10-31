@@ -20,7 +20,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
-from ...utils import engine_subprocess_env, resolve_engine_root
+from ...utils import engine_subprocess_env, find_sibling_project, resolve_engine_root
 from ...database import SessionLocal
 from .models import BoardSnapshot
 
@@ -34,7 +34,8 @@ DASHBOARD_NAME = "经营财务报表监控看板.html"
 STEP_TIMEOUT = 600
 # 计划任务通道整条管线的等待上限（秒）：m02 脱敏抽取约 80-90s，给足余量
 TASK_CHANNEL_TIMEOUT = 600
-# 本机计划任务名（微信报表监控项目的 服务安装.ps1 注册）
+# 本机计划任务名兜底默认（微信报表监控项目的 服务安装.ps1 注册）；
+# 生效值经 _task_name() 取 settings.finance_board_task_name，配置为空才回落到这里
 BOARD_TASK_NAME = "微信报表监控"
 
 # 管线互斥锁：stamp 精度到秒且是快照目录名，并发 /run 会共用同一快照目录互相踩踏；
@@ -55,12 +56,16 @@ def pipeline_dir() -> Path:
     if settings.finance_board_pipeline_path:
         # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
         return resolve_engine_root(settings.finance_board_pipeline_path)
-    # backend/app/modules/finance_board/service.py → AssetLib/01-财税自动化/微信报表监控
-    base = Path(__file__).resolve()
-    for parent in base.parents:
-        if parent.name == "01-财税自动化":
-            return parent / "微信报表监控"
-    raise PipelineUnavailableError("无法定位微信报表监控目录，请配置 finance_board_pipeline_path")
+    # 锚点目录名取 settings.finance_asset_anchor（空则兜底 01-财税自动化），见 utils.find_sibling_project
+    found = find_sibling_project("微信报表监控", Path(__file__))
+    if found is None:
+        raise PipelineUnavailableError("无法定位微信报表监控目录，请配置 finance_board_pipeline_path")
+    return found
+
+
+def _task_name() -> str:
+    """报表监控计划任务名：配置优先，空值兜底 BOARD_TASK_NAME。"""
+    return settings.finance_board_task_name or BOARD_TASK_NAME
 
 
 def _snapshots_dir() -> Path:
@@ -89,7 +94,7 @@ def _run_step(script: Path) -> str:
 def _scheduled_task_available() -> bool:
     """本机是否注册了报表监控计划任务（服务安装.ps1 注册）。"""
     proc = subprocess.run(
-        ["schtasks", "/query", "/tn", BOARD_TASK_NAME],
+        ["schtasks", "/query", "/tn", _task_name()],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return proc.returncode == 0
@@ -103,6 +108,25 @@ def _scheduled_run_state() -> dict:
         return {}
 
 
+# 与管线 run_service.py 的 STALE_LOCK_HOURS 保持一致：锁文件新鲜 = 正在运行
+PIPELINE_STALE_LOCK_SECONDS = 3 * 3600
+
+
+def _pipeline_lock_fresh() -> bool:
+    """以管线自己的 logs/run.lock 判「正在运行」（mtime 新鲜）。
+
+    run_service.py 只在结束时写 last_run.json，运行中只有 run.lock 留痕；
+    因此不能用 last_run.json 的 finished 字段判运行中（BUGfix BRD-01）。
+    """
+    lock = pipeline_dir() / "logs" / "run.lock"
+    try:
+        if not lock.is_file():
+            return False
+        return (time.time() - lock.stat().st_mtime) < PIPELINE_STALE_LOCK_SECONDS
+    except OSError:
+        return False
+
+
 def _run_steps_via_scheduled_task() -> str:
     """经计划任务通道跑完整管线并等待结束，返回日志摘要。
 
@@ -113,12 +137,18 @@ def _run_steps_via_scheduled_task() -> str:
     """
     before = _scheduled_run_state()
     before_started = before.get("started", "")
-    if before_started and not before.get("finished"):
+    # 运行中判定以管线自己的 run.lock 为准：last_run.json 只在结束时写，
+    # 用 finished 字段判「正在运行」永远不成立（BUGfix BRD-01）。
+    if _pipeline_lock_fresh():
         raise PipelineBusyError("报表监控管线正在运行中（计划任务），请等待结束后再试")
-    proc = subprocess.run(
-        ["schtasks", "/run", "/tn", BOARD_TASK_NAME],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
+    try:
+        proc = subprocess.run(
+            ["schtasks", "/run", "/tn", _task_name()],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise PipelineUnavailableError("触发计划任务超时（schtasks 无响应）") from None
     msg = (proc.stderr or proc.stdout or "").strip()
     if proc.returncode != 0:
         if "已经运行" in msg or "already running" in msg.lower():
@@ -141,7 +171,7 @@ def _run_steps_via_scheduled_task() -> str:
         raise PipelineUnavailableError(
             f"管线步骤失败：{name}（计划任务通道，详见微信报表监控 logs\\service_*.log）"
         )
-    lines = [f"== 计划任务通道（{BOARD_TASK_NAME}，started={last.get('started')}）=="]
+    lines = [f"== 计划任务通道（{_task_name()}，started={last.get('started')}）=="]
     for s in last.get("steps", []):
         lines.append(f"{s.get('step')} exit={s.get('exit')} {s.get('seconds')}s")
     return "\n".join(lines)

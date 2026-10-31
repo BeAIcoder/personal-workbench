@@ -31,10 +31,29 @@ def list_tax_items() -> list[dict]:
     return list(STAMP_DUTY_RATES)
 
 
+def _item_base(name: str) -> str:
+    """税目名归一：去掉括号说明（「买卖合同（动产买卖）」→「买卖合同」）。"""
+    text = str(name or "").strip()
+    for sep in ("（", "("):
+        if sep in text:
+            text = text.split(sep, 1)[0]
+    return text.strip()
+
+
 def get_rate(tax_item: str) -> float:
-    """按税目名取千分比税率；未知税目抛 ValueError。"""
+    """按税目名取千分比税率；支持带/不带括号说明的写法；未知税目抛 ValueError。
+
+    来源：印花税法税目税率表。电子税局申报表税目写作「买卖合同」「产权转移书据」，
+    本地表为「买卖合同（动产买卖）」「产权转移书据（不含证券交易）」，
+    两者必须都能命中（真实申报表对拍发现）。
+    """
+    target = str(tax_item or "").strip()
+    base = _item_base(target)
     for row in STAMP_DUTY_RATES:
-        if row["tax_item"] == tax_item:
+        if row["tax_item"] == target:
+            return row["rate"]
+    for row in STAMP_DUTY_RATES:
+        if _item_base(row["tax_item"]) == base:
             return row["rate"]
     raise ValueError(f"未知税目：{tax_item}（请从税目税率表选择）")
 

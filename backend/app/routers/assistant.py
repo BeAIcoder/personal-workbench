@@ -769,9 +769,17 @@ async def chat(payload: ChatRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
-        return await orchestrator.chat(
-            payload.session_id, payload.message, payload.agent, payload.mode or "standard", atts
-        )
+        # 同一会话串行：双击发送/双标签页时，第二个请求直接 409，避免两个协程
+        # 同时对同一 Agent 调 reply_stream（BUGfix AGT-02）。
+        lock = orchestrator.session_run_lock(payload.session_id)
+        if lock.locked():
+            raise HTTPException(status_code=409, detail="当前会话正在生成中，请稍后再试")
+        async with lock:
+            return await orchestrator.chat(
+                payload.session_id, payload.message, payload.agent, payload.mode or "standard", atts
+            )
+    except HTTPException:
+        raise
     except ValueError as exc:
         # 编排层业务校验失败（如路由后按专家绑定模型复核视觉能力）：与前置校验同口径 400
         raise HTTPException(status_code=400, detail=str(exc))
@@ -791,15 +799,22 @@ async def chat_stream(payload: ChatRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
     async def sse():
+        lock = orchestrator.session_run_lock(payload.session_id)
+        if lock.locked():
+            yield f"data: {json.dumps({'type': 'error', 'message': '当前会话正在生成中，请稍后再试'}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
         try:
-            async for event in orchestrator.chat_stream(
-                payload.session_id,
-                payload.message,
-                payload.agent,
-                payload.mode or "standard",
-                atts,
-            ):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            # 整个流式生成期间持锁；客户端断开/取消时 async with 退出自动释放
+            async with lock:
+                async for event in orchestrator.chat_stream(
+                    payload.session_id,
+                    payload.message,
+                    payload.agent,
+                    payload.mode or "standard",
+                    atts,
+                ):
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception:
             # 流式端点保持 SSE 协议：记录日志后在流内发 error 事件，不回传内部细节
             logger.exception("chat/stream 接口执行失败：session_id=%s", payload.session_id)

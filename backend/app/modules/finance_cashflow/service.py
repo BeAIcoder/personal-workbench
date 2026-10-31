@@ -13,6 +13,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from datetime import datetime
@@ -22,10 +23,14 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
-from ...utils import engine_subprocess_env, repair_upload_mojibake, resolve_engine_root
+from ...utils import engine_subprocess_env, find_sibling_project, repair_upload_mojibake, resolve_engine_root
 from .models import CashflowRun
 
 logger = logging.getLogger(__name__)
+
+# 执行互斥：同一 run_dir/output 不允许并发写；检查-置 running 需消除 TOCTOU
+_EXEC_LOCK = threading.Lock()
+STALE_RUN_SECONDS = 2 * 3600   # 崩溃/重启后 running 超过此时长自动置 failed
 
 ENGINE_SCRIPT = "cashflow_autofill.py"
 STEP_TIMEOUT = 1800           # 引擎单次运行超时（秒）
@@ -81,15 +86,14 @@ def _safe_member_segment(part: str) -> str:
 
 
 def engine_dir() -> Path:
-    """V1 引擎目录：配置优先，否则按默认相对位置推导（01-财税自动化 同级）。"""
+    """V1 引擎目录：配置优先，否则按资产锚点目录推导（settings.finance_asset_anchor）。"""
     if settings.finance_cashflow_engine_path:
         # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
         return resolve_engine_root(settings.finance_cashflow_engine_path)
-    base = Path(__file__).resolve()
-    for parent in base.parents:
-        if parent.name == "01-财税自动化":
-            return parent / "现金流滚动预测" / "现金流滚动预测表自动化填报" / "V1"
-    raise EngineUnavailableError("无法定位现金流引擎目录，请配置 finance_cashflow_engine_path")
+    found = find_sibling_project("现金流滚动预测/现金流滚动预测表自动化填报/V1", Path(__file__))
+    if found is None:
+        raise EngineUnavailableError("无法定位现金流引擎目录，请配置 finance_cashflow_engine_path")
+    return found
 
 
 def _runs_root() -> Path:
@@ -218,12 +222,24 @@ def create_run(db: Session, files: list[tuple[str, bytes]], actual_month: int) -
 
 
 def execute_run(db: Session, run_id: int) -> dict:
+    """执行入口：进程内串行化（引擎共用 run_dir/output，检查-置 running 有 TOCTOU）。"""
+    with _EXEC_LOCK:
+        return _execute_run_locked(db, run_id)
+
+
+def _execute_run_locked(db: Session, run_id: int) -> dict:
     """执行运行：子进程调引擎，产物归档。返回运行记录；引擎问题抛 EngineUnavailableError。"""
     run = db.get(CashflowRun, run_id)
     if run is None:
         raise LookupError("运行记录不存在")
     if run.status == "running":
-        raise ValueError("该运行正在执行中")
+        age = (datetime.now() - (run.updated_at or run.created_at)).total_seconds()
+        if age > STALE_RUN_SECONDS:
+            run.status = "failed"
+            run.error = "上次运行中断（进程退出/重启），已自动标记失败，可重新执行"
+            db.commit()
+        else:
+            raise ValueError("该运行正在执行中")
     edir = engine_dir()
     script = edir / ENGINE_SCRIPT
     if not script.is_file():

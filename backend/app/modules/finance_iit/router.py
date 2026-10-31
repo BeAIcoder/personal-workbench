@@ -2,7 +2,7 @@
 """finance_iit 模块接口：/api/finance/iit。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -17,6 +17,10 @@ router = APIRouter(tags=["财务模块·个人所得税填报"])
 class RowIn(BaseModel):
     month: int = Field(ge=1, le=12)
     name: str = Field(max_length=100)
+    # 工号/证件号：同名员工靠它区分累计序列（可空，空则按姓名归组）
+    employee_id: str = Field(default="", max_length=50)
+    # 任职起始月：累计减除费用按「任职月份数 × 5000」；空则按最早申报月
+    employment_start_month: int | None = Field(default=None, ge=1, le=12)
     salary: float = Field(ge=0)
     social_insurance: float = Field(default=0.0, ge=0)
     special_additional: float = Field(default=0.0, ge=0, description="当月专项附加扣除合计（元/月）")
@@ -59,7 +63,8 @@ def create_filing(payload: IitIn, db: Session = Depends(get_db)):
 
 
 @router.get("/filings", summary="填报记录列表")
-def list_filings(page: int = 1, page_size: int = 20, db: Session = Depends(get_db)):
+def list_filings(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200),
+                 db: Session = Depends(get_db)):
     q = db.query(IitFiling).order_by(IitFiling.id.desc())
     total = q.count()
     rows = q.offset((page - 1) * page_size).limit(page_size).all()

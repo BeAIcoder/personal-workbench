@@ -2,7 +2,9 @@
 """finance_vat 模块接口：/api/finance/vat。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -21,13 +23,15 @@ class OutputItemIn(BaseModel):
 
 
 class VatIn(BaseModel):
-    period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     taxpayer_type: str = Field(pattern=r"^(general|small_scale)$")
     taxpayer_name: str = Field(default="", max_length=200)
     output_items: list[OutputItemIn] = Field(default_factory=list)
     input_vat: float = Field(default=0.0, ge=0)
+    input_transfer_out: float = Field(default=0.0, ge=0)
     sales_amount: float = Field(default=0.0, ge=0)
     levy_rate: float = 0.01
+    filing_period: Literal["month", "quarter"] = "quarter"
 
 
 def _out(f: VatFiling) -> dict:
@@ -45,15 +49,18 @@ def create_filing(payload: VatIn, db: Session = Depends(get_db)):
         if payload.taxpayer_type == "general":
             calc = service.calc_general(
                 payload.period, [i.model_dump() for i in payload.output_items],
-                payload.input_vat)
+                payload.input_vat, payload.input_transfer_out)
         else:
             calc = service.calc_small_scale(
-                payload.period, payload.sales_amount, payload.levy_rate)
+                payload.period, payload.sales_amount, payload.levy_rate,
+                payload.filing_period)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     inputs = {"output_items": [i.model_dump() for i in payload.output_items],
               "input_vat": payload.input_vat,
-              "sales_amount": payload.sales_amount, "levy_rate": payload.levy_rate}
+              "input_transfer_out": payload.input_transfer_out,
+              "sales_amount": payload.sales_amount, "levy_rate": payload.levy_rate,
+              "filing_period": payload.filing_period}
     filing = VatFiling(period=payload.period, taxpayer_type=payload.taxpayer_type,
                        taxpayer_name=payload.taxpayer_name, inputs=inputs,
                        calc_result=calc, status="calculated")
@@ -64,7 +71,8 @@ def create_filing(payload: VatIn, db: Session = Depends(get_db)):
 
 
 @router.get("/filings", summary="填报记录列表")
-def list_filings(page: int = 1, page_size: int = 20, db: Session = Depends(get_db)):
+def list_filings(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200),
+                 db: Session = Depends(get_db)):
     q = db.query(VatFiling).order_by(VatFiling.id.desc())
     total = q.count()
     rows = q.offset((page - 1) * page_size).limit(page_size).all()

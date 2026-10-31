@@ -105,16 +105,22 @@ def _ensure_dirs() -> dict[str, Path]:
 
 def parse_amount(amount_str: Optional[str]) -> float:
     """金额原文 → float；支持千分位逗号、货币符号、负数（冲红），失败返回 0.0。"""
+    value = _parse_amount_strict(amount_str)
+    return 0.0 if value is None else value
+
+
+def _parse_amount_strict(amount_str: Optional[str]) -> Optional[float]:
+    """金额原文 → float；空值/不可解析返回 None（配对等场景不得把失败当 0）。"""
     if not amount_str:
-        return 0.0
+        return None
+    cleaned = str(amount_str).replace(",", "").replace("¥", "").replace("￥", "")
+    cleaned = cleaned.replace(" ", "").strip()
+    if not cleaned:
+        return None
     try:
-        cleaned = str(amount_str).replace(",", "").replace("¥", "").replace("￥", "")
-        cleaned = cleaned.replace(" ", "").strip()
-        if not cleaned:
-            return 0.0
         return float(cleaned)
     except (ValueError, TypeError):
-        return 0.0
+        return None
 
 
 def sanitize_filename(name: str) -> str:
@@ -287,12 +293,18 @@ def pair_red_invoices(items: list[InvoiceItem]) -> tuple[int, int]:
     used_positive: set[int] = set()
     matched = 0
     for red in reds:
-        red_abs = abs(parse_amount(red.amount))
+        red_amount = _parse_amount_strict(red.amount)
+        if red_amount is None:
+            continue  # 金额不可解析：不参与配对，避免 0==0 误配（BUGfix INV-02）
+        red_abs = abs(red_amount)
         partner = None
         for pos in positives:
             if pos.id in used_positive or pos.buyer_name != red.buyer_name:
                 continue
-            if abs(parse_amount(pos.amount)) == red_abs:
+            pos_amount = _parse_amount_strict(pos.amount)
+            if pos_amount is None:
+                continue
+            if abs(pos_amount) == red_abs:
                 partner = pos
                 break
         if partner is not None:
@@ -475,6 +487,9 @@ def create_batch(db: Session, uploads: list[tuple[str, bytes]], name: str = "") 
         batch.status = InvoiceBatch.STATUS_FAILED
         batch.error = f"{type(exc).__name__}: {exc}"[:500]
         db.commit()
+        # 失败批次不保留半成品文件（BUGfix INV-03）：数据库留 failed 记录可追溯，
+        # inbox 的已解出 PDF 清掉，避免磁盘只增不减。
+        shutil.rmtree(inbox, ignore_errors=True)
         raise
 
 
@@ -484,6 +499,24 @@ def list_batches(db: Session, limit: int = 50) -> list[InvoiceBatch]:
     """批次列表（按 id 倒序）。"""
     limit = max(1, min(int(limit), 200))
     return db.query(InvoiceBatch).order_by(InvoiceBatch.id.desc()).limit(limit).all()
+
+
+def delete_batch(db: Session, batch_id: int) -> None:
+    """删除批次及其明细、inbox 文件、outbox 导出 ZIP（BUGfix INV-03）。"""
+    batch = db.get(InvoiceBatch, batch_id)
+    if batch is None:
+        raise LookupError("批次不存在")
+    export_file = batch.export_file or ""
+    db.query(InvoiceItem).filter(InvoiceItem.batch_id == batch_id).delete()
+    db.delete(batch)
+    db.commit()
+    dirs = _ensure_dirs()
+    shutil.rmtree(dirs["inbox"] / f"batch_{batch_id}", ignore_errors=True)
+    if export_file:
+        try:
+            (dirs["outbox"] / Path(export_file).name).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("批次 %s 导出文件删除失败：%s", batch_id, export_file)
 
 
 def get_batch(db: Session, batch_id: int) -> Optional[InvoiceBatch]:

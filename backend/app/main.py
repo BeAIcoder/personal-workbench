@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .agents import expert_packs
+from .agents import expert_packs, secrets_box
 from .agents.secrets_box import ensure_dpapi_available
 from .config import BASE_DIR, settings
 from .database import Base, SessionLocal, engine
@@ -103,6 +103,14 @@ async def lifespan(_: FastAPI):
             logger.info("MCP env 明文迁移：%d 个服务器已密封", migrated_env)
     except Exception:
         logger.warning("MCP env 明文迁移跳过（不影响启动）", exc_info=True)
+    # 存量 LLM 供应商 api_key 明文一次性迁移为 DPAPI（BUGfix AGT-04）；
+    # 与 MCP env 同口径：新写入已强制密封，迁移失败仅告警、不阻断启动
+    try:
+        migrated_keys = secrets_box.migrate_seal_keys()
+        if migrated_keys:
+            logger.info("LLM API Key 明文迁移：%d 个供应商已密封", migrated_keys)
+    except Exception:
+        logger.warning("LLM API Key 明文迁移跳过（不影响启动）", exc_info=True)
     try:
         mcp_results = mcp_manager.start_all_from_db()
         for name, status in mcp_results.items():
@@ -389,6 +397,42 @@ class OriginGuardMiddleware:
 
 
 app.add_middleware(OriginGuardMiddleware)
+
+
+# 回环绑定守卫（BUGfix CORE-06）：实际绑定地址由启动参数决定（--host），
+# 与 .env 的 HOST 可能不一致。scope["server"] 是监听套接字地址，用它判定；
+# 非回环且未显式开启 ALLOW_NON_LOOPBACK 时，除健康检查外一律 503 中文拒绝。
+_LOOPBACK_BIND_HOSTS = frozenset({
+    "127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1", "testserver",
+})
+
+
+class LoopbackBindingGuardMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] == "http"
+            and not settings.allow_non_loopback
+            and scope.get("path", "").startswith("/api")
+            and scope.get("path") != "/api/health"
+        ):
+            server = scope.get("server") or ("", 0)
+            host = str(server[0] or "").lower()
+            if host and host not in _LOOPBACK_BIND_HOSTS:
+                logger.warning("非回环绑定拒绝访问：server=%s path=%s", host, scope.get("path"))
+                response = JSONResponse(
+                    status_code=503,
+                    content={"detail": "服务绑定在非回环地址（无鉴权），已默认拒绝 API 访问；"
+                                       "如确需局域网访问，请在 backend/.env 设置 ALLOW_NON_LOOPBACK=1"},
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(LoopbackBindingGuardMiddleware)
 
 
 @app.api_route("/api/health", methods=["GET", "HEAD"], tags=["系统"], summary="健康检查")

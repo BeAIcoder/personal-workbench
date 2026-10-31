@@ -73,6 +73,27 @@ def resolve_engine_root(configured: str | None):
     return p
 
 
+def find_sibling_project(dirname: str, start: Path) -> Path | None:
+    """从 start 向上定位锚点目录，返回其下的兄弟项目路径。
+
+    锚点目录名取 settings.finance_asset_anchor（为空时兜底「01-财税自动化」）：
+    财务引擎多与 personal-workbench 同级存放在AssetLib锚点目录下（如
+    01-财税自动化/现金流滚动预测/费用分类汇总系统-v2.0）。
+    dirname 支持多级相对路径（如「现金流滚动预测/费用分类汇总系统-v2.0」）；
+    目录链上找不到锚点目录时返回 None，由调用方决定回退或给出中文不可用提示，
+    不在这里抛异常。
+    """
+    from pathlib import Path as _Path
+
+    from .config import settings
+
+    anchor = (settings.finance_asset_anchor or "").strip() or "01-财税自动化"
+    for parent in _Path(start).resolve().parents:
+        if parent.name == anchor:
+            return parent / dirname
+    return None
+
+
 def engine_subprocess_env() -> dict:
     """引擎子进程环境：显式指定可用的 TEMP/TMP/TMPDIR。
 

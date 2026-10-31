@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ...config import settings
-from ...utils import resolve_engine_root
+from ...utils import find_sibling_project, resolve_engine_root
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,14 @@ _errors: dict[str, str] = {}
 
 
 def default_engine_root() -> Path:
-    """默认引擎位置：<01-财税自动化>/发票工具/发票批量重命名增加项目。"""
+    """默认引擎位置：<资产锚点目录>/发票工具/发票批量重命名增加项目。
+
+    锚点目录名取 settings.finance_asset_anchor（见 utils.find_sibling_project）；
+    锚点未找到时退回原固定层级推导，路径不存在由调用方按「引擎路径无效」中文报不可用。
+    """
+    found = find_sibling_project("发票工具/发票批量重命名增加项目", Path(__file__))
+    if found is not None:
+        return found
     # 本文件位于 backend/app/modules/finance_invoice/engine.py
     # parents: [0]finance_invoice [1]modules [2]app [3]backend [4]personal-workbench [5]01-财税自动化
     return Path(__file__).resolve().parents[5] / "发票工具" / "发票批量重命名增加项目"

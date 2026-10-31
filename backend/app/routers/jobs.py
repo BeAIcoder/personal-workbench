@@ -36,8 +36,15 @@ def create_job(payload: ScheduledJobCreate, db: Session = Depends(get_db)):
 def update_job(job_id: DbId, payload: ScheduledJobUpdate, db: Session = Depends(get_db)):
     job = _get_or_404(db, job_id)
     data = payload.model_dump(exclude_unset=True)
+    # 显式 null 不能写入非空列（否则 IntegrityError → 500）
+    for field in ("name", "prompt", "mode", "schedule_type", "cron_expr", "action", "enabled"):
+        if field in data and data[field] is None:
+            raise HTTPException(status_code=422, detail=f"{field} 不能为空")
     for field, value in data.items():
         setattr(job, field, value)
+    # 更新后仍须满足「提示词或模块动作至少一个」（否则该行会让列表响应校验 500）
+    if not (str(job.action or "").strip() or str(job.prompt or "").strip()):
+        raise HTTPException(status_code=422, detail="请提供提示词，或选择模块动作")
     # 更新后做一次调度参数一致性校验（与创建相同规则）
     if job.schedule_type == "daily":
         if not job.daily_at:

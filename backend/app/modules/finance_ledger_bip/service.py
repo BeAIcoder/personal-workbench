@@ -544,9 +544,15 @@ def _import_voucher_like(
         if full_c:
             df[full_c] = df.groupby(ledger_c, dropna=False)[full_c].ffill()
 
-    existing = {(l, n) for l, n in db.query(BipVoucher.ledger, BipVoucher.voucher_no).all()}
-    groups: dict[tuple[str, str], dict[str, Any]] = {}
-    order: list[tuple[str, str]] = []
+    # 判重/聚合键必须含期间：真实 BIP 导出是多个月份，凭证号在各月重复
+    # （如 1–10 月都有「记-1」）。只用（账簿, 凭证号）会把十个月合成一张凭证，
+    # 且下月文件重导时被误判为重复而静默丢弃（BUGfix BIP-01）。
+    existing = {
+        (l, p, n)
+        for l, p, n in db.query(BipVoucher.ledger, BipVoucher.period, BipVoucher.voucher_no).all()
+    }
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str, str]] = []
     skipped_rows = 0
     for _, row in df.iterrows():
         ledger, vno = _text(row[ledger_c]), _text(row[vno_c])
@@ -554,7 +560,7 @@ def _import_voucher_like(
         if not ledger or not vno or not dtext:
             skipped_rows += 1
             continue
-        key = (ledger, vno)
+        key = (ledger, dtext[:7], vno)
         g = groups.get(key)
         if g is None:
             g = {"date": dtext, "full_no": "", "entries": []}
@@ -581,14 +587,15 @@ def _import_voucher_like(
         credit_sum = _r2(sum(e["credit"] for e in g["entries"]))
         if abs(debit_sum - credit_sum) > 0.005:
             warnings.append(
-                f"凭证 {key[0]}/{key[1]} 借贷不平衡：借方合计 {debit_sum:.2f}，贷方合计 {credit_sum:.2f}"
+                f"凭证 {key[0]}/{key[1]}/{key[2]} 借贷不平衡："
+                f"借方合计 {debit_sum:.2f}，贷方合计 {credit_sum:.2f}"
             )
         voucher = BipVoucher(
             batch_id=batch.id,
-            period=g["date"][:7],
+            period=key[1],
             voucher_date=g["date"],
             ledger=key[0],
-            voucher_no=key[1],
+            voucher_no=key[2],
             voucher_full_no=g["full_no"],
             summary=g["entries"][0]["summary"] if g["entries"] else "",
         )

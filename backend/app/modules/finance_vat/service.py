@@ -13,11 +13,17 @@ QUARTERLY_EXEMPT = 300_000.0
 MONTHLY_EXEMPT = 100_000.0
 
 
-def calc_general(period: str, output_items: list[dict], input_vat: float) -> dict:
-    """一般纳税人：销项按业务类型×税率，减进项税额。
+# 小规模征收率白名单（BUGfix FIL-04：任意外部传入值不得产生负税额/任意税额）
+SMALL_SCALE_LEVY_RATES = (0.01, 0.03, 0.05)
+
+
+def calc_general(period: str, output_items: list[dict], input_vat: float,
+                 input_transfer_out: float = 0.0) -> dict:
+    """一般纳税人：销项按业务类型×税率，减可抵扣进项，加进项转出。
 
     output_items: [{business_type, amount, rate}]（amount 不含税销售额，rate∈{0.13,0.09,0.06}）
     input_vat: 当期可抵扣进项税额合计
+    input_transfer_out: 进项税额转出（已抵扣进项要加回，符号为 +）
     """
     if not output_items:
         raise ValueError("销项明细不能为空")
@@ -39,26 +45,41 @@ def calc_general(period: str, output_items: list[dict], input_vat: float) -> dic
         details.append({"business_type": btype, "amount": amount,
                         "rate": rate, "output_vat": vat})
     input_vat = float(input_vat or 0)
+    input_transfer_out = float(input_transfer_out or 0)
     if input_vat < 0:
         raise ValueError("进项税额非法（须 ≥ 0）")
-    payable = round(max(0.0, round(output_vat, 2) - input_vat), 2)
+    if input_transfer_out < 0:
+        raise ValueError("进项税额转出非法（须 ≥ 0）")
+    raw = round(round(output_vat, 2) - input_vat + input_transfer_out, 2)
+    payable = round(max(0.0, raw), 2)
+    carryforward = round(max(0.0, -raw), 2)
+    warnings = []
+    if carryforward > 0:
+        warnings.append(
+            f"当期进项大于销项，形成期末留抵税额 {carryforward:,.2f} 元，"
+            f"结转下期继续抵扣（本期应纳税额为 0）"
+        )
     return {
         "mode": "general",
         "sales_total": round(sales_total, 2),
         "output_vat": round(output_vat, 2),
         "input_vat": round(input_vat, 2),
+        "input_transfer_out": round(input_transfer_out, 2),
         "payable": payable,
+        "carryforward_vat": carryforward,
         "details": details,
         "policy": {"policy_basis": "《中华人民共和国增值税暂行条例》", "status": "valid"},
-        "warnings": [],
+        "warnings": warnings,
     }
 
 
-def calc_small_scale(period: str, sales_amount: float, levy_rate: float = 0.01) -> dict:
-    """小规模纳税人：季度销售额 ≤30 万免征；>30 万全额按征收率计税。
+def calc_small_scale(period: str, sales_amount: float, levy_rate: float = 0.01,
+                     filing_period: str = "quarter") -> dict:
+    """小规模纳税人：月/季销售额未超门槛免征；超门槛全额按征收率计税。
 
     levy_rate 默认 0.01（3% 减按 1%，19号公告至 2027-12-31）；
-    政策过期年份拒绝套用 1%（明确报错），不静默改用 3%。
+    政策过期年份拒绝套用 1% 与免征（明确报错，不静默改用 3%）。
+    filing_period: month 月度（10 万门槛）/ quarter 季度（30 万门槛，默认）。
     """
     from ..finance_tax.config.policy_validity import policy_status
 
@@ -66,6 +87,14 @@ def calc_small_scale(period: str, sales_amount: float, levy_rate: float = 0.01) 
     sales_amount = float(sales_amount or 0)
     if sales_amount < 0:
         raise ValueError("销售额非法（须 ≥ 0）")
+    levy_rate = float(levy_rate)
+    if levy_rate not in SMALL_SCALE_LEVY_RATES:
+        raise ValueError("征收率非法（仅允许 1%/3%/5%）")
+    if filing_period not in ("month", "quarter"):
+        raise ValueError("申报周期非法（month/quarter）")
+
+    # 1% 优惠与 30/10 万免征均需政策有效（BUGfix FIL-07）；先判政策，
+    # 让过期年度直接得到「政策已到期」的中文提示，而不是先报所属期格式。
     if levy_rate == 0.01:
         status = policy_status("vat_small_scale_1pct", year)
         if not status["valid"]:
@@ -73,16 +102,27 @@ def calc_small_scale(period: str, sales_amount: float, levy_rate: float = 0.01) 
         basis = status["policy_basis"]
     else:
         basis = "《中华人民共和国增值税暂行条例》"
-    quarterly = sales_amount  # 小规模按季申报：sales_amount 即季度销售额
-    exempt = quarterly <= QUARTERLY_EXEMPT
+    exempt_status = policy_status("vat_small_scale_exempt10w", year)
+    if not exempt_status["valid"]:
+        raise ValueError(exempt_status["message"])
+
+    month = int(str(period)[5:7]) if len(str(period)) >= 7 else 0
+    if filing_period == "quarter" and month not in (3, 6, 9, 12):
+        raise ValueError("按季申报的所属期须为季末月（03/06/09/12）")
+    threshold = MONTHLY_EXEMPT if filing_period == "month" else QUARTERLY_EXEMPT
+    label = "月度" if filing_period == "month" else "季度"
+    exempt = sales_amount <= threshold
     if exempt:
         payable = 0.0
-        note = f"季度销售额 {quarterly:,.2f} 元 ≤ 30 万元，免征增值税（19号公告）"
+        note = (f"{label}销售额 {sales_amount:,.2f} 元 ≤ {threshold/10000:.0f} 万元，"
+                f"免征增值税（{exempt_status['policy_basis']}）")
     else:
-        payable = round(quarterly * levy_rate, 2)
-        note = f"季度销售额超 30 万元，全额按 {levy_rate:.0%} 征收率计税"
+        payable = round(sales_amount * levy_rate, 2)
+        note = f"{label}销售额超 {threshold/10000:.0f} 万元，全额按 {levy_rate:.0%} 征收率计税"
     return {
         "mode": "small_scale",
+        "filing_period": filing_period,
+        "exempt_threshold": threshold,
         "sales_total": round(sales_amount, 2),
         "levy_rate": levy_rate,
         "exempt": exempt,

@@ -3,8 +3,8 @@
 
 设计（移植 Qoder/QwenPaw「技能市场」形态，保障兼容）：
 - 源：平台种子（backend/seed_skills）+ QwenPaw skill_pool（默认
-  D:/AIApps/QwenPaw/data/skill_pool，env QWENPAW_SKILL_POOL 覆盖）+ WorkBuddy
-  buddy-skill-store（复用 workbuddy_sync 扫描）；
+  D:/AIApps/QwenPaw/data/skill_pool，env QWENPAW_SKILL_POOL > .env
+  qwenpaw_skill_pool 覆盖）+ WorkBuddy buddy-skill-store（复用 workbuddy_sync 扫描）；
 - 每项：{name, description, version, source, installed, title}；
 - 安装 = 整目录复制进平台技能池（backend/data/skills），**新包默认停用**（与 WorkBuddy
   导入同规则，不静默改变 Agent 注入）；已存在则更新（upsert），启停状态保留；
@@ -18,6 +18,7 @@ import shutil
 from pathlib import Path
 
 from . import skill_store, workbuddy_sync
+from ..config import settings
 
 # ---------- 常量 ----------
 
@@ -28,8 +29,9 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
 def _qwenpaw_pool() -> Path:
-    """QwenPaw 技能池目录：设置/env/默认三级解析。"""
-    return Path(os.environ.get("QWENPAW_SKILL_POOL") or QWENPAW_SKILL_POOL_DEFAULT)
+    """QwenPaw 技能池目录：env/设置(.env)/默认三级解析。"""
+    return Path(os.environ.get("QWENPAW_SKILL_POOL") or settings.qwenpaw_skill_pool
+                or QWENPAW_SKILL_POOL_DEFAULT)
 
 
 def _norm_name(raw: str) -> str:
@@ -152,13 +154,34 @@ def install_from_market(name: str) -> dict:
         raise ValueError(f"技能包源目录无效：{src}")
     dest = skill_store._pack_dir(_norm_name(name))
     existed = (dest / "SKILL.md").is_file()
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(src, dest)
+    # 原子替换：先拷到临时目录，成功后再切换；失败时旧包仍在（BUGfix AGT-03）。
+    # 旧实现先 rmtree 再 copytree，拷贝中途失败会直接丢掉用户已装的包。
+    tmp = dest.with_name(f".{dest.name}.installing")
+    backup = dest.with_name(f".{dest.name}.bak")
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(src, tmp)
+    try:
+        shutil.rmtree(backup, ignore_errors=True)
+        if dest.exists():
+            dest.rename(backup)
+        tmp.rename(dest)
+        # 新包默认停用；停用标记写失败则回滚，绝不留下「默认启用」的半成品
+        if not existed:
+            try:
+                skill_store.set_enabled(dest.name, False)
+            except Exception:
+                shutil.rmtree(dest, ignore_errors=True)
+                if backup.exists():
+                    backup.rename(dest)
+                raise
+        shutil.rmtree(backup, ignore_errors=True)
+    except Exception:
+        if not dest.exists() and backup.exists():
+            backup.rename(dest)
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     # 归一目录名与 frontmatter name 不一致时，重写 SKILL.md 的 name 字段保持一致
     _rewrite_frontmatter_name(dest, dest.name)
-    if not existed:
-        skill_store.set_enabled(dest.name, False)
     return {"name": dest.name, "installed": True, "updated": existed,
             "enabled": False, "source": target["source"]}
 

@@ -65,8 +65,10 @@ def save_settings(data: dict) -> dict:
 
 
 def _resolve_home(home: str = "") -> Path:
+    """WorkBuddy 数据目录：参数 > 界面设置 > env > .env 配置 > 默认 五级解析。"""
+    from ..config import settings
     home = (home or load_settings().get("home") or os.environ.get("WORKBUDDY_HOME")
-            or DEFAULT_HOME)
+            or settings.workbuddy_home or DEFAULT_HOME)
     return Path(home)
 
 

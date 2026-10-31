@@ -57,6 +57,7 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
     if not rows:
         raise ValueError("员工月度行不能为空")
     grouped: dict[str, list[dict]] = {}
+    display_names: dict[str, str] = {}
     for idx, r in enumerate(rows, 1):
         name = str(r.get("name") or "").strip()
         if not name:
@@ -64,19 +65,50 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
         month = int(r.get("month") or 0)
         if not (1 <= month <= 12):
             raise ValueError(f"第 {idx} 行月份非法（1-12）")
-        grouped.setdefault(name, []).append(r)
+        # 工号优先：同名员工必须按工号分开累计（BUGfix FIL-08）；无工号时回退姓名
+        employee_id = str(r.get("employee_id") or "").strip()
+        key = employee_id or name
+        display_names.setdefault(key, name)
+        grouped.setdefault(key, []).append(r)
 
     employees = []
     total_withheld = 0.0
-    for name, rs in grouped.items():
+    warnings: list[str] = []
+    for key, rs in grouped.items():
+        name = display_names[key]
         rs.sort(key=lambda r: int(r["month"]))
+        seen_months: set[int] = set()
+        starts: list[int] = []
+        for r in rs:
+            m = int(r["month"])
+            if m in seen_months:
+                raise ValueError(f"{name} {m}月存在重复行（同一员工同一月份只能一行）")
+            seen_months.add(m)
+            start = r.get("employment_start_month")
+            if start not in (None, ""):
+                s = int(start)
+                if not (1 <= s <= 12):
+                    raise ValueError(f"{name} 任职起始月非法（1-12）")
+                starts.append(s)
+        first_month = min(seen_months)
+        start_month = min(starts) if starts else first_month
+        if start_month > first_month:
+            raise ValueError(f"{name} 任职起始月 {start_month} 晚于最早申报月份 {first_month}")
+        missing = [m for m in range(start_month, max(seen_months) + 1)
+                   if m not in seen_months]
+        if missing:
+            warnings.append(
+                f"{name}（{key}）缺少 {missing} 月数据：按无收入、但累计减除费用仍按任职月份计算"
+            )
+
         months_out = []
+        cum_income = 0.0
         cum_taxable = 0.0
         cum_withheld = 0.0
         for r in rs:
             m = int(r["month"])
             salary = _num(r.get("salary"), f"{name} {m}月工资")
-            social = _num(r.get("social_insurance") or 0, f"{name} {m}月社保") 
+            social = _num(r.get("social_insurance") or 0, f"{name} {m}月社保")
             special = _num(r.get("special_additional") or 0, f"{name} {m}月专项附加")
             other = _num(r.get("other_deductions") or 0, f"{name} {m}月其他扣除")
             for v in (social, special, other):
@@ -84,10 +116,18 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
                     raise ValueError(f"{name} {m}月扣除项非法（须 ≥ 0）")
             if special > 30_000:
                 raise ValueError(f"{name} {m}月专项附加扣除异常（>{30_000}，请核实）")
-            cum_taxable += max(0.0, salary - MONTHLY_DEDUCTION - social - special - other)
-            rate, quick = _bracket(cum_taxable)
+            # 累计预扣法：累计收入 − 累计扣除；减除费用按「任职月份数 × 5000」，
+            # 缺月不会少计（BUGfix FIL-09）。允许负累计冲减以后月份（FIL-02）。
+            cum_income += salary - social - special - other
+            months_count = m - start_month + 1
+            cum_taxable = cum_income - MONTHLY_DEDUCTION * months_count
+            rate, quick = _bracket(max(0.0, cum_taxable))
             cumulative = max(0.0, cum_taxable * rate - quick)
+            # 累计应纳税额小于已预扣时，本期暂不退税（0），已预扣额保持不变，
+            # 差额留待以后月份继续抵减（61 号公告口径）。
             monthly = round(cumulative - cum_withheld, 2)
+            if monthly < 0:
+                monthly = 0.0
             months_out.append({
                 "month": m,
                 "taxable_income": round(max(0.0, salary - 5000.0 - social - special - other), 2),
@@ -96,11 +136,19 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
                 "cumulative_withholding": round(cumulative, 2),
                 "monthly_withholding": monthly,
             })
-            cum_withheld = cumulative
+            if monthly > 0:
+                cum_withheld = cumulative
             total_withheld += monthly
-        employees.append({"name": name, "months": months_out})
+        employees.append({
+            "employee_id": key if key != name else "",
+            "name": name,
+            "employment_start_month": start_month,
+            "missing_months": missing,
+            "months": months_out,
+        })
     return {
         "employees": employees,
+        "warnings": warnings,
         "totals": {"tax_withheld": round(total_withheld, 2)},
         "policy": {
             "policy_basis": "个人所得税法+国发〔2023〕13号",

@@ -23,9 +23,9 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ...config import BASE_DIR, get_finance_data_dir, settings
+from ...config import get_finance_data_dir, settings
 from ...database import SessionLocal
-from ...utils import resolve_engine_root
+from ...utils import find_sibling_project, resolve_engine_root
 from .models import ExpenseRow, ExpenseRun
 
 # 单次导入行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
@@ -162,18 +162,18 @@ def find_engine_dir() -> Path | None:
     """定位费用分类引擎目录。
 
     settings.finance_expense_engine_path 非空时只用配置值（无效即不可用，不回退）；
-    否则从 BASE_DIR 向上找「01-财税自动化」目录，推导其下的 现金流滚动预测/费用分类汇总系统-v2.0。
+    否则按资产锚点目录（settings.finance_asset_anchor，见 utils.find_sibling_project）
+    推导其下的 现金流滚动预测/费用分类汇总系统-v2.0。
     """
     configured = (settings.finance_expense_engine_path or "").strip()
     if configured:
         # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
         candidate = resolve_engine_root(configured)
         return candidate if candidate and _is_engine_dir(candidate) else None
-    for parent in BASE_DIR.parents:
-        if parent.name == "01-财税自动化":
-            candidate = parent / _ENGINE_RELATIVE
-            return candidate if _is_engine_dir(candidate) else None
-    return None
+    candidate = find_sibling_project("/".join(_ENGINE_RELATIVE.parts), Path(__file__))
+    if candidate is None:
+        return None
+    return candidate if _is_engine_dir(candidate) else None
 
 
 def _locate_bank_header_row(path: Path) -> int | None:

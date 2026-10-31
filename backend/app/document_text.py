@@ -7,6 +7,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import settings
+
 DOCUMENT_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".pptx", ".ppt"})
 MAX_DOCUMENT_TEXT_CHARS = 80_000
 MAX_PDF_PAGES = 300
@@ -180,6 +182,7 @@ def _validate_ooxml(source: Path) -> None:
 def _find_soffice() -> str | None:
     candidates = [
         os.environ.get("SOFFICE_PATH"),
+        settings.soffice_path or None,  # 配置项，空串视为未配置
         shutil.which("soffice"),
         shutil.which("libreoffice"),
         r"C:\Program Files\LibreOffice\program\soffice.exe",

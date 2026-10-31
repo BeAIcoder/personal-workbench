@@ -65,12 +65,12 @@ def test_dsf_exempt_30_or_below():
     assert calc["exempt"] is True and calc["payable"] == 0.0
 
 
-def test_dsf_tiered_90pct_reduction():
-    # 100 人，比例 1.5% → 差额 1.5 人 - 0 安排 → <1% → 减收 90%
+def test_dsf_tiered_90pct_payment():
+    # 100 人，比例 1.5% → 差额 1.5 人 - 0 安排 → <1% → 按应缴费额 90% 缴纳（减收 10%）
     calc = dsf.calc_dsf("2026", 100, 10_000_000, 0)
-    assert calc["tier"] == "减收90%"
-    # base = 1.5 × 100000 = 150000 → payable = 15000
-    assert calc["payable"] == 15000.0
+    assert calc["tier"] == "减收10%"
+    # base = 1.5 × 100000 = 150000 → payable = 150000 × 90% = 135000
+    assert calc["payable"] == 135000.0
 
 
 def test_dsf_tiered_50pct_reduction():
@@ -116,7 +116,7 @@ def test_api_dsf_lifecycle(client):
         "disabled_employees": 0})
     assert r.status_code == 201
     fid = r.json()["id"]
-    assert r.json()["calc_result"]["payable"] == 15000.0
+    assert r.json()["calc_result"]["payable"] == 135000.0
 
     exp = client.post(f"{DSF_P}/filings/{fid}/export")
     assert exp.status_code == 200

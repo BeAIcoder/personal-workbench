@@ -588,7 +588,40 @@ def test_import_real_voucher_multisheet_sheet_name_as_ledger(client, bip_dir, tm
     vs = client.get("/api/finance/ledger/bip/vouchers", params={"size": 50}).json()
     ledgers = sorted(v["ledger"] for v in vs["items"])
     assert ledgers == ["脱敏单位A", "脱敏单位B"]
-    # 重复导入：相同（账簿+凭证号）跳过
+    # 重复导入：相同（账簿+期间+凭证号）跳过
+    prev2 = _preview(client, path).json()
+    body2 = _confirm(client, prev2["token"]).json()
+    assert body2["inserted_vouchers"] == 0 and body2["skipped_vouchers"] == 2
+
+
+# ---------------- BUGfix BIP-01：期间必须参与判重 ----------------
+
+def test_same_voucher_no_in_different_months_are_two_vouchers(client, tmp_path):
+    """同一账簿的「记-0001」在 1 月与 2 月各一张，必须落成两张凭证。
+
+    修复前判重键只有（账簿, 凭证号），十个月的同号凭证会合并成一张，
+    且第二个月重导时被误判重复（BUGfix BIP-01）。
+    """
+    rows = [
+        {"日期": "2026-01-05", "核算账簿": "期间测试账簿", "凭证号": "记-0001", "摘要": "一月费用",
+         "借方金额": 100.0, "贷方金额": 0.0},
+        {"日期": "2026-01-05", "核算账簿": "期间测试账簿", "凭证号": "记-0001", "摘要": "一月费用",
+         "借方金额": 0.0, "贷方金额": 100.0},
+        {"日期": "2026-02-05", "核算账簿": "期间测试账簿", "凭证号": "记-0001", "摘要": "二月费用",
+         "借方金额": 200.0, "贷方金额": 0.0},
+        {"日期": "2026-02-05", "核算账簿": "期间测试账簿", "凭证号": "记-0001", "摘要": "二月费用",
+         "借方金额": 0.0, "贷方金额": 200.0},
+    ]
+    path = _write_xlsx(tmp_path / "two-months.xlsx", rows, title_row="凭证列表")
+    prev = _preview(client, path).json()
+    body = _confirm(client, prev["token"]).json()
+    assert body["inserted_vouchers"] == 2, body
+    assert body["inserted_entries"] == 4
+
+    vs = client.get("/api/finance/ledger/bip/vouchers", params={"size": 50}).json()
+    assert sorted(v["period"] for v in vs["items"]) == ["2026-01", "2026-02"]
+
+    # 同文件重导：两张都按重复跳过
     prev2 = _preview(client, path).json()
     body2 = _confirm(client, prev2["token"]).json()
     assert body2["inserted_vouchers"] == 0 and body2["skipped_vouchers"] == 2

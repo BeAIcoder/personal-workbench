@@ -99,6 +99,15 @@ def batch_detail(batch_id: int, db: Session = Depends(get_db)):
     return service.batch_detail_dict(db, batch)
 
 
+@router.delete("/batches/{batch_id}", summary="删除批次（明细 + inbox 文件 + 导出 ZIP）")
+def delete_batch(batch_id: int, db: Session = Depends(get_db)):
+    try:
+        service.delete_batch(db, batch_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True}
+
+
 @router.patch("/items/{item_id}", response_model=InvoiceItemOut, summary="人工修正发票明细（项目归类/备注）")
 def patch_item(item_id: int, payload: InvoiceItemPatch, db: Session = Depends(get_db)):
     item = service.get_item(db, item_id)

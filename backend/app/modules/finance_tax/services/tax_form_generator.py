@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from ....config import settings
+
 # ============================================================
 # 数据模型定义
 # ============================================================
@@ -53,7 +55,8 @@ class TaxPeriod:
         if self.month:
             # 月度预缴
             return f"{self.year}-{self.month:02d}-01"
-        quarter_starts = {1: "01", 2: "04", 3: "07", 4: "01"}
+        # 四季度预缴所属期是 10-01~12-31，不是全年（BUGfix TAX-18）
+        quarter_starts = {1: "01", 2: "04", 3: "07", 4: "10"}
         quarter_ends = {1: "03", 2: "06", 3: "09", 4: "12"}
         return f"{self.year}-{quarter_starts[self.quarter]}-01"
 
@@ -65,7 +68,8 @@ class TaxPeriod:
             import calendar
             _, last_day = calendar.monthrange(self.year, self.month)
             return f"{self.year}-{self.month:02d}-{last_day:02d}"
-        quarter_starts = {1: "01", 2: "04", 3: "07", 4: "01"}
+        # 四季度预缴所属期是 10-01~12-31，不是全年（BUGfix TAX-18）
+        quarter_starts = {1: "01", 2: "04", 3: "07", 4: "10"}
         quarter_ends = {1: "03", 2: "06", 3: "09", 4: "12"}
         import calendar
         _, last_day = calendar.monthrange(self.year, int(quarter_ends[self.quarter]))
@@ -184,7 +188,6 @@ class A200000FormData:
         row5_income_deduction = (
             self.income_reduction_amount
             + self.agriculture_forestry_reduction
-            + self.income_reduction_amount
             + self.infrastructure_reduction
             + self.environmental_protection_reduction
             + self.technology_transfer_reduction
@@ -902,6 +905,10 @@ def _register_chinese_fonts():
             ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", "WenQuanYi"),
             ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "NotoSansCJK"),
         ]
+
+    # 配置项指定自定义字体时优先尝试；文件不存在则跳过，保持原候选顺序
+    if settings.pdf_font_path and os.path.exists(settings.pdf_font_path):
+        font_paths.insert(0, (settings.pdf_font_path, "CustomFont"))
 
     from reportlab.pdfbase.ttfonts import TTFont
 

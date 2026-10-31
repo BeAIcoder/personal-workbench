@@ -44,6 +44,26 @@ logger = logging.getLogger(__name__)
 # 测试路径收紧到 30s——「挂起服务器」应快速失败并给出中文提示，而不是长时间占住请求。
 TEST_TIMEOUT_SECONDS = 30.0
 
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """禁止跟随重定向：urllib 默认会把 Authorization/x-api-key 复制到新主机。
+
+    BUGfix AGT-05：测试请求由用户填写的 base_url 发起，一旦对方 301/302 到
+    任意主机，用户的真实 API Key 就会被送到该主机。3xx 交给 HTTPError 分支
+    按失败处理（不跟随、不重发）。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def _probe_urlopen(req, timeout=None):
+    """探测请求统一出口：生产不跟随重定向；测试可 patch 本函数（而非 urlopen）。"""
+    return _NO_REDIRECT_OPENER.open(req, timeout=timeout)
+
 # LLM 调用常见失败的中文提示映射（连通性/多模态/工具测试共用）：
 # 只做类型与状态码识别，不回传上游原文与堆栈，避免把内部细节暴露给界面。
 _FRIENDLY_ERROR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -1213,7 +1233,7 @@ def _http_anthropic_multimodal_test(cfg: dict) -> dict:
         },
     )
     try:
-        resp = json.load(urllib.request.urlopen(req, timeout=TEST_TIMEOUT_SECONDS))
+        resp = json.load(_probe_urlopen(req, timeout=TEST_TIMEOUT_SECONDS))
         latency = round((time.time() - started) * 1000)
         content = "".join(b.get("text", "") for b in resp.get("content", []) if isinstance(b, dict))
         ok = ("红" in content) or ("red" in content.lower())
@@ -1255,7 +1275,7 @@ def _http_multimodal_test(cfg: dict) -> dict:
         headers={"Authorization": "Bearer " + cfg["api_key"], "Content-Type": "application/json"},
     )
     try:
-        resp = json.load(urllib.request.urlopen(req, timeout=TEST_TIMEOUT_SECONDS))
+        resp = json.load(_probe_urlopen(req, timeout=TEST_TIMEOUT_SECONDS))
         latency = round((time.time() - started) * 1000)
         content = (resp["choices"][0]["message"].get("content") or "")
         ok = ("红" in content) or ("red" in content.lower())

@@ -2,7 +2,7 @@
 """finance_stamp_duty 模块接口：/api/finance/stamp-duty（前缀由注册器按 manifest.prefix 挂载）。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -21,7 +21,7 @@ class ItemIn(BaseModel):
 
 
 class FilingIn(BaseModel):
-    period: str = Field(pattern=r"^\d{4}-\d{2}$", description="所属期 YYYY-MM")
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="所属期 YYYY-MM")
     taxpayer_name: str = Field(default="", max_length=200)
     half_discount: bool = False
     items: list[ItemIn] = Field(min_length=1)
@@ -61,7 +61,8 @@ def create_filing(payload: FilingIn, db: Session = Depends(get_db)):
 
 
 @router.get("/filings", summary="填报记录列表（分页，按 id 倒序）")
-def list_filings(page: int = 1, page_size: int = 20, db: Session = Depends(get_db)):
+def list_filings(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200),
+                 db: Session = Depends(get_db)):
     q = db.query(StampDutyFiling).order_by(StampDutyFiling.id.desc())
     total = q.count()
     rows = q.offset((page - 1) * page_size).limit(page_size).all()

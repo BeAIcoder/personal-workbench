@@ -153,6 +153,24 @@ def invalidate() -> None:
     _session_model_ids.clear()
     _agents.clear()
     _agent_locks.clear()
+    # 只清「未持有」的运行锁：正在生成中的会话应立即完成本轮，不能因配置保存
+    # 而在下一轮出现同一 session 两把锁（BUGfix AGT-02）。
+    for sid in [s for s, lock in _session_run_locks.items() if not lock.locked()]:
+        _session_run_locks.pop(sid, None)
+
+
+# 同一会话的运行锁：同一 session 的 chat / chat_stream 必须串行，
+# 否则两个协程同时对同一 Agent 调 reply_stream，内部状态与历史会交错。
+_session_run_locks: dict[str, asyncio.Lock] = {}
+
+
+def session_run_lock(session_id: str) -> asyncio.Lock:
+    """返回该会话唯一的运行锁（调用方负责 acquire；锁被占用时应直接提示忙）。"""
+    lock = _session_run_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_run_locks[session_id] = lock
+    return lock
 
 
 def _get_model(session_id: str | None = None):
@@ -288,8 +306,9 @@ async def _build_agent(spec: AgentSpec, mode: str = "standard", session_id: str 
     if tools:
         await toolkit.add_tool(tools)
 
-    # Bash 执行工具（跑技能脚本等）；自带危险文件/目录黑名单
-    if cfg.get("enable_bash"):
+    # Bash 执行工具（跑技能脚本等）；自带危险文件/目录黑名单。
+    # 只读模式必须跳过：否则「写入类工具已对你关闭」的承诺失效（BUGfix AGT-01）。
+    if cfg.get("enable_bash") and mode != "readonly":
         try:
             from agentscope.tool import Bash
 
@@ -1077,6 +1096,7 @@ def session_delete(session_id: str) -> None:
     # 该会话按 (模型, 会话) 维度缓存的模型实例一并清理（含 SDK 连接池引用）
     for key in [k for k in list(_session_models) if k[1] == session_id]:
         _session_models.pop(key, None)
+    _session_run_locks.pop(session_id, None)
 
 
 def session_set_archived(session_id: str, archived: bool) -> dict:
