@@ -274,7 +274,11 @@ def save_provider_model(provider_id: DbId, payload: ModelPayload):
 
 @router.delete("/providers/{provider_id}/models/{model_id}", summary="删除模型")
 def delete_provider_model(provider_id: DbId, model_id: DbId):
-    config_store.delete_provider_model(model_id)
+    try:
+        config_store.delete_provider_model(model_id, provider_id=provider_id)
+    except ValueError as exc:
+        # 模型不存在或不属于该供应商：404，避免跨供应商误删
+        raise HTTPException(status_code=404, detail=str(exc))
     orchestrator.invalidate()
     return {"providers": config_store.list_providers()}
 

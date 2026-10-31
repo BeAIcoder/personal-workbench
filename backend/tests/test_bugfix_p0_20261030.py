@@ -49,7 +49,7 @@ def test_tax_return_small_micro_uses_5pct(client):
     ent = _create_enterprise(client, "91110108P0TEST0001", employee_count=50, total_assets=100.0)
     r = client.post(f"{P}/tax-returns/", json={
         "enterprise_id": ent["id"], "tax_period": "2026", "report_type": "A类",
-        "total_revenue": 1_000_000, "total_costs": 0, "total_expenses": 0,
+        "total_revenue": 100, "total_costs": 0, "total_expenses": 0,
     })
     assert r.status_code in (200, 201), r.text
     assert r.json()["tax_amount"] == pytest.approx(50_000.0)
@@ -60,7 +60,7 @@ def test_tax_return_non_small_micro_has_no_10pct_bracket(client):
     ent = _create_enterprise(client, "91110108P0TEST0002", employee_count=400, total_assets=100.0)
     r = client.post(f"{P}/tax-returns/", json={
         "enterprise_id": ent["id"], "tax_period": "2026", "report_type": "A类",
-        "total_revenue": 5_000_000, "total_costs": 0, "total_expenses": 0,
+        "total_revenue": 500, "total_costs": 0, "total_expenses": 0,
     })
     assert r.status_code in (200, 201), r.text
     assert r.json()["tax_amount"] == pytest.approx(1_250_000.0)
@@ -77,7 +77,7 @@ def test_tax_return_missing_headcount_defaults_to_standard_rate(client):
 
     r = client.post(f"{P}/tax-returns/", json={
         "enterprise_id": ent["id"], "tax_period": "2026", "report_type": "A类",
-        "total_revenue": 1_000_000, "total_costs": 0, "total_expenses": 0,
+        "total_revenue": 100, "total_costs": 0, "total_expenses": 0,
     })
     assert r.status_code in (200, 201), r.text
     assert r.json()["tax_amount"] == pytest.approx(250_000.0)

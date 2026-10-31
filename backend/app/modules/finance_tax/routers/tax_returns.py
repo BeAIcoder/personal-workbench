@@ -87,13 +87,18 @@ def calculate_tax(return_data: dict, enterprise: Enterprise | None = None) -> di
     - 高新技术 → 15%（企业档案暂未存高新标记，保留引擎能力）
     - 其余 → 25%；所得 ≤ 0 不缴税
     企业从业人数/资产总额缺失时不臆断小微，按标准税率并在 note 说明。
+
+    单位契约（P0 修复）：入参来自前端表单与 TaxReturnCreate，单位为**万元**；
+    落库与 A200000 导出单位为**元**（申报表口径）。旧实现把万元入参当元再除以
+    10000，导致小微误判（1000 万被判成 0.1 万、税率从 25% 变 5%）与税额量级
+    错误（导出少 1 万倍）。此处只在边界换算一次。
     """
     from ..services.corporate_income_tax_calculator import (
         CorporateIncomeTaxCalculator,
         EnterpriseTaxType,
     )
 
-    taxable_income = float(
+    taxable_income_wan = float(
         return_data.get("total_revenue", 0)
         + return_data.get("other_income", 0)
         - return_data.get("total_costs", 0)
@@ -101,9 +106,10 @@ def calculate_tax(return_data: dict, enterprise: Enterprise | None = None) -> di
         + return_data.get("tax_adjustments", 0)
         - return_data.get("tax_preferential", 0)
     )
-    if taxable_income <= 0:
+    taxable_income = round(taxable_income_wan * 10000.0, 2)
+    if taxable_income_wan <= 0:
         return {
-            "taxable_income": round(taxable_income, 2),
+            "taxable_income": taxable_income,
             "tax_rate": 0.0,
             "tax_amount": 0.0,
             "note": "应纳税所得额为零或负数，无需缴纳企业所得税",
@@ -119,7 +125,7 @@ def calculate_tax(return_data: dict, enterprise: Enterprise | None = None) -> di
         small_micro = CorporateIncomeTaxCalculator.check_small_micro_enterprise(
             employee_count=int(enterprise.employee_count),
             total_assets_wan=float(enterprise.total_assets),
-            taxable_income_wan=taxable_income / 10000.0,
+            taxable_income_wan=taxable_income_wan,
             is_restricted_industry=bool(enterprise.is_restricted_industry),
             industry_name=enterprise.industry_type or "",
         )
@@ -132,13 +138,13 @@ def calculate_tax(return_data: dict, enterprise: Enterprise | None = None) -> di
 
     # 小微优惠走政策有效期校验（过期/未生效时抛中文 ValueError，由路由转 400）
     CorporateIncomeTaxCalculator.calculate_tax_amount(
-        taxable_income_wan=taxable_income / 10000.0,
+        taxable_income_wan=taxable_income_wan,
         enterprise_tax_type=tax_type,
         tax_year=return_data.get("tax_period") or None,
     )
     rate = CorporateIncomeTaxCalculator.get_applicable_tax_rate(tax_type)
     return {
-        "taxable_income": round(taxable_income, 2),
+        "taxable_income": taxable_income,
         "tax_rate": rate,
         "tax_amount": round(taxable_income * rate, 2),
         "note": note,
@@ -285,7 +291,9 @@ class CalculationRequest(BaseModel):
     enterprise_type: str = "一般企业"
     advertising_industry: str = "一般行业"
     # 所属年度（可选）：传入时按 12号公告校验小微优惠有效期（Part B）
-    tax_year: str = ""
+    tax_year: str | int = ""
+    # 兼容字段：前端历史版本提交的是 year，二者取其一（P1 修复）
+    year: str | int = ""
     # 以前年度亏损
     prior_year_losses: dict = {}          # {year: amount}
 
@@ -575,6 +583,13 @@ async def calculate_tax_detail(
     if not enterprise:
         raise HTTPException(status_code=404, detail="企业不存在")
 
+    # 所属年度：前端历史字段名为 year，引擎字段为 tax_year，两者都接受。
+    # 缺省时退回当前年度——旧实现缺省即跳过政策有效期校验，2028 年仍按小微 5%（P1 修复）。
+    raw_year = request.tax_year or request.year or ""
+    tax_year = str(raw_year).strip()[:4]
+    if not (tax_year.isdigit() and len(tax_year) == 4):
+        tax_year = str(datetime.now().year)
+
     try:
         from ..services.corporate_income_tax_calculator import (
             CorporateIncomeTaxCalculator,
@@ -593,7 +608,7 @@ async def calculate_tax_detail(
             is_high_tech=request.is_high_tech,
             enterprise_type=request.enterprise_type,
             advertising_industry=IndustryType(request.advertising_industry) if request.advertising_industry in ["一般企业", "化妆品制造或销售", "医药制造", "饮料制造", "烟草", "限制行业"] else IndustryType.GENERAL,
-            tax_year=request.tax_year,
+            tax_year=tax_year,
         )
 
         # 构建纳税调整项输入
@@ -612,7 +627,11 @@ async def calculate_tax_detail(
         # 构建以前年度亏损信息
         losses = None
         if request.prior_year_losses:
-            losses = LossCarryForward(losses_by_year=request.prior_year_losses)
+            # 传入申报年度，按 5 年（高企 10 年）结转期限排除过期亏损（P1 修复）
+            losses = LossCarryForward(
+                losses_by_year=request.prior_year_losses,
+                tax_year=int(tax_year),
+            )
 
         # 计算利润总额
         accounting_profit = request.revenue + request.other_income - request.total_costs - request.total_expenses
@@ -667,18 +686,10 @@ def _build_a200000_form_data(tax_return: TaxReturn, enterprise: Enterprise) -> A
         prior_year_overpaid=0.0,
     )
     
-    # 设置税率
-    if enterprise_info.is_small_micro:
-        form_data.tax_rate = 0.25
-        form_data.small_micro_reduction = form_data.total_profit * 0.20
-    else:
-        form_data.tax_rate = 0.25
-    
-    form_data.tax_payable = form_data.actual_profit * form_data.tax_rate
-    form_data.tax_reduction = form_data.small_micro_reduction
-    form_data.tax_to_pay_or_refund = form_data.tax_payable - form_data.tax_reduction
-    form_data.final_tax_to_pay = form_data.tax_to_pay_or_refund
-    
+    # 行次 8/10/14/16 统一由 calculate() 计算（实际利润额、应纳所得税额、
+    # 小微减免、应补退税额）。旧实现手写 tax_payable = actual_profit * rate，
+    # 而 actual_profit 未初始化恒为 0 → 应纳所得税额恒 0、小微时出现负的应补退。
+    form_data.calculate()
     return form_data
 
 

@@ -485,7 +485,7 @@ name 重复或必填缺失返回 400。
 | finance_vault 数据仓 | `/api/finance/vault` | `GET /tables`、`POST /ingest/file`、`POST /query`（只读 SQL）、`GET /tables/{name}/preview` |
 | finance_ledger_personal 个人记账 | `/api/finance/ledger/personal` | 账户/分类/交易 CRUD、`GET /stats/monthly`、`GET /stats/trend`、`GET/PUT /budgets`、`POST /import/csv`、`GET /export/csv` |
 | finance_ledger_bip 企业记账 | `/api/finance/ledger/bip` | `POST /imports/preview`、`POST /imports/confirm`、`GET /imports`、`GET /vouchers`、`GET /vouchers/{id}`、`GET /entries`、`GET /balances/summary`、`POST /vouchers/export-to-vault` |
-| finance_tax 企业所得税 | `/api/finance/tax` | `/enterprises`（CRUD）、`/financial-import`（导入+模板下载）、`/policies`（政策库）、`/tax-returns`（申报 CRUD/提交/计算/导出 Excel·PDF）、`/textbook-reference`（教材对照） |
+| finance_tax 企业所得税 | `/api/finance/tax` | `/enterprises`（CRUD）、`/financial-import`（导入+模板下载）、`/policies`（政策库）、`/tax-returns`（申报 CRUD/提交/计算/导出 Excel·PDF；**入参万元、落库与导出口径为元**）、`/scope`（税种准入清单：admitted/blocked 及原因）、`/textbook-reference`（教材对照） |
 | finance_board 报表看板 | `/api/finance/board` | `GET /snapshots`（快照列表，最多 50 条，时间倒序）、`POST /run`（触发管线）、`GET /latest`、`GET /snapshots/{id}/html`（iframe 嵌入） |
 | finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行，表单必填 `actual_month` 1~12）、`POST /runs/{id}/execute`、`GET /runs`（分页）、`GET /runs/{id}`（运行详情）、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP） |
 | finance_pos POS 对账 | `/api/finance/pos` | 同上（无 actual_month 参数），含 `GET /runs/{id}` 运行详情 |

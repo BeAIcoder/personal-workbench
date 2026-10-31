@@ -126,6 +126,10 @@ METRIC_DICTIONARY = {
         "business_hr.service.hr_summary", "所选月份全部薪资单",
         ["需结合 payroll_count 判断是否为无薪资单"],
     ),
+    "hr.payroll_count": _metric(
+        "薪资单数", "所选月份薪资单条数", "项目期间汇总", "所选月份",
+        "business_hr.service.hr_summary", "所选月份全部薪资单", [],
+    ),
     "hr.payroll_draft": _metric(
         "草稿薪资单数", "所选月份 status=draft 的薪资单数", "项目期间汇总", "所选月份",
         "business_hr.service.hr_summary", "所选月份全部薪资单", [],
@@ -175,6 +179,7 @@ METRIC_SOURCES = {
     "hr.headcount": ("hr", "headcount"),
     "hr.expiring_30": ("hr", "expiring_30"),
     "hr.payroll_net": ("hr", "payroll_net"),
+    "hr.payroll_count": ("hr", "payroll_count"),
     "hr.payroll_draft": ("hr", "payroll_draft"),
     "facility.equipment_count": ("facility", "equipment_count"),
     "facility.category_a": ("facility", "category_a"),

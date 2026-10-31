@@ -71,6 +71,8 @@ CORPORATE_INCOME_TAX_RATES = TaxRateConfig(
             rate=0.25,
             description="企业所得税标准税率",
             is_preferential=False,
+            # 企业所得税法自 2008-01-01 施行；早于该年度不得用现行税率倒推
+            effective_date="2008-01-01",
             policy_basis="《中华人民共和国企业所得税法》第四条",
         ),
         TaxRateItem(
@@ -83,6 +85,7 @@ CORPORATE_INCOME_TAX_RATES = TaxRateConfig(
                 "certification_type": "高新技术企业",
             },
             policy_basis="《中华人民共和国企业所得税法》第二十八条",
+            effective_date="2008-01-01",
         ),
         TaxRateItem(
             name="小型微利企业实际税负",
@@ -96,6 +99,7 @@ CORPORATE_INCOME_TAX_RATES = TaxRateConfig(
                 "not_restricted_industry": True,
             },
             policy_basis="财政部 税务总局公告2023年第12号",
+            effective_date="2023-01-01",
             expires_date="2027-12-31",
         ),
     ],

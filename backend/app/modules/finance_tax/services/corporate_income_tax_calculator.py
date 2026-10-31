@@ -23,6 +23,7 @@ from ..config.tax_rules import (
     get_rd_deduction_rate,
 )
 from ..config.tax_rates import (
+    CORPORATE_INCOME_TAX_RATES,
     get_standard_cit_rate,
     get_high_tech_cit_rate,
     get_small_micro_cit_rate,
@@ -700,6 +701,36 @@ class CorporateIncomeTaxCalculator:
     # --- 5. 税额计算 ---
 
     @staticmethod
+    def _ensure_rate_effective(
+        enterprise_tax_type: EnterpriseTaxType,
+        tax_year: str | int | None,
+    ) -> None:
+        """税率版本化门禁：所属年度早于税率登记生效日则拒绝。
+
+        小微优惠由 policy_status（含公告号与到期日）单独校验，此处不重复。
+        tax_year 缺省或非法时保持向后兼容（交由 policy_status 判断）。
+        """
+        if tax_year is None or enterprise_tax_type == EnterpriseTaxType.SMALL_MICRO:
+            return
+        year = str(tax_year)[:4]
+        if not (year.isdigit() and len(year) == 4):
+            return
+        item_name = {
+            EnterpriseTaxType.STANDARD: "基本税率",
+            EnterpriseTaxType.HIGH_TECH: "高新技术企业优惠税率",
+        }.get(enterprise_tax_type)
+        if item_name is None:
+            return
+        item = next((r for r in CORPORATE_INCOME_TAX_RATES.rates if r.name == item_name), None)
+        if item is None:
+            return
+        if item.effective_date and year < item.effective_date[:4]:
+            raise ValueError(
+                f"{item.name}（{item.policy_basis}）自 {item.effective_date} 起适用，"
+                f"所属年度 {year} 不能适用；如需计算历史年度，请先补登该年度税率与政策依据"
+            )
+
+    @staticmethod
     def calculate_tax_amount(
         taxable_income_wan: float,
         enterprise_tax_type: EnterpriseTaxType,
@@ -726,9 +757,10 @@ class CorporateIncomeTaxCalculator:
                 "reason": "应纳税所得额为零或负数，无需缴纳企业所得税",
             }
 
+        # 税率版本化（准入制）：所属年度必须落在税率登记的有效区间内。
+        # 未登记区间的历史年度一律拒绝，不用现行税率倒推历史年度。
+        CorporateIncomeTaxCalculator._ensure_rate_effective(enterprise_tax_type, tax_year)
         rate = CorporateIncomeTaxCalculator.get_applicable_tax_rate(enterprise_tax_type)
-
-        # 小型微利企业特殊说明（tax_year 传参时校验 12号公告有效期）
         policy_status_value = ""
         reason = ""
         if enterprise_tax_type == EnterpriseTaxType.SMALL_MICRO:

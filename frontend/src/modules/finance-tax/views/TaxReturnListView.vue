@@ -27,10 +27,10 @@
           <template #default="{ row }">{{ row.quarter ?? '年度' }}</template>
         </el-table-column>
         <el-table-column prop="return_type" label="类型" width="80" />
-        <el-table-column label="应纳税所得额" width="130" align="right">
+        <el-table-column label="应纳税所得额（元）" width="150" align="right">
           <template #default="{ row }">{{ row.taxable_income?.toFixed(2) }}</template>
         </el-table-column>
-        <el-table-column label="应纳税额" width="120" align="right">
+        <el-table-column label="应纳税额（元）" width="140" align="right">
           <template #default="{ row }">{{ row.tax_amount?.toFixed(2) }}</template>
         </el-table-column>
         <el-table-column label="状态" width="90">

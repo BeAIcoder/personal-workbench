@@ -98,6 +98,21 @@ class ScheduleUpdate(BaseModel):
     all_day: Optional[bool] = None
     color: Optional[str] = Field(None, max_length=20)
 
+    @field_validator("title")
+    @classmethod
+    def _clean_title(cls, v: Optional[str]) -> Optional[str]:
+        """入参收口：纯空白标题直接 422。
+
+        旧实现只在路由里拦 None，空白串会先 commit 再被 ScheduleOut 校验拒绝，
+        导致该行永久污染（列表/详情持续 500）。
+        """
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("标题不能为空白")
+        return v
+
 
 class ScheduleOut(ScheduleBase):
     id: int
@@ -264,6 +279,17 @@ class AgentSpecUpdate(BaseModel):
     @classmethod
     def _clean_name(cls, v: Optional[str]) -> Optional[str]:
         return v.strip().lower() if v is not None else None
+
+    @field_validator("display_name")
+    @classmethod
+    def _clean_display_name(cls, v: Optional[str]) -> Optional[str]:
+        """入参收口：纯空白显示名直接 422（否则 commit 后响应校验 500 并污染该行）。"""
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("中文名称不能为空白")
+        return v
 
     @field_validator("keywords")
     @classmethod

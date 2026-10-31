@@ -195,3 +195,20 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **模块计数**：当前 **22 个模块、43 张模块表**（宿主 12 张，合计 SQLite 56 含遗留表）。财务菜单 13 + 模块示例；经营/职能菜单 7（GM 70、招商 71、营运 72、企划 73、工程 74、法务 81、人事 82）。
 - **验证（最终）**：后端全量 **1427 passed**（738.35s；首轮 3 个失败均为新探针未满足 19 区隔离契约，修复后清零）；前端全量 **57 文件 / 871 passed**；`npm run build` 通过（stamp `b17369e5ff92`）；两个隔离浏览器探针分别为业务闭环 **4/4**、GM **3/3**，`page_errors=0`。真实 `backend/data` 198 文件路径哈希 `d9602a9d...` 在验收窗口内零变化；未提交 git。
 - **仍未做（准入制）**：政策税率版本化需逐条官方日期复核；房产税/城镇土地使用税需地方口径+真实脱敏样本；13 周现金流需业务口径。无材料不编税率；Task 8/9 部分独立评审因子代理 429 改为主线程复核，最终 whole-branch review 需重点看 GM/facility。
+
+## 交付止血 + P0 申报单位 + 准入制机制化（2026-10-31 晚）
+
+- **第 0 批（交付止血）**：`git add -A` 一次提交 75 个文件（`bd36e08`，40 改 + 35 新增，含 3 个未跟踪模块与 `utils_money.py`/`finance_iit_common.py`/`business_metrics.py`），避免 `git commit -am` 只提交已跟踪文件导致 5 个 service 的 import 失败、**8/22 模块静默消失**。提交前全量回归：后端 1427 passed、前端 57 文件 871 passed、构建通过。热备份 `backups/workbench_20261031_195627.db`（1252KB）+ `workbench_data_20261031_195627.zip`（6.92MB）。精确 taskkill 监听 PID（命令行同时命中 venv 路径与 `app.main:app`）后用 `开机自启动.vbs` 重启，4 秒就绪；真实库 **56 张表**（新建 `mod_fac_equipment`/`mod_fac_compliance`/`mod_ops_work_order_followup`），facility/operations/hr summary 200、GM 带 `period` 200、招商 10 条路由已挂载。**推送未完成**：`git-credential-manager.exe` 弹窗等待授权，已停止后台推送，待用户授权后重试。
+- **第 1 批（P0 + 3 个自伤 500 + 归属校验）**：
+  - **P0 企业所得税申报单位契约**：前端表单/`TaxReturnCreate` 入参为**万元**，`mod_tax_return` 落库与 A200000 导出改为**元**（申报表口径）。`calculate_tax` 只在边界换算一次（`taxable_income = 万元 × 10000`），小微判定直接吃万元值；旧实现把万元当元再除 10000，导致 1000 万被判成 0.1 万（25%→5%）且导出少 1 万倍。真实库 `mod_tax_return` 为 0 行，无迁移负担。
+  - **A200000 计算收敛**：`_build_a200000_form_data` 原手写 `tax_payable = actual_profit * rate` 而 `actual_profit` 恒为 0（导出行次靠 `to_row_data()` 重算才正确），改为统一 `form_data.calculate()`。
+  - **年度接线**：`CalculationRequest` 新增 `year` 兼容字段（前端历史提交名），`tax_year = tax_year or year or 当前年`；`LossCarryForward` 传入申报年度，2019 年亏损在 2026 年正确判过期。缺年度不再静默跳过政策校验。
+  - **自伤 500**：`ScheduleUpdate.title` 与 `AgentSpecUpdate.display_name` 增加 strip+非空校验——旧实现先 commit 再被响应 schema 拒绝，该行永久污染、列表持续 500。
+  - **模型归属**：`save_provider_model`/`delete_provider_model` 校验 `provider_id` 与模型实际所属一致（跨供应商编辑 400、删除 404），路由 DELETE 不再忽略路径参数。
+  - 前端单位标注同步：申报预览/列表/统计由「万元」改为「元」；`使用说明.md` 补「计算页万元、申报记录元」的单位说明。
+- **第 5 批（准入制机制化）**：
+  - 新增 `finance_tax/config/tax_scope.py`：9 个税种准入登记（5 admitted / 4 blocked），`require_tax_scope` 统一拒绝未准入税种；新增只读路由 `GET /api/finance/tax/scope`、`/scope/{tax_key}`。房产税/土地使用税/土增税/契税登记为 blocked 并写明所需地方口径。
+  - 税率版本化（CIT 先行）：`基本税率`/`高新 15%` 补 `effective_date=2008-01-01`、`小微 5%` 补 `2023-01-01`；`calculate_tax_amount` 增加 `_ensure_rate_effective`，所属年度早于登记生效日直接 400（小微仍由 policy_status 校验公告号与到期日，不重复）。
+  - GM 指标字典补 `hr.payroll_count`（caveat 指向的字段变为可见），漂移测试要求 `emitted == dictionary` 仍成立。
+- **验证**：后端全量 **1443 passed（789.92s）**、前端 **57 文件 871 passed**、`npm run build` 通过（stamp `57d9ca00d38b`）。新增测试 16 例：`test_tax_return_units.py`（5）、`test_bugfix_p1_20261031.py`（5）、`test_tax_scope_and_rate_versioning.py`（6）。
+- **仍未做**：推送待凭据授权；`.gitattributes` 未覆盖 `.example/.vbs/.bat/.html/.css`（真实路径已入 HEAD，需单独清洗历史）；`restore_backup.py` 非原子（恢复演练必须先修）；P0 之外的并发收款/删已收账单/入职前出薪等业务不变量仍待修（见本轮分析报告）。

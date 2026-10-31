@@ -117,8 +117,8 @@ class TaxReturn(Base):
     quarter = Column(Integer, nullable=True, comment="季度（1-4，年度申报时为NULL）")
     return_type = Column(String(20), nullable=False, comment="申报类型：预缴/年度")
     status = Column(String(20), default="draft", comment="状态：draft-草稿，submitted-已提交")
-    taxable_income = Column(Float, default=0.0, comment="应纳税所得额（万元）")
-    tax_amount = Column(Float, default=0.0, comment="应纳税额（万元）")
+    taxable_income = Column(Float, default=0.0, comment="应纳税所得额（元）")
+    tax_amount = Column(Float, default=0.0, comment="应纳税额（元）")
     created_at = Column(DateTime, default=datetime.now, nullable=False, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False, comment="更新时间")
 

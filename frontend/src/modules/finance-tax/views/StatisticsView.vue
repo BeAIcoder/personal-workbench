@@ -25,10 +25,10 @@
       <template #header><span>按年度汇总</span></template>
       <el-table :data="byYear" size="small" empty-text="暂无数据">
         <el-table-column prop="year" label="年度" width="120" />
-        <el-table-column label="应纳税所得额合计(万)" align="right">
+        <el-table-column label="应纳税所得额合计(元)" align="right">
           <template #default="{ row }">{{ row.taxable_income.toFixed(2) }}</template>
         </el-table-column>
-        <el-table-column label="应纳税额合计(万)" align="right">
+        <el-table-column label="应纳税额合计(元)" align="right">
           <template #default="{ row }">{{ row.tax_amount.toFixed(2) }}</template>
         </el-table-column>
         <el-table-column label="记录数" width="100" align="right">

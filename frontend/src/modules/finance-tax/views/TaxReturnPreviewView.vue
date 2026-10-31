@@ -17,8 +17,8 @@
             {{ detail.status === 'submitted' ? '已提交' : '草稿' }}
           </el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="应纳税所得额">{{ detail.taxable_income?.toFixed(2) }} 万元</el-descriptions-item>
-        <el-descriptions-item label="应纳税额">{{ detail.tax_amount?.toFixed(2) }} 万元</el-descriptions-item>
+        <el-descriptions-item label="应纳税所得额">{{ detail.taxable_income?.toFixed(2) }} 元</el-descriptions-item>
+        <el-descriptions-item label="应纳税额">{{ detail.tax_amount?.toFixed(2) }} 元</el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ detail.created_at }}</el-descriptions-item>
       </el-descriptions>
 

@@ -846,6 +846,10 @@ def save_provider_model(data: dict) -> dict:
         if prov is None:
             raise ValueError(f"供应商 {provider_id} 不存在")
         pm = db.get(ProviderModel, int(mid)) if mid else None
+        if pm is not None and pm.provider_id != provider_id:
+            # 归属校验：路径里的 provider_id 必须与模型实际所属一致，
+            # 否则 POST /providers/{B}/models 带 A 的 model_id 会改到 A 的模型。
+            raise ValueError("该模型不属于此供应商")
         if pm is None:
             pm = ProviderModel(provider_id=provider_id, model=model)
             db.add(pm)
@@ -940,9 +944,12 @@ def save_provider_model(data: dict) -> dict:
         return {"id": pm.id, "model": pm.model}
 
 
-def delete_provider_model(mid: int) -> None:
+def delete_provider_model(mid: int, provider_id: int | None = None) -> None:
+    """删除模型；传入 provider_id 时校验归属，不匹配则拒绝（防跨供应商误删）。"""
     with SessionLocal() as db:
         pm = db.get(ProviderModel, int(mid))
+        if pm is not None and provider_id is not None and pm.provider_id != int(provider_id):
+            raise ValueError("该模型不属于此供应商")
         if pm is not None:
             db.delete(pm)
         row = db.get(AgentSettings, 1)
