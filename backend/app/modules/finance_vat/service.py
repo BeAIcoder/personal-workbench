@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ...config import get_finance_data_dir
 from ...utils_money import money
+from ...utils_xlsx import safe_cell
 
 # 一般纳税人适用税率白名单（增值税暂行条例）
 GENERAL_RATES = [0.13, 0.09, 0.06]
@@ -160,7 +161,7 @@ def export_filing_xlsx(filing) -> Path:
     if filing.taxpayer_type == "general":
         ws.append(["业务类型", "不含税销售额", "税率", "销项税额"])
         for d in calc.get("details", []):
-            ws.append([d["business_type"], d["amount"], f"{d['rate']:.0%}", d["output_vat"]])
+            ws.append([safe_cell(d["business_type"]), d["amount"], f"{d['rate']:.0%}", d["output_vat"]])
         ws.append([])
         ws.append(["销项税额合计", calc.get("output_vat", 0)])
         ws.append(["进项税额合计", calc.get("input_vat", 0)])

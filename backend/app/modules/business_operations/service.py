@@ -141,6 +141,17 @@ def contract_delete(db: Session, contract_id: int) -> None:
     c = db.get(OpsContract, contract_id)
     if c is None:
         raise LookupError("合同不存在")
+    paid_count = (
+        db.query(OpsBill)
+        .filter(OpsBill.contract_id == contract_id, OpsBill.paid_amount > 0)
+        .count()
+    )
+    if paid_count:
+        # P1 修复：已收款账单是收款凭据，硬删会让实收从库中消失且不可恢复
+        raise ValueError(
+            f"合同下有 {paid_count} 张已收款账单，删除会丢失收款记录；"
+            "请先完成退款/冲正或导出留底后再删除"
+        )
     db.query(OpsBill).filter(OpsBill.contract_id == contract_id).delete()
     db.delete(c)
     db.commit()
@@ -270,6 +281,12 @@ def bill_aging(db: Session, as_of=None) -> dict:
 
 
 def pay_bill(db: Session, bill_id: int, amount: float, paid_at=None) -> dict:
+    """登记收款。
+
+    并发保护（P1 修复）：旧实现的读-改-写在两个会话交错时可互相覆盖、静默丢一笔实收；
+    改为条件更新——仅当 paid_amount 仍等于读到的旧值时才写入，写不进（rowcount=0）
+    即说明有并发修改，回滚并要求重试，不再丢单。
+    """
     amount = money(amount)
     if amount <= 0:
         raise ValueError("收款金额须大于 0")
@@ -278,13 +295,28 @@ def pay_bill(db: Session, bill_id: int, amount: float, paid_at=None) -> dict:
         raise LookupError("账单不存在")
     if bill.status == "paid":
         raise ValueError("该账单已收清，不能重复收款")
-    new_paid = money((bill.paid_amount or 0) + amount)
+    old_paid = money(bill.paid_amount or 0)
+    new_paid = money(old_paid + amount)
     if new_paid > money(bill.total_amount) + 0.005:
         raise ValueError(f"收款金额超过应收：应收 {money(bill.total_amount):.2f}，"
                          f"已收 {money(bill.paid_amount):.2f}，本次 {amount:.2f}")
-    bill.paid_amount = min(new_paid, money(bill.total_amount))
-    bill.status = "paid" if bill.paid_amount >= money(bill.total_amount) - 0.005 else "partial"
-    bill.paid_at = _as_date(paid_at, "收款日期") or date.today()
+    final_paid = min(new_paid, money(bill.total_amount))
+    new_status = "paid" if final_paid >= money(bill.total_amount) - 0.005 else "partial"
+    updated = (
+        db.query(OpsBill)
+        .filter(OpsBill.id == bill_id, OpsBill.paid_amount == old_paid)
+        .update(
+            {
+                "paid_amount": final_paid,
+                "status": new_status,
+                "paid_at": _as_date(paid_at, "收款日期") or date.today(),
+            },
+            synchronize_session=False,
+        )
+    )
+    if updated == 0:
+        db.rollback()
+        raise ValueError("账单已被其他操作修改（并发冲突），请刷新后重试")
     db.commit()
     db.refresh(bill)
     return _bill_dict(bill, db.get(OpsContract, bill.contract_id))

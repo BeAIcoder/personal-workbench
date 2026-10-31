@@ -211,4 +211,10 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
   - 税率版本化（CIT 先行）：`基本税率`/`高新 15%` 补 `effective_date=2008-01-01`、`小微 5%` 补 `2023-01-01`；`calculate_tax_amount` 增加 `_ensure_rate_effective`，所属年度早于登记生效日直接 400（小微仍由 policy_status 校验公告号与到期日，不重复）。
   - GM 指标字典补 `hr.payroll_count`（caveat 指向的字段变为可见），漂移测试要求 `emitted == dictionary` 仍成立。
 - **验证**：后端全量 **1443 passed（789.92s）**、前端 **57 文件 871 passed**、`npm run build` 通过（stamp `57d9ca00d38b`）。新增测试 16 例：`test_tax_return_units.py`（5）、`test_bugfix_p1_20261031.py`（5）、`test_tax_scope_and_rate_versioning.py`（6）。
-- **仍未做**：推送待凭据授权；`.gitattributes` 未覆盖 `.example/.vbs/.bat/.html/.css`（真实路径已入 HEAD，需单独清洗历史）；`restore_backup.py` 非原子（恢复演练必须先修）；P0 之外的并发收款/删已收账单/入职前出薪等业务不变量仍待修（见本轮分析报告）。
+- **第 2 批（数据不变量 + 安全快修，深夜追加）**：
+  - **并发收款不丢单**：`pay_bill` 改条件更新（`UPDATE ... WHERE paid_amount=旧值`，rowcount=0 → 回滚 + 中文冲突提示）；线程级并发测试断言「终态实收恒等于成功收款之和」。
+  - **删合同守卫**：`contract_delete` 对存在 `paid_amount>0` 账单的合同抛 ValueError（路由 409），账单与实收保留；无已收款账单才级联删。
+  - **HR 入职前不出薪**：`payroll_generate` 对「入职月份晚于出薪月份」抛中文 ValueError（409），不再 `max()` 兜底成 1 个月计税；与 `finance_iit` 拒绝口径对齐。
+  - **xlsx 公式注入**：新增 `app/utils_xlsx.py::safe_cell`（`= + - @` 前缀加 `'`），finance_iit/invoice/vat 三处导出接入；业务模块 6 份 `_cell` 拷贝的收敛起点。
+  - **脱敏过滤器升级**：`git_sanitize_filter.py` 改**字节级双编码替换**（UTF-8 + GB18030）——旧实现只按 UTF-8 匹配，GBK 文件里的中文真实串永远命中不了（`.vbs` 泄漏的根因）；`.gitattributes` 补 `*.example/*.vbs/*.bat/*.html/*.css/*.mjs/*.sh`；`.env.example` 6 行示例路径改占位符；7 个新覆盖文件 renormalize 后暂存 blob 双编码命中 **0**。
+- **仍未做**：推送待用户在自己终端授权一次（GCM 弹窗无法由代理点击）；`restore_backup.py` 非原子（恢复演练必须先修）；跨模块勾稽三字段（unit_id/免租期/专项附加扣除）未接线；`.env.example`/vbs 的**历史 blob** 残留需 git filter-repo 单独评估。

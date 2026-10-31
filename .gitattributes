@@ -2,8 +2,16 @@
 *.md    filter=sanitize
 *.py    filter=sanitize
 *.js    filter=sanitize
+*.mjs   filter=sanitize
 *.vue   filter=sanitize
 *.json  filter=sanitize
 *.yml   filter=sanitize
 *.yaml  filter=sanitize
 *.txt   filter=sanitize
+*.example filter=sanitize
+*.vbs   filter=sanitize
+*.bat   filter=sanitize
+*.html  filter=sanitize
+*.css   filter=sanitize
+# 无扩展名的脚本类文件（如有新增请在此登记；二进制一律不要加）
+*.sh    filter=sanitize

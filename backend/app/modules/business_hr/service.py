@@ -253,6 +253,15 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
     created = []
     warnings = []
     for emp in employees:
+        if emp.hire_date and (emp.hire_date.year, emp.hire_date.month) > (target_year, target_month):
+            # P1 修复：入职晚于出薪月份时不再用 max() 兜底成「已入职 1 个月」计税，
+            # 与 finance_iit 的拒绝口径对齐
+            raise ValueError(
+                f"员工 {emp.emp_no} {emp.name} 入职月份"
+                f"（{emp.hire_date.year}-{emp.hire_date.month:02d}）晚于出薪月份"
+                f"（{target_year}-{target_month:02d}），不能为其出薪；"
+                "请修正入职日期或更换出薪月份"
+            )
         att = (db.query(HrAttendance)
                .filter(HrAttendance.emp_id == emp.id, HrAttendance.month == month).first())
         if att is None:

@@ -156,12 +156,14 @@ def update_contract(contract_id: int, payload: ContractUpdate, db: Session = Dep
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.delete("/contracts/{contract_id}", summary="删除合同（连同账单）")
+@router.delete("/contracts/{contract_id}", summary="删除合同（连同未收款账单；已收款需先处理）")
 def delete_contract(contract_id: int, db: Session = Depends(get_db)):
     try:
         service.contract_delete(db, contract_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
 
 

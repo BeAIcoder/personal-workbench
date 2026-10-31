@@ -46,4 +46,8 @@ git checkout-index -f -a
 - 新增敏感串时，**先加映射再提交**；映射表本身永远不许入库。
 - 占位符一旦入库就不要再改（改了等于换钥匙，历史 blob 无法对应）。
 - 过滤器需要 `python` 在 PATH 上（项目本身的前置要求）。
+- **编码覆盖（2026-10-31）**：替换在字节层按 UTF-8 与 GB18030 双编码各做一次，
+  GBK 文件（bat/vbs，cmd/cscript 要求 ANSI）同样被脱敏；`.gitattributes` 已把
+  `*.example/*.vbs/*.bat/*.html/*.css/*.sh/*.mjs` 纳入过滤。历史 blob 中的残留
+  （如旧版 `backend/.env.example`、`开机自启动.vbs` 里的真实路径）需单独清洗。
 - 本机制只保证**当前 HEAD 起**的内容脱敏；更老的提交历史里的字符串不在处理范围（如需清洗历史，用 git filter-repo + 强推，属破坏性操作，单独评估）。

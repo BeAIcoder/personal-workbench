@@ -15,6 +15,7 @@ from pathlib import Path
 from ...config import get_finance_data_dir
 from ...finance_iit_common import BRACKETS, MONTHLY_DEDUCTION, calc_cumulative_withholding
 from ...utils_money import money
+from ...utils_xlsx import safe_cell
 
 # 专项附加扣除标准（元/月，国发〔2023〕13号）
 SPECIAL_DEDUCTION_STANDARDS = {
@@ -171,7 +172,7 @@ def export_filing_xlsx(filing) -> Path:
     calc = filing.calc_result or {}
     for emp in calc.get("employees", []):
         for m in emp.get("months", []):
-            ws.append([emp["name"], m["month"], m["taxable_income"],
+            ws.append([safe_cell(emp["name"]), m["month"], m["taxable_income"],
                        m["cumulative_taxable"], f"{m['rate']:.0%}",
                        m["cumulative_withholding"], m["monthly_withholding"]])
     ws.append([])

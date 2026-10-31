@@ -26,6 +26,8 @@ from typing import Optional
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from sqlalchemy import func
+
+from ...utils_xlsx import safe_cell
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir
@@ -567,18 +569,18 @@ def _write_project_list(project_dir: Path, project: str, entries: list[dict]) ->
     for row, entry in enumerate(entries, 2):
         item: InvoiceItem = entry["item"]
         ws.cell(row=row, column=1, value=row - 1)
-        ws.cell(row=row, column=2, value=item.invoice_number)
-        ws.cell(row=row, column=3, value=item.buyer_name)
+        ws.cell(row=row, column=2, value=safe_cell(item.invoice_number))
+        ws.cell(row=row, column=3, value=safe_cell(item.buyer_name))
         amount = parse_amount(item.amount)
         amount_cell = ws.cell(row=row, column=4, value=amount)
         amount_cell.number_format = _AMOUNT_NUMBER_FORMAT
         total_amount += amount
-        ws.cell(row=row, column=5, value=item.invoice_type)
+        ws.cell(row=row, column=5, value=safe_cell(item.invoice_type))
         if item.invoice_type == "专票":
             special_count += 1
         elif item.invoice_type == "普票":
             general_count += 1
-        ws.cell(row=row, column=6, value=item.remark)
+        ws.cell(row=row, column=6, value=safe_cell(item.remark))
     stat_row = len(entries) + 3
     ws.cell(row=stat_row, column=1, value="统计信息")
     stats = [("发票总额", round(total_amount, 2)), ("发票张数", len(entries)), ("专票张数", special_count), ("普票张数", general_count)]
