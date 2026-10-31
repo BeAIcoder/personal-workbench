@@ -74,6 +74,16 @@ KEEP_ROOT_MD = {
 }
 # 整目录剔除（内部/过程内容）
 EXCLUDE_DIRS = {"20261012New"}
+# 递归剔除的内部目录（相对仓库根）：测试与脱敏工具会带出真实样本/本机路径，
+# 分发包只需要运行时与用户文档；保留 backend/scripts（备份等运维脚本）。
+PRUNE_DIRS = (
+    "dev",
+    "backend/tests",
+    "frontend/tests",
+)
+# 真实客户/员工名称词表：从本地词表/映射表/环境变量加载，真实值不入库
+# （本文件随 dev/ 一起被剔除，不参与分发）
+from pii_terms import load_pii_terms
 
 # 二进制扩展名（不参与文本扫描）
 BINARY_EXTS = {
@@ -206,6 +216,12 @@ def prune_internal(staging: Path) -> list[str]:
         elif entry.is_file() and entry.suffix == ".md" and entry.name not in KEEP_ROOT_MD:
             removed.append(entry.name)
             entry.unlink()
+    # 递归剔除内部目录：dev/ 含脱敏映射与真实样本、tests/ 含真实名称与路径
+    for rel in PRUNE_DIRS:
+        target = staging / rel
+        if target.is_dir():
+            removed.append(rel + "/")
+            shutil.rmtree(target)
     readme = staging / "README.md"
     if readme.exists():
         text = readme.read_text(encoding="utf-8")
@@ -251,11 +267,22 @@ def iter_text_files(root: Path):
 
 
 def read_text_strict(path: Path) -> str | None:
-    """严格 UTF-8 解码；失败即视为二进制（如 esbuild.exe），不参与文本扫描。"""
+    """读取用于扫描的文本：UTF-8 → GB18030 → UTF-16 依次尝试。
+
+    BUGfix TL-02：原实现严格 UTF-8，解码失败即当二进制跳过，导致 GBK 编码的
+    bat/vbs（含本机绝对路径）完全不参与敏感串扫描。这里按常见中文编码回退；
+    全部失败才视为二进制跳过。
+    """
     try:
-        return path.read_bytes().decode("utf-8")
-    except (UnicodeDecodeError, OSError):
+        raw = path.read_bytes()
+    except OSError:
         return None
+    for encoding in ("utf-8", "gb18030", "utf-16"):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return None
 
 
 def scan_secrets(staging: Path) -> list[str]:
@@ -269,7 +296,16 @@ def scan_secrets(staging: Path) -> list[str]:
 
     compiled = [(re.compile(p), label) for p, label in SECRET_PATTERNS]
     map_hits: list[str] = []
+    pii_hits: list[str] = []
     regex_fails: list[str] = []
+    pii_terms = load_pii_terms()
+    if pii_terms:
+        log(f"      真实客户/员工名称 {len(pii_terms)} 条参与反查")
+    else:
+        warnings.append(
+            "PII 词表为空：未做客户/员工名称反查（建议在 dev/pii-terms.local.txt 配置，"
+            "或在 dev/sanitize-map.local.json 中补齐）"
+        )
 
     for path in iter_text_files(staging):
         rel = path.relative_to(staging).as_posix()
@@ -279,6 +315,9 @@ def scan_secrets(staging: Path) -> list[str]:
         for real in reals:
             if real in content:
                 map_hits.append(f"{rel} 含映射表真实值（长度 {len(real)}）")
+        for term in pii_terms:
+            if term in content:
+                pii_hits.append(f"{rel} 含真实名称（{term[0]}…，共 {len(term)} 字）")
         for pattern, label in compiled:
             for m in pattern.finditer(content):
                 ctx = content[max(0, m.start() - 80): m.end() + 80]
@@ -287,6 +326,11 @@ def scan_secrets(staging: Path) -> list[str]:
                     warnings.append(item + "（上下文为合成/示例值，仅警告）")
                 else:
                     regex_fails.append(item)
+
+    if pii_hits:
+        raise PackageError(
+            "包内发现真实客户/员工名称，已中止：\n  " + "\n  ".join(pii_hits[:20])
+        )
 
     if map_hits:
         raise PackageError(

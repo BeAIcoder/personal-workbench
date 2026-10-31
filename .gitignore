@@ -1,5 +1,7 @@
 # 数据与上传
 backend/data/
+# 本机真实名称词表（脱敏校验/分发扫描用；真实值绝不入库）
+dev/pii-terms.local.txt
 # pytest 临时产物（旧版 conftest 曾因 TEMP=/tmp 落到 backend/）
 backend/workbench_debug_*/
 backend/workbench_test_*.db
@@ -24,6 +26,11 @@ backend/tmp*
 
 # 对话记录（隐私）
 对话记录.md
+
+# QwenPaw 智能体提示词采集文件（含 PROFILE/MEMORY 中词表外个人信息；仅作本地评审基准保留在根目录，
+# 永不入库、永不进分发 ZIP；锚定根目录，勿误伤子目录同名文件）
+/QwenPaw智能体提示词.json
+/QwenPaw智能体提示词汇总.md
 
 # 内部开发日志（隐私；锚定根目录，勿误伤 dev/e2e/PROGRESS.md 等子目录报告）
 /progress.md

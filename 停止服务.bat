@@ -1,10 +1,12 @@
 @echo off
+rem 服务端口：改端口只改这一行，需与 backend\.env 的 PORT 一致
+set "PORT=8000"
 setlocal
 chcp 936 >nul
 title 个人工作台 - 停止服务
 
 set "pid="
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /i ":8000.*LISTENING"') do set "pid=%%a"
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /i ":%PORT%.*LISTENING"') do set "pid=%%a"
 
 if not defined pid (
     echo 没有发现正在运行的服务。
@@ -12,14 +14,14 @@ if not defined pid (
     exit /b 0
 )
 
-echo 监听 8000 端口的进程 PID：%pid%
+echo 监听 %PORT% 端口的进程 PID：%pid%
 set "cmdline="
 for /f "delims=" %%c in ('powershell -noprofile -command "(Get-CimInstance Win32_Process -Filter 'ProcessId=%pid%').CommandLine"') do set "cmdline=%%c"
 echo 命令行：%cmdline%
 
 echo %cmdline% | findstr /i "uvicorn python" >nul
 if errorlevel 1 (
-    echo 该进程不是 uvicorn/python，8000 端口可能被其他程序占用，已取消操作。
+    echo 该进程不是 uvicorn/python，%PORT% 端口可能被其他程序占用，已取消操作。
     pause
     exit /b 1
 )

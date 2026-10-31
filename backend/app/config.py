@@ -1,4 +1,5 @@
 """应用配置：从环境变量 / backend/.env 文件读取，均提供合理默认值。"""
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
@@ -18,6 +19,9 @@ class Settings(BaseSettings):
     version: str = "1.16.1"
     host: str = "127.0.0.1"
     port: int = 8000
+    # 是否允许服务绑定在非回环地址（默认 False：无鉴权，局域网暴露风险高）。
+    # 仅供明确知晓风险的高级用法；开启后仍建议配合 CORS_ORIGINS 与防火墙。
+    allow_non_loopback: bool = False
     # 默认使用 SQLite，无需安装任何数据库服务；可用 DATABASE_URL 覆盖
     database_url: str = f"sqlite:///{(DATA_DIR / 'workbench.db').as_posix()}"
     # 首次启动且数据库为空时，是否自动写入示例数据
@@ -46,8 +50,24 @@ class Settings(BaseSettings):
     finance_cashflow_engine_path: str = ""
     # POS 台账引擎目录（finance_pos 模块）：留空按默认相对位置推导
     finance_pos_engine_path: str = ""
+    # QwenPaw 技能池目录，留空用代码内置默认
+    qwenpaw_skill_pool: str = ""
+    # WorkBuddy 主目录，留空用代码内置默认
+    workbuddy_home: str = ""
+    # 报表看板管线的 Windows 计划任务名
+    finance_board_task_name: str = "微信报表监控"
+    # 财务引擎兄弟项目推导的锚点目录名
+    finance_asset_anchor: str = "01-财税自动化"
+    # LibreOffice soffice 可执行文件路径，留空自动探测
+    soffice_path: str = ""
+    # 税务 PDF 自定义字体文件路径，留空用平台默认候选
+    pdf_font_path: str = ""
 
-    model_config = {"env_file": str(BASE_DIR / ".env"), "env_file_encoding": "utf-8"}
+    # WORKBENCH_ENV_FILE="" 可禁用 .env（测试隔离用）；未设置时读 backend/.env
+    model_config = {
+        "env_file": (os.environ.get("WORKBENCH_ENV_FILE", str(BASE_DIR / ".env")) or None),
+        "env_file_encoding": "utf-8",
+    }
 
 
 settings = Settings()

@@ -21,3 +21,8 @@ defusedxml>=0.7,<1
 reportlab>=4.0,<5
 # DPAPI（API Key 静态加密）硬依赖，仅 Windows 平台；缺失时应用拒绝启动（N-1/P0-4）
 pywin32>=306; sys_platform == 'win32'
+# 直接依赖（原先仅靠 agentscope 传递安装，上游依赖树一变启动即崩）
+# - PyYAML：技能包 frontmatter（agents/skill_store.py import yaml）
+# - python-multipart：所有 UploadFile/Form 路由（FastAPI 必需）
+PyYAML>=6.0,<7
+python-multipart>=0.0.9,<1

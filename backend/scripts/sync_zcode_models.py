@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.agents import config_store  # noqa: E402
+from app.agents.secrets_box import seal, unseal  # noqa: E402
 from app.agents.llm import build_model  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.models import ModelProvider, ProviderModel  # noqa: E402
@@ -38,7 +39,9 @@ def upsert_provider(name: str, protocol: str, base_url: str, api_key: str) -> in
         prov.protocol = protocol
         prov.base_url = base_url
         if api_key:
-            prov.api_key = api_key
+            # 与 config_store.save_provider 同口径：新写入一律 DPAPI 密封，
+            # 绝不让脚本把明文 Key 写进库（BUGfix TL-04）
+            prov.api_key = seal(api_key)
         prov.enabled = True
         prov.updated_at = __import__("datetime").datetime.now()
         db.commit()
@@ -139,7 +142,7 @@ def main() -> None:
                 cfg = {
                     "protocol": prov.protocol,
                     "base_url": prov.base_url,
-                    "api_key": prov.api_key,
+                    "api_key": unseal(prov.api_key),
                     "model": pm.model,
                     "context_size": pm.context_size,
                     "max_tokens": pm.max_tokens,

@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "脱敏数据"
 ATTACH = Path(os.environ["VERIFY_ATTACH_DIR"])
 
-SENSITIVE = ["某商业管理公司", "脱敏单位", "脱敏街区", "中青旅行社", "谢南江", "彭婷", "姚序", "方莹", "杜丹", "詹芷钰", "王娜娜", "陈霞"]
+from pii_terms import load_pii_terms
+
+SENSITIVE = load_pii_terms()
 fails: list[str] = []
 
 

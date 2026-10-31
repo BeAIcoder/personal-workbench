@@ -13,6 +13,10 @@ def test_stop_script_pid_filter_only_matches_workbench_listener():
     match = re.search(r'findstr\s+/r\s+/i\s+"([^"]+)"', text)
     assert match, "停止脚本必须包含端口筛选正则"
     pattern = match.group(1)
+    # 端口已参数化为 %PORT%：从脚本顶部 set "PORT=xxxx" 取默认值代入，得到真实生效的正则
+    port_match = re.search(r'set "PORT=(\d+)"', text)
+    assert port_match, "停止脚本必须在顶部定义 PORT 变量（改端口只改那一行）"
+    pattern = pattern.replace("%PORT%", port_match.group(1))
 
     netstat_output = (
         "  TCP    127.0.0.1:23333       0.0.0.0:0              LISTENING       25076\n"
