@@ -446,11 +446,17 @@ def _xlsx_first_sheet_to_csv(src: Path, max_rows: int) -> tuple[int, Path]:
 
     src = Path(src)
     dst = src.with_suffix(".csv")
+    try:
+        # 派生路径边界复核：CSV 落点必须与源文件同目录（with_suffix 派生恒成立，
+        # 显式断言使输出路径边界对静态检查可见）
+        dst.resolve().relative_to(src.parent.resolve())
+    except ValueError as exc:
+        raise ValueError(f"CSV 落点越界：{dst}") from exc
     wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
     written = 0
     try:
         ws = wb.active
-        with open(dst, "w", newline="", encoding="utf-8-sig") as f:
+        with dst.open("w", newline="", encoding="utf-8-sig") as f:
             writer = _csv.writer(f)
             for row in ws.iter_rows(values_only=True):
                 written += 1

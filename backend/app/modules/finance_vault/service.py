@@ -255,16 +255,19 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
         con = _connect()
         try:
             con.register("staging_df", df)
-            exists = bool(
-                con.execute(
-                    "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]
-                ).fetchone()
-            )
-            if mode == "append" and exists:
-                # 关系 API 按列名追加（等价 INSERT ... BY NAME），表名不进 SQL 文本
-                con.append(table, df, by_name=True)
+            latest = _latest_physical(con, table)
+            if mode == "append" and latest:
+                # append：按列名追加进最新物理修订表（表名作 API 参数，不拼 SQL 文本）
+                con.append(latest, df, by_name=True)
             else:
-                con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM staging_df')
+                # 物理“修订表”版本化 + 用户名固定为视图：数据落到新物理修订表（表名作
+                # API 参数），用户名经 to_view(replace=True) 原子换装——全程零 DDL 文本
+                # 拼接。修订号自目录枚举推算；旧修订暂不回收（嵌入式单文件库，量级可忽略）。
+                # 注：库目录为空时上线，无同名 TABLE 迁移问题（视图不能替换同名 TABLE）。
+                rev = _physical_rev(latest) + 1
+                phys = f"{table}__r{rev}"
+                con.sql("SELECT * FROM staging_df").to_table(phys)
+                con.table(phys).to_view(table, replace=True)
             rel = con.table(table)
             rows = rel.aggregate("count(*)").fetchone()[0]
             cols = [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)]
@@ -277,6 +280,27 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
             con.close()
     _register_dataset(table, source=source or "dataframe", rows=rows, columns=cols)
     return {"table": table, "rows": rows}
+
+
+def _physical_rev(phys: str | None) -> int:
+    """物理修订表名 {table}__r{n} 的修订号；无物理表时返回 0。"""
+    if not phys:
+        return 0
+    return int(phys.rsplit("__r", 1)[1])
+
+
+def _latest_physical(con: duckdb.DuckDBPyConnection, table: str) -> "str | None":
+    """枚举目录推算最新物理修订表（常量 SQL + Python 侧过滤，零拼接）。
+
+    用户名在目录中恒为视图（{table}），物理数据表为 {table}__r{n}；
+    返回修订号最大的物理表名，无则 None。
+    """
+    rows = con.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+    ).fetchall()
+    prefix = table + "__r"
+    revs = [t for (t,) in rows if t.startswith(prefix) and t[len(prefix):].isdigit()]
+    return max(revs, key=lambda t: int(t[len(prefix):])) if revs else None
 
 
 def _read_table_file(path: Path, sheet: str = "") -> pd.DataFrame:

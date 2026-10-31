@@ -48,10 +48,13 @@ def restore(zip_path: Path, target: Path = DEFAULT_TARGET, force: bool = False) 
     with zipfile.ZipFile(zip_path) as zf:
         for name in _safe_entries(zf):
             dest = (target / name).resolve()
-            if not str(dest).startswith(str(target.resolve())):
-                raise ValueError(f"备份条目越界：{name}")
+            try:
+                # pathlib 原生包含校验：目的路径必须落在恢复目标目录内
+                dest.relative_to(target.resolve())
+            except ValueError as exc:
+                raise ValueError(f"备份条目越界：{name}") from exc
             dest.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(name) as src, open(dest, "wb") as out:
+            with zf.open(name) as src, dest.open("wb") as out:
                 shutil.copyfileobj(src, out)
             restored.append(name)
     return restored
