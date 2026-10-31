@@ -52,7 +52,7 @@ describe('写死文案已收口为 BACKEND_HINT 引用', () => {
   it('DashboardView.vue 绑定 BACKEND_HINT 且不再写死地址', () => {
     const src = readSrc('src/views/DashboardView.vue')
     expect(src).toContain(':sub-title="BACKEND_HINT"')
-    expect(src).toContain("import { dashboardApi, BACKEND_HINT } from '../api'")
+    expect(src).toMatch(/import \{[^}]*dashboardApi[^}]*BACKEND_HINT[^}]*\} from '\.\.\/api'/)
     expect(src).not.toContain('127.0.0.1:8000')
   })
 

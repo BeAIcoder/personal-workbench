@@ -95,6 +95,14 @@ class SealUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
+def _update_data(payload: BaseModel) -> dict:
+    data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    for field in {"expire_date", "filed_date", "hearing_date"} & payload.model_fields_set:
+        if getattr(payload, field) is None:
+            data[field] = None
+    return data
+
+
 def _download(data: bytes, filename: str) -> StreamingResponse:
     ascii_name = "".join(c for c in filename if 32 <= ord(c) <= 126 and c not in '"\\') or "export.xlsx"
     return StreamingResponse(
@@ -130,7 +138,7 @@ def create_review(payload: ReviewIn, db: Session = Depends(get_db)):
 
 @router.put("/contracts/{review_id}", summary="更新合同审查")
 def update_review(review_id: int, payload: ReviewUpdate, db: Session = Depends(get_db)):
-    data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    data = _update_data(payload)
     try:
         return service.review_save(db, data, review_id)
     except LookupError as exc:
@@ -168,7 +176,7 @@ def create_case(payload: CaseIn, db: Session = Depends(get_db)):
 
 @router.put("/cases/{case_id}", summary="更新案件")
 def update_case(case_id: int, payload: CaseUpdate, db: Session = Depends(get_db)):
-    data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    data = _update_data(payload)
     try:
         return service.case_save(db, data, case_id)
     except LookupError as exc:
@@ -204,7 +212,7 @@ def create_seal(payload: SealIn, db: Session = Depends(get_db)):
 
 @router.put("/seals/{seal_id}", summary="更新用印记录")
 def update_seal(seal_id: int, payload: SealUpdate, db: Session = Depends(get_db)):
-    data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    data = _update_data(payload)
     try:
         return service.seal_save(db, data, seal_id)
     except LookupError as exc:

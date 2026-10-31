@@ -21,7 +21,17 @@ manifest = ModuleManifest(
             "readonly": True,
         }
     ],
-    column_patches={},
+    column_patches={
+        "mod_leasing_unit": {"opened_at": "DATE"},
+        "mod_leasing_lead": {
+            "unit_id": "INTEGER",
+            "rent_form": "TEXT",
+            "free_rent_months": "INTEGER",
+            "escalation_rate": "FLOAT",
+            "fitout_subsidy": "FLOAT",
+            "lease_term_months": "INTEGER",
+        },
+    },
     requires=[],
     preset_experts=["leasing"],
     enabled=True,

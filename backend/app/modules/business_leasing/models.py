@@ -27,6 +27,7 @@ class LeasingUnit(Base):
     property_fee: Mapped[float] = mapped_column(Float, default=0.0)
     # vacant 空置 / negotiating 在谈 / reserved 已定 / leased 已租
     status: Mapped[str] = mapped_column(String(20), default="vacant", index=True)
+    opened_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -48,6 +49,13 @@ class LeasingLead(Base):
     budget: Mapped[float] = mapped_column(Float, default=0.0)
     # lead 线索 / contact 已联系 / offer 已报价 / intent 意向 / signed 已签约 / lost 已流失
     stage: Mapped[str] = mapped_column(String(20), default="lead", index=True)
+    unit_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # fixed 固定租金 / percentage 抽成租金 / guaranteed_percentage 保底+抽成
+    rent_form: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    free_rent_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    escalation_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fitout_subsidy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lease_term_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
     owner: Mapped[str] = mapped_column(String(50), default="", index=True)
     next_action_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     note: Mapped[str] = mapped_column(Text, default="")

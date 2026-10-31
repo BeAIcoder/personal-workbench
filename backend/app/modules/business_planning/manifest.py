@@ -21,7 +21,15 @@ manifest = ModuleManifest(
             "readonly": True,
         }
     ],
-    column_patches={},
+    column_patches={
+        "mod_plan_campaign": {
+            "grade": "VARCHAR(20)",
+            "sales_baseline": "FLOAT",
+            "sales_during": "FLOAT",
+            "merchant_share": "FLOAT",
+            "roi_target": "FLOAT",
+        },
+    },
     requires=[],
     preset_experts=["marketing"],
     enabled=True,

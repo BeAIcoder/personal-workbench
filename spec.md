@@ -7,7 +7,7 @@
 > 权威 as-built 快照：`20261012New/REVERSE_02-SPEC重构.md`；接口细节：`API.md`；架构决策：`20261012New/adr/ADR-001~005`。
 >
 > 本版为**文档校准 + 修复验收轮**（2026-10-22，版本号仍为 v1.16.1）：按当前工作区实现校正运行环境与安全规格细节
-> （Node 22+ / Origin 守卫（不再用 Host 自证，保留配置 HOST 同源）/ MCP `readOnlyHint` 缺省拒绝与 env DPAPI 密封 /
+> （Node 24.22.1+ / Origin 守卫（不再用 Host 自证，保留配置 HOST 同源）/ MCP `readOnlyHint` 缺省拒绝与 env DPAPI 密封 /
 > 上传有界读取与分模块限额 / 模型 URL 校验 /
 > 超时口径 / 导入行数上限 / 现金流分页 / 看板日志 / E2E 隔离与构建检测）。第 13 节测试数字已回填
 > **2026-10-22 第三轮实测**；第 15 节补充算法设计逻辑、模块实现状态与验证情况。
@@ -30,7 +30,7 @@
 | --- | --- |
 | 部署形态 | 仅监听 `127.0.0.1`、无登录鉴权、数据不出本机；启动时对非回环 HOST 打印醒目告警 |
 | 存储 | SQLite 单文件 `backend/data/workbench.db`，零外部数据库依赖；不允许 Docker 与外部独立数据库 |
-| 运行环境 | Windows 11 · Python 3.12+ · Node 22+ |
+| 运行环境 | Windows 11 · Python 3.12+ · Node 24.22.1+ |
 | 依赖红线 | 仅 MIT / Apache-2.0 / BSD；新增依赖需锁版本（`requirements-lock.txt`） |
 | 业务值外置 | 真实业务数据放各引擎 `local_business.json` / `config.local.yaml`；**现金流 V1 数据永不推远端** |
 | Agent 权限边界 | 删除类操作不开放给 Agent（仅页面物理删除；任务可由 Agent 标记完成） |
@@ -48,7 +48,7 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
    ├── Module Registry（app/modules/）：目录扫描 manifest → 挂载路由/表/工具/预置
    ├── Agent 团队（agents/）：team 表驱动 + orchestrator 五级路由 + tools 白名单
    ├── 知识与记忆（rag BM25 / memory 召回注入 / mcp stdio 客户端）
-   └── SQLite（35 张表：宿主 12 + 模块 22 + v1.2.0 遗留 1）
+   └── SQLite（56 张表：宿主 12 + 模块 43 + v1.2.0 遗留 1）
 ```
 
 前端 10 个静态页（概览 / 任务 / 日程 / 笔记 / AI 助手 / 定时任务 / 知识与记忆 / MCP 工具 /
@@ -196,7 +196,7 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 - **校验**：`interval` 必须带 `interval_minutes`（5~10080）、`daily` 必须带 `daily_at`（HH:MM）、
   `cron` 必须带合法 `cron_expr`，否则 422。
 
-### 4.4 财务模块（9 可入库 + 1 机制示例）
+### 4.4 财务模块（13 可入库 + 1 机制示例）
 
 | 模块 | 级别 | 关键规格 |
 | --- | --- | --- |
@@ -325,6 +325,20 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
   + 删除）、前端报错 `/debug/errors`（表格 + 堆栈展开 + 清空确认 + 自动刷新开关）。
   `main.js` 注册 `app.config.errorHandler` + `window error/unhandledrejection`
   全局采集：裸 axios 直 POST（不走拦截器）、同消息 5 秒去重、失败静默。
+
+### 4.8 经营/职能与经营聚合（`/api/business/*`，2026-10-31 as-built）
+
+| 模块 | 表 | 关键规格 |
+| --- | --- | --- |
+| business_leasing | unit / lead / followup | 铺位-线索-签约勾稽，signed 必须有可用 unit_id 并原子占用；租决五字段；出租率/开业率/在谈面积；真实分页/导出 |
+| business_operations | contract / bill / work_order / followup | 合同-账单-收款；账龄四桶；租期/状态出账守卫；工单 urgent/due_at/parent/设备关联/SLA；首次完成时间不覆盖；筛选一致导出 |
+| business_planning | campaign / vendor | 活动预算服务端重算；ROI 基线/期间销售/商户分摊计算，calculated/manual 不混算；档期冲突 409+显式覆盖；跨月日历 |
+| business_legal | contract_review / case / seal | 审查与案件合法迁移矩阵、终态保护；临期/逾期分列；可空日期显式 null 清空 |
+| business_hr | employee / attendance / payroll | 考勤缺录 warning；任职月数与个税公共累计预扣；薪资确认留痕、级联 |
+| business_facility | equipment / compliance | 设备一机一档 ABC 分级；年检/消防/维保到期，pending/done/overdue 派生；工单可空关联设备 |
+| business_gm | 无表 | 六域只读聚合；失败域 available=false，缺源 null+reason；12 个月到期面积集中度 strict >25%；`gm_summary` 只读工具 |
+
+跨模块边界仍是只导出 xlsx、不写财务表。经营聚合按域延迟导入，单域失败不拖垮宿主。
 
 ## 5. Agent 团队与四级路由
 
@@ -455,11 +469,11 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
   模型未配置返回 `{ok:false, need_llm_config:true, message}`；带图但模型无视觉能力返回 **400**；
   **运行时异常返回 502**（日志记录完整堆栈，对外不回传内部细节）。
 
-## 8. 数据模型（35 张表）
+## 8. 数据模型（56 张表）
 
-ORM 定义 **34 张表**：宿主表 12 张（`app/models.py`）+ 模块表 22 张（`mod_` 前缀，随模块加载注册进
-`Base.metadata`）。老库中另有 v1.2.0 遗留表 `model_profiles`（ORM 已无对应模型，新库不会创建），
-实测运行库合计 35 张表。
+ORM 定义 **55 张表**：宿主表 12 张（`app/models.py`）+ 模块表 43 张（`mod_` 前缀，随模块加载注册进
+`Base.metadata`；其中 business_gm 无表）。老库中另有 v1.2.0 遗留表 `model_profiles`（ORM 已无对应模型，新库不会创建），
+实测运行库合计 56 张表。
 
 ### 8.1 宿主表（12）
 
@@ -491,7 +505,7 @@ memories         id, content, source(manual/auto/import), session_id, tags(JSON)
                  last_used_at?, created_at
 ```
 
-### 8.2 模块表（22，`mod_` 前缀）
+### 8.2 模块表（43，`mod_` 前缀）
 
 ```
 mod_hello_entry         finance_hello（机制示例）
@@ -516,6 +530,27 @@ mod_tax_policy          finance_tax
 mod_board_snapshot      finance_board
 mod_pos_run             finance_pos
 mod_cashflow_run        finance_cashflow
+mod_stamp_duty_filing   finance_stamp_duty
+mod_vat_filing          finance_vat
+mod_iit_filing          finance_iit
+mod_dsf_filing          finance_dsf
+mod_leasing_unit        business_leasing
+mod_leasing_lead        business_leasing
+mod_leasing_followup    business_leasing
+mod_ops_contract        business_operations
+mod_ops_bill            business_operations
+mod_ops_work_order      business_operations
+mod_ops_work_order_followup business_operations
+mod_plan_campaign       business_planning
+mod_plan_vendor         business_planning
+mod_legal_contract_review business_legal
+mod_legal_case          business_legal
+mod_legal_seal          business_legal
+mod_hr_employee         business_hr
+mod_hr_attendance       business_hr
+mod_hr_payroll          business_hr
+mod_fac_equipment       business_facility
+mod_fac_compliance      business_facility
 ```
 
 要点：

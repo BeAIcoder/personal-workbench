@@ -23,6 +23,31 @@
       <p class="today-sub">{{ todayText }}，数据保存在本机，重启不丢失。</p>
     </div>
 
+    <el-card shadow="never" class="gm-entry">
+      <template #header>
+        <div class="card-head">
+          <span>经营提醒</span>
+          <el-button size="small" type="primary" plain @click="openGm">查看经营聚合</el-button>
+        </div>
+      </template>
+      <div v-loading="gmLoading" aria-live="polite">
+        <el-alert
+          v-if="gmLoadFailed"
+          title="经营提醒暂不可用"
+          description="工作台其他数据不受影响，可进入经营聚合重试。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <div v-else-if="gmReminders.length">
+          <div v-for="item in gmReminders" :key="item.code" class="gm-reminder">
+            {{ item.message }}
+          </div>
+        </div>
+        <div v-else class="gm-empty">当前无高优先经营提醒</div>
+      </div>
+    </el-card>
+
     <el-row :gutter="16" class="cards">
       <el-col :span="6" v-for="card in cards" :key="card.label">
         <el-card shadow="hover" class="stat-card" @click="$router.push(card.to)">
@@ -137,7 +162,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import BaseChart from '../components/BaseChart.vue'
-import { dashboardApi, BACKEND_HINT } from '../api'
+import { dashboardApi, gmApi, BACKEND_HINT } from '../api'
 import { fmtDT, isOverdue, priorityLabel, priorityTag } from '../utils/format'
 
 const router = useRouter()
@@ -145,6 +170,10 @@ const router = useRouter()
 const data = ref(null)
 const loading = ref(false)
 const loadFailed = ref(false)
+const gmPeriod = ref(dayjs().format('YYYY-MM'))
+const gmReminders = ref([])
+const gmLoading = ref(false)
+const gmLoadFailed = ref(false)
 const todayText = dayjs().format('YYYY年MM月DD日 dddd')
 
 const greeting = computed(() => {
@@ -222,7 +251,32 @@ async function load() {
   }
 }
 
-onMounted(load)
+async function loadGmReminders() {
+  gmLoading.value = true
+  gmLoadFailed.value = false
+  try {
+    const response = await gmApi.summary(gmPeriod.value)
+    const body = response.data || {}
+    gmPeriod.value = body.period || gmPeriod.value
+    gmReminders.value = (body.reminders || []).filter((item) => (
+      item.level === 'warning' || item.level === 'high' || item.priority === 'high'
+    ))
+  } catch {
+    gmReminders.value = []
+    gmLoadFailed.value = true
+  } finally {
+    gmLoading.value = false
+  }
+}
+
+function openGm() {
+  router.push({ path: '/business/gm', query: { period: gmPeriod.value } })
+}
+
+onMounted(() => {
+  load()
+  loadGmReminders()
+})
 
 function fmtTime(s) {
   return s ? dayjs(s).format('HH:mm') : ''
@@ -254,6 +308,27 @@ function aiBrief() {
 
 .today-sub {
   margin: 0;
+  color: #909399;
+  font-size: 13px;
+}
+
+.gm-entry {
+  margin-bottom: 16px;
+}
+
+.gm-reminder {
+  padding: 8px 12px;
+  color: #b88230;
+  background: #fdf6ec;
+  border-radius: 4px;
+  line-height: 1.5;
+}
+
+.gm-reminder + .gm-reminder {
+  margin-top: 8px;
+}
+
+.gm-empty {
   color: #909399;
   font-size: 13px;
 }

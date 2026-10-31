@@ -2,8 +2,11 @@
 """增值税计税服务：一般纳税人（销项-进项）/ 小规模（1% 征收率+季度30万免征）。"""
 from __future__ import annotations
 
-from ...config import get_finance_data_dir
+from decimal import Decimal
 from pathlib import Path
+
+from ...config import get_finance_data_dir
+from ...utils_money import money
 
 # 一般纳税人适用税率白名单（增值税暂行条例）
 GENERAL_RATES = [0.13, 0.09, 0.06]
@@ -38,8 +41,8 @@ def calc_general(period: str, output_items: list[dict], input_vat: float,
         amount = it.get("amount")
         if amount is None or float(amount) < 0:
             raise ValueError(f"第 {idx} 行销售额非法（须 ≥ 0）")
+        vat = money(Decimal(str(amount)) * Decimal(str(rate)))
         amount = float(amount)
-        vat = round(amount * rate, 2)
         output_vat += vat
         sales_total += amount
         details.append({"business_type": btype, "amount": amount,
@@ -50,9 +53,9 @@ def calc_general(period: str, output_items: list[dict], input_vat: float,
         raise ValueError("进项税额非法（须 ≥ 0）")
     if input_transfer_out < 0:
         raise ValueError("进项税额转出非法（须 ≥ 0）")
-    raw = round(round(output_vat, 2) - input_vat + input_transfer_out, 2)
-    payable = round(max(0.0, raw), 2)
-    carryforward = round(max(0.0, -raw), 2)
+    raw = money(money(output_vat) - input_vat + input_transfer_out)
+    payable = money(max(0.0, raw))
+    carryforward = money(max(0.0, -raw))
     warnings = []
     if carryforward > 0:
         warnings.append(
@@ -61,10 +64,10 @@ def calc_general(period: str, output_items: list[dict], input_vat: float,
         )
     return {
         "mode": "general",
-        "sales_total": round(sales_total, 2),
-        "output_vat": round(output_vat, 2),
-        "input_vat": round(input_vat, 2),
-        "input_transfer_out": round(input_transfer_out, 2),
+        "sales_total": money(sales_total),
+        "output_vat": money(output_vat),
+        "input_vat": money(input_vat),
+        "input_transfer_out": money(input_transfer_out),
         "payable": payable,
         "carryforward_vat": carryforward,
         "details": details,
@@ -84,10 +87,12 @@ def calc_small_scale(period: str, sales_amount: float, levy_rate: float = 0.01,
     from ..finance_tax.config.policy_validity import policy_status
 
     year = str(period)[:4]
-    sales_amount = float(sales_amount or 0)
+    raw_sales_amount = sales_amount or 0
+    raw_levy_rate = levy_rate
+    sales_amount = float(raw_sales_amount)
     if sales_amount < 0:
         raise ValueError("销售额非法（须 ≥ 0）")
-    levy_rate = float(levy_rate)
+    levy_rate = float(raw_levy_rate)
     if levy_rate not in SMALL_SCALE_LEVY_RATES:
         raise ValueError("征收率非法（仅允许 1%/3%/5%）")
     if filing_period not in ("month", "quarter"):
@@ -117,13 +122,13 @@ def calc_small_scale(period: str, sales_amount: float, levy_rate: float = 0.01,
         note = (f"{label}销售额 {sales_amount:,.2f} 元 ≤ {threshold/10000:.0f} 万元，"
                 f"免征增值税（{exempt_status['policy_basis']}）")
     else:
-        payable = round(sales_amount * levy_rate, 2)
+        payable = money(Decimal(str(raw_sales_amount)) * Decimal(str(raw_levy_rate)))
         note = f"{label}销售额超 {threshold/10000:.0f} 万元，全额按 {levy_rate:.0%} 征收率计税"
     return {
         "mode": "small_scale",
         "filing_period": filing_period,
         "exempt_threshold": threshold,
-        "sales_total": round(sales_amount, 2),
+        "sales_total": money(sales_amount),
         "levy_rate": levy_rate,
         "exempt": exempt,
         "payable": payable,

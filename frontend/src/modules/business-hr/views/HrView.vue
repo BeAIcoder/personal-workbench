@@ -290,6 +290,7 @@ async function generatePayroll() {
       month: payMonth.value, allowance: payForm.allowance,
     })
     ElMessage.success(`已生成 ${data.count} 人，实发合计 ¥${fmt(data.total_net)}`)
+    if (data.warnings?.length) data.warnings.forEach((message) => ElMessage.warning(message))
     await Promise.all([loadPayroll(), loadSummary()])
   } catch { /* 拦截器已提示 */ } finally { saving.value = false }
 }

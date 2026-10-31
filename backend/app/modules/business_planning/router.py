@@ -47,6 +47,12 @@ class CampaignIn(BaseModel):
     status: CampaignStatus = "planning"
     budget_items: list[BudgetItem] = Field(default_factory=list)
     metrics: Metrics = Field(default_factory=Metrics)
+    grade: str | None = Field(default=None, max_length=20)
+    sales_baseline: float | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    sales_during: float | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    merchant_share: float | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    roi_target: float | None = Field(default=None, ge=-1000, le=100_000)
+    allow_conflict: bool = False
     note: str = Field(default="", max_length=2000)
 
 
@@ -62,6 +68,12 @@ class CampaignUpdate(BaseModel):
     status: CampaignStatus | None = None
     budget_items: list[BudgetItem] | None = None
     metrics: Metrics | None = None
+    grade: str | None = Field(default=None, max_length=20)
+    sales_baseline: float | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    sales_during: float | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    merchant_share: float | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    roi_target: float | None = Field(default=None, ge=-1000, le=100_000)
+    allow_conflict: bool = False
     note: str | None = Field(default=None, max_length=2000)
 
 
@@ -119,6 +131,8 @@ def campaigns(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=20
 def create_campaign(payload: CampaignIn, db: Session = Depends(get_db)):
     try:
         return service.campaign_save(db, payload.model_dump())
+    except service.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -126,8 +140,13 @@ def create_campaign(payload: CampaignIn, db: Session = Depends(get_db)):
 @router.put("/campaigns/{campaign_id}", summary="更新活动（含预算/复盘）")
 def update_campaign(campaign_id: int, payload: CampaignUpdate, db: Session = Depends(get_db)):
     data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    for field in ("grade", "sales_baseline", "sales_during", "merchant_share", "roi_target"):
+        if field in payload.model_fields_set and getattr(payload, field) is None:
+            data[field] = None
     try:
         return service.campaign_save(db, data, campaign_id)
+    except service.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

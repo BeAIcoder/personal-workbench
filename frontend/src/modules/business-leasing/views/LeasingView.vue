@@ -18,18 +18,24 @@
         <el-col :span="6"><div class="kpi-box"><div class="kpi-label">空置率</div><div class="kpi-value">{{ pct(summary.vacancy_rate) }}</div></div></el-col>
         <el-col :span="6"><div class="kpi-box"><div class="kpi-label">在谈线索 / 到期跟进</div><div class="kpi-value">{{ funnel.active }} / {{ due.length }}</div></div></el-col>
       </el-row>
+      <el-row :gutter="12" class="kpi">
+        <el-col :span="8"><div class="kpi-box"><div class="kpi-label">出租率（已定+已租）</div><div class="kpi-value">{{ pct(summary.leasing_rate) }}</div></div></el-col>
+        <el-col :span="8"><div class="kpi-box"><div class="kpi-label">开业率（截至今天）</div><div class="kpi-value">{{ pct(summary.opening_rate) }}</div></div></el-col>
+        <el-col :span="8"><div class="kpi-box"><div class="kpi-label">在谈面积（在谈+已定）</div><div class="kpi-value">{{ fmt(summary.pipeline_area) }} ㎡</div></div></el-col>
+      </el-row>
+      <p class="hint">{{ summary.rate_note }}</p>
 
       <el-tabs v-model="tab" class="mt8">
         <el-tab-pane label="铺位台账" name="units">
           <div class="filters">
-            <el-input v-model="unitQuery.keyword" placeholder="铺位号关键词" size="small" clearable style="width: 160px" @keyup.enter="loadUnits" />
+            <el-input v-model="unitQuery.keyword" placeholder="铺位号关键词" size="small" clearable style="width: 160px" @keyup.enter="searchUnits" />
             <el-select v-model="unitQuery.building" placeholder="楼栋" size="small" clearable style="width: 140px">
               <el-option v-for="b in buildings" :key="b" :label="b" :value="b" />
             </el-select>
             <el-select v-model="unitQuery.status" placeholder="状态" size="small" clearable style="width: 120px">
               <el-option v-for="s in unitStatuses" :key="s.value" :label="s.label" :value="s.value" />
             </el-select>
-            <el-button size="small" type="primary" @click="loadUnits">筛选</el-button>
+            <el-button size="small" type="primary" @click="searchUnits">筛选</el-button>
             <el-button size="small" type="success" @click="openUnit()">新建铺位</el-button>
           </div>
           <el-table :data="units" size="small" border>
@@ -50,6 +56,7 @@
                 <el-tag size="small" :type="unitTag(row.status)">{{ row.status_label }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column prop="opened_at" label="开业日期" width="110" />
             <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
             <el-table-column label="操作" width="130">
               <template #default="{ row }">
@@ -58,16 +65,25 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination
+            class="pager"
+            background
+            layout="total, prev, pager, next"
+            :total="unitTotal"
+            :page-size="unitQuery.page_size"
+            :current-page="unitQuery.page"
+            @current-change="changeUnitPage"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="招商线索" name="leads">
           <div class="filters">
-            <el-input v-model="leadQuery.keyword" placeholder="客户公司关键词" size="small" clearable style="width: 180px" @keyup.enter="loadLeads" />
+            <el-input v-model="leadQuery.keyword" placeholder="客户公司关键词" size="small" clearable style="width: 180px" @keyup.enter="searchLeads" />
             <el-select v-model="leadQuery.stage" placeholder="阶段" size="small" clearable style="width: 120px">
               <el-option v-for="s in leadStages" :key="s.value" :label="s.label" :value="s.value" />
             </el-select>
             <el-input v-model="leadQuery.owner" placeholder="负责人" size="small" clearable style="width: 120px" />
-            <el-button size="small" type="primary" @click="loadLeads">筛选</el-button>
+            <el-button size="small" type="primary" @click="searchLeads">筛选</el-button>
             <el-button size="small" type="success" @click="openLead()">新建线索</el-button>
           </div>
           <el-table :data="leads" size="small" border>
@@ -85,6 +101,10 @@
                 <el-tag size="small" :type="leadTag(row.stage)">{{ row.stage_label }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="意向铺位" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">{{ unitLabel(row) }}</template>
+            </el-table-column>
+            <el-table-column prop="rent_form_label" label="租金形式" width="110" />
             <el-table-column prop="owner" label="负责人" width="90" />
             <el-table-column prop="next_action_at" label="下次跟进" width="110" />
             <el-table-column label="操作" width="190">
@@ -95,6 +115,15 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination
+            class="pager"
+            background
+            layout="total, prev, pager, next"
+            :total="leadTotal"
+            :page-size="leadQuery.page_size"
+            :current-page="leadQuery.page"
+            @current-change="changeLeadPage"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="漏斗与到期" name="funnel">
@@ -132,6 +161,7 @@
           <el-col :span="12"><el-form-item label="面积(㎡)"><el-input-number v-model="unitForm.area" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="租金单价"><el-input-number v-model="unitForm.rent_price" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="物业费单价"><el-input-number v-model="unitForm.property_fee" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="开业日期"><el-date-picker v-model="unitForm.opened_at" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item></el-col>
         </el-row>
         <el-form-item label="备注"><el-input v-model="unitForm.note" type="textarea" :rows="2" /></el-form-item>
       </el-form>
@@ -142,8 +172,8 @@
     </el-dialog>
 
     <!-- 线索表单 -->
-    <el-dialog v-model="leadDialog" :title="leadForm.id ? '编辑线索' : '新建线索'" width="640px">
-      <el-form :model="leadForm" label-width="100px">
+    <el-dialog v-model="leadDialog" :title="leadForm.id ? '编辑线索' : '新建线索'" width="760px">
+      <el-form :model="leadForm" label-width="110px">
         <el-row :gutter="12">
           <el-col :span="12"><el-form-item label="客户公司" required><el-input v-model="leadForm.company" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="联系人"><el-input v-model="leadForm.contact" /></el-form-item></el-col>
@@ -153,6 +183,12 @@
           <el-col :span="12"><el-form-item label="预算(元/月)"><el-input-number v-model="leadForm.budget" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="阶段"><el-select v-model="leadForm.stage"><el-option v-for="s in leadStages" :key="s.value" :label="s.label" :value="s.value" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="负责人"><el-input v-model="leadForm.owner" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="意向铺位" :required="leadForm.stage === 'signed'"><el-select v-model="leadForm.unit_id" clearable filterable style="width: 100%"><el-option v-for="u in unitOptions" :key="u.id" :label="unitOptionLabel(u)" :value="u.id" :disabled="u.status === 'leased' && u.id !== leadForm.unit_id" /></el-select></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="租金形式"><el-select v-model="leadForm.rent_form" clearable style="width: 100%"><el-option v-for="r in rentForms" :key="r.value" :label="r.label" :value="r.value" /></el-select></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="免租期(月)"><el-input-number v-model="leadForm.free_rent_months" :min="0" :max="120" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="租期(月)"><el-input-number v-model="leadForm.lease_term_months" :min="1" :max="600" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="年递增率(%)"><el-input-number v-model="leadForm.escalation_rate" :min="0" :precision="2" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="装修补贴(元)"><el-input-number v-model="leadForm.fitout_subsidy" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="下次跟进"><el-date-picker v-model="leadForm.next_action_at" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item></el-col>
         </el-row>
         <el-form-item label="备注"><el-input v-model="leadForm.note" type="textarea" :rows="2" /></el-form-item>
@@ -207,21 +243,37 @@ const leadStages = [
   { value: 'signed', label: '已签约' },
   { value: 'lost', label: '已流失' },
 ]
+const rentForms = [
+  { value: 'fixed', label: '固定租金' },
+  { value: 'percentage', label: '抽成租金' },
+  { value: 'guaranteed_percentage', label: '保底+抽成' },
+]
 const channels = ['电话', '微信', '面谈', '邮件', '其他']
 
-const summary = ref({ total_units: 0, total_area: 0, vacancy_rate: 0, by_status: [] })
+const summary = ref({
+  total_units: 0, total_area: 0, vacancy_rate: 0, leasing_rate: 0,
+  opening_rate: 0, pipeline_area: 0, rate_note: '', by_status: [],
+})
 const funnel = ref({ total: 0, active: 0, signed: 0, conversion_rate: 0, stages: [] })
 const due = ref([])
 const units = ref([])
 const leads = ref([])
+const unitOptions = ref([])
 const buildings = ref([])
-const unitQuery = reactive({ keyword: '', building: '', status: '' })
-const leadQuery = reactive({ keyword: '', stage: '', owner: '' })
+const unitTotal = ref(0)
+const leadTotal = ref(0)
+const unitQuery = reactive({ keyword: '', building: '', status: '', page: 1, page_size: 20 })
+const leadQuery = reactive({ keyword: '', stage: '', owner: '', page: 1, page_size: 20 })
 
 const unitDialog = ref(false)
-const unitForm = reactive({ id: null, building: '', floor: '', unit_no: '', area: 0, rent_price: 0, property_fee: 0, status: 'vacant', note: '' })
+const unitForm = reactive({ id: null, building: '', floor: '', unit_no: '', area: 0, rent_price: 0, property_fee: 0, status: 'vacant', opened_at: null, note: '' })
 const leadDialog = ref(false)
-const leadForm = reactive({ id: null, company: '', contact: '', phone: '', industry: '', demand_area: 0, budget: 0, stage: 'lead', owner: '', next_action_at: '', note: '' })
+const leadForm = reactive({
+  id: null, company: '', contact: '', phone: '', industry: '', demand_area: 0,
+  budget: 0, stage: 'lead', unit_id: null, rent_form: null, free_rent_months: null,
+  escalation_rate: null, fitout_subsidy: null, lease_term_months: null,
+  owner: '', next_action_at: '', note: '',
+})
 const followDialog = ref(false)
 const followLead = ref(null)
 const followForm = reactive({ at: '', channel: '电话', content: '', result: '' })
@@ -241,6 +293,14 @@ function unitTag(s) {
 }
 function leadTag(s) {
   return { lead: 'info', contact: 'primary', offer: 'warning', intent: 'success', signed: 'success', lost: 'danger' }[s] || 'info'
+}
+function unitOptionLabel(unit) {
+  return [unit.building, unit.floor, unit.unit_no, unit.status_label].filter(Boolean).join(' ')
+}
+function unitLabel(row) {
+  if (!row.unit_id) return '—'
+  const unit = unitOptions.value.find((item) => item.id === row.unit_id)
+  return unit ? [unit.building, unit.floor, unit.unit_no].filter(Boolean).join(' ') : `#${row.unit_id}`
 }
 
 async function loadSummary() {
@@ -262,9 +322,27 @@ async function loadUnits() {
   try {
     const { data } = await api.get('/business/leasing/units', { params: unitQuery })
     units.value = data.items || []
+    unitTotal.value = data.total ?? 0
   } catch { /* 拦截器已提示 */ } finally {
     loading.value = false
   }
+}
+
+async function changeUnitPage(page) {
+  unitQuery.page = page
+  await loadUnits()
+}
+
+function searchUnits() {
+  unitQuery.page = 1
+  return loadUnits()
+}
+
+async function loadUnitOptions() {
+  try {
+    const { data } = await api.get('/business/leasing/units', { params: { page: 1, page_size: 200 } })
+    unitOptions.value = data.items || []
+  } catch { /* 拦截器已提示 */ }
 }
 
 async function loadLeads() {
@@ -272,13 +350,25 @@ async function loadLeads() {
   try {
     const { data } = await api.get('/business/leasing/leads', { params: leadQuery })
     leads.value = data.items || []
+    leadTotal.value = data.total ?? 0
   } catch { /* 拦截器已提示 */ } finally {
     loading.value = false
   }
 }
 
+async function changeLeadPage(page) {
+  leadQuery.page = page
+  await loadLeads()
+}
+
+function searchLeads() {
+  leadQuery.page = 1
+  return loadLeads()
+}
+
 async function loadAll() {
   await loadSummary()
+  await loadUnitOptions()
   await loadUnits()
   await loadLeads()
 }
@@ -287,8 +377,8 @@ function openUnit(row) {
   Object.assign(unitForm, row ? {
     id: row.id, building: row.building, floor: row.floor, unit_no: row.unit_no,
     area: row.area, rent_price: row.rent_price, property_fee: row.property_fee,
-    status: row.status, note: row.note,
-  } : { id: null, building: '', floor: '', unit_no: '', area: 0, rent_price: 0, property_fee: 0, status: 'vacant', note: '' })
+    status: row.status, opened_at: row.opened_at || null, note: row.note,
+  } : { id: null, building: '', floor: '', unit_no: '', area: 0, rent_price: 0, property_fee: 0, status: 'vacant', opened_at: null, note: '' })
   unitDialog.value = true
 }
 
@@ -300,7 +390,7 @@ async function saveUnit() {
       ElMessage.warning('楼栋与铺位号不能为空')
       return
     }
-    const payload = { ...unitForm }
+    const payload = { ...unitForm, opened_at: unitForm.opened_at || null }
     delete payload.id
     if (unitForm.id) {
       await api.put(`/business/leasing/units/${unitForm.id}`, payload)
@@ -328,8 +418,16 @@ function openLead(row) {
   Object.assign(leadForm, row ? {
     id: row.id, company: row.company, contact: row.contact, phone: row.phone,
     industry: row.industry, demand_area: row.demand_area, budget: row.budget,
-    stage: row.stage, owner: row.owner, next_action_at: row.next_action_at || '', note: row.note,
-  } : { id: null, company: '', contact: '', phone: '', industry: '', demand_area: 0, budget: 0, stage: 'lead', owner: '', next_action_at: '', note: '' })
+    stage: row.stage, unit_id: row.unit_id ?? null, rent_form: row.rent_form || null,
+    free_rent_months: row.free_rent_months ?? null, escalation_rate: row.escalation_rate ?? null,
+    fitout_subsidy: row.fitout_subsidy ?? null, lease_term_months: row.lease_term_months ?? null,
+    owner: row.owner, next_action_at: row.next_action_at || '', note: row.note,
+  } : {
+    id: null, company: '', contact: '', phone: '', industry: '', demand_area: 0,
+    budget: 0, stage: 'lead', unit_id: null, rent_form: null, free_rent_months: null,
+    escalation_rate: null, fitout_subsidy: null, lease_term_months: null,
+    owner: '', next_action_at: '', note: '',
+  })
   leadDialog.value = true
 }
 
@@ -341,7 +439,20 @@ async function saveLead() {
       ElMessage.warning('客户公司名称不能为空')
       return
     }
-    const payload = { ...leadForm, next_action_at: leadForm.next_action_at || null }
+    if (leadForm.stage === 'signed' && !leadForm.unit_id) {
+      ElMessage.warning('已签约线索必须选择意向铺位')
+      return
+    }
+    const payload = {
+      ...leadForm,
+      next_action_at: leadForm.next_action_at || null,
+      unit_id: leadForm.unit_id || null,
+      rent_form: leadForm.rent_form || null,
+      free_rent_months: leadForm.free_rent_months ?? null,
+      escalation_rate: leadForm.escalation_rate ?? null,
+      fitout_subsidy: leadForm.fitout_subsidy ?? null,
+      lease_term_months: leadForm.lease_term_months ?? null,
+    }
     delete payload.id
     if (leadForm.id) {
       await api.put(`/business/leasing/leads/${leadForm.id}`, payload)
@@ -417,6 +528,7 @@ onMounted(loadAll)
 .kpi-label { font-size: 12px; color: #909399; }
 .kpi-value { font-size: 20px; font-weight: 600; color: #303133; margin-top: 4px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.pager { margin-top: 10px; justify-content: flex-end; }
 .mt8 { margin-top: 8px; }
 .hint { font-size: 12px; color: #909399; margin: 8px 0 0; }
 .follow-form { margin-bottom: 8px; }

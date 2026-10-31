@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""17 区探针与 2026-10-22 Swarm 新契约的静态对齐守护（任务 probe-compatibility）。
+"""19 区探针与 Swarm 新契约的静态对齐守护（任务 probe-compatibility）。
 
 被守护的契约（本轮有意行为变更，探针必须跟着适配，且不得删断言/放宽安全要求）：
-1. 17 个区域探针齐全、可解析；每个探针启动服务前隔离 DATABASE_URL 与
+1. 19 个区域探针齐全、可解析；每个探针启动服务前隔离 DATABASE_URL 与
    FINANCE_DATA_DIR（不写真实库/真实财务目录）；
 2. 没有探针发送非回环 Origin：Origin 防护只放行无 Origin（CLI/探针）、回环
    任意端口、同源与配置来源，其余 403；
@@ -32,6 +32,8 @@ AREAS = [
     "api-contract",
     "assistant-chat",
     "assistant-settings",
+    "business-closed-loop",
+    "business-gm",
     "dashboard-search",
     "debug-center",
     "finance-board-cashflow-expense",
@@ -74,18 +76,18 @@ def _fn_src(name: str, fn: str) -> str:
     raise AssertionError(f"{name} 中不存在函数 {fn}")
 
 
-# ---------- 1. 17 区齐全与隔离基线 ----------
+# ---------- 1. 19 区齐全与隔离基线 ----------
 
 @pytest.mark.parametrize("area", AREAS)
 def test_probe_area_exists_and_parses(area):
     path = PROBE_DIR / f"{area}.py"
-    assert path.is_file(), f"17 区探针缺失: {path}"
+    assert path.is_file(), f"19 区探针缺失: {path}"
     ast.parse(path.read_text(encoding="utf-8"))  # 语法必须有效
 
 
-def test_exactly_seventeen_probe_scripts():
+def test_probe_scripts_match_contract():
     found = sorted(p.stem for p in PROBE_DIR.glob("*.py"))
-    assert found == sorted(AREAS), f"探针集合与 17 区契约不一致: {found}"
+    assert found == sorted(AREAS), f"探针集合与 19 区契约不一致: {found}"
 
 
 @pytest.mark.parametrize("area", AREAS)

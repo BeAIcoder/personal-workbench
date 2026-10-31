@@ -25,6 +25,25 @@ CASE_STAGE_LABELS = {
     "filed": "立案", "hearing": "开庭", "judgment": "判决",
     "appeal": "上诉", "closed": "结案",
 }
+REVIEW_TRANSITIONS = {
+    "pending": {"reviewing"},
+    "reviewing": {"approved", "rejected"},
+    "approved": {"archived"},
+    "rejected": {"archived"},
+    "archived": set(),
+}
+CASE_TRANSITIONS = {
+    "filed": {"hearing"},
+    "hearing": {"judgment"},
+    "judgment": {"appeal", "closed"},
+    "appeal": {"closed"},
+    "closed": set(),
+}
+
+
+def _check_transition(current: str, target: str, transitions: dict, label: str) -> None:
+    if target != current and target not in transitions.get(current, set()):
+        raise ValueError(f"{label}不允许从 {current} 变更为 {target}")
 
 
 def money(value) -> float:
@@ -59,6 +78,7 @@ def review_to_dict(c: LegalContractReview) -> dict:
         "expire_date": c.expire_date.isoformat() if c.expire_date else None,
         "days_to_expire": days,
         "expiring": bool(days is not None and 0 <= days <= 30),
+        "overdue": bool(days is not None and days < 0),
         "note": c.note or "",
         "created_at": str(c.created_at),
     }
@@ -94,6 +114,8 @@ def review_save(db: Session, data: dict, review_id: int | None = None) -> dict:
     if "status" in data and data["status"] is not None:
         if data["status"] not in REVIEW_STATUSES:
             raise ValueError(f"未知审查状态：{data['status']}")
+        if review_id is not None:
+            _check_transition(c.status, data["status"], REVIEW_TRANSITIONS, "合同审查状态")
         c.status = data["status"]
     if "risk_level" in data and data["risk_level"] is not None:
         if data["risk_level"] not in RISK_LEVELS:
@@ -138,6 +160,7 @@ def case_to_dict(c: LegalCase) -> dict:
         "hearing_date": c.hearing_date.isoformat() if c.hearing_date else None,
         "days_to_hearing": days,
         "hearing_soon": bool(days is not None and 0 <= days <= 7 and c.stage != "closed"),
+        "overdue": bool(days is not None and days < 0 and c.stage != "closed"),
         "result": c.result or "", "note": c.note or "",
         "created_at": str(c.created_at),
     }
@@ -177,6 +200,8 @@ def case_save(db: Session, data: dict, case_id: int | None = None) -> dict:
     if "stage" in data and data["stage"] is not None:
         if data["stage"] not in CASE_STAGES:
             raise ValueError(f"未知案件阶段：{data['stage']}")
+        if case_id is not None:
+            _check_transition(c.stage, data["stage"], CASE_TRANSITIONS, "案件阶段")
         c.stage = data["stage"]
     for field in ("filed_date", "hearing_date"):
         if field in data:
@@ -264,18 +289,25 @@ def legal_summary(db: Session) -> dict:
     high_risk = [c for c in reviews if c.risk_level == "high"]
     expiring = [c for c in reviews
                 if c.expire_date and 0 <= (c.expire_date - today).days <= 30]
+    overdue_reviews = [c for c in reviews
+                       if c.expire_date and (c.expire_date - today).days < 0]
     hearings = [c for c in cases
                 if c.hearing_date and c.stage != "closed"
                 and 0 <= (c.hearing_date - today).days <= 7]
+    overdue_hearings = [c for c in cases
+                        if c.hearing_date and c.stage != "closed"
+                        and (c.hearing_date - today).days < 0]
     open_cases = [c for c in cases if c.stage != "closed"]
     return {
         "reviews_total": len(reviews),
         "pending_reviews": len(pending),
         "high_risk": len(high_risk),
         "expiring_30": len(expiring),
+        "overdue_reviews": len(overdue_reviews),
         "cases_total": len(cases),
         "open_cases": len(open_cases),
         "hearings_7": len(hearings),
+        "overdue_hearings": len(overdue_hearings),
         "case_amount": money(sum(float(c.amount or 0) for c in open_cases)),
         "by_risk": [
             {"risk": r, "label": RISK_LABELS[r],

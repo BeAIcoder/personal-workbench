@@ -14,12 +14,13 @@ from __future__ import annotations
 import io
 import re
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
+from ...finance_iit_common import BRACKETS, MONTHLY_DEDUCTION, calc_cumulative_withholding
+from ...utils_money import money
 from .models import HrAttendance, HrEmployee, HrPayroll
 
 PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -27,27 +28,11 @@ EMPLOYEE_STATUSES = ("active", "probation", "left")
 STATUS_LABELS = {"active": "在职", "probation": "试用", "left": "离职"}
 PAYROLL_STATUS_LABELS = {"draft": "草稿", "confirmed": "已确认"}
 
-MONTHLY_DEDUCTION = 5000.0
 WORK_DAYS = 21.75
 HOURS_PER_DAY = 8.0
 OVERTIME_MULTIPLIER = 1.5
 DEFAULT_SOCIAL_RATE = 0.105
 DEFAULT_HOUSING_RATE = 0.07
-
-# 综合所得年度预扣率表（累计应纳税所得额）
-BRACKETS = (
-    (36000.0, 0.03, 0.0),
-    (144000.0, 0.10, 2520.0),
-    (300000.0, 0.20, 16920.0),
-    (420000.0, 0.25, 31920.0),
-    (660000.0, 0.30, 52920.0),
-    (960000.0, 0.35, 85920.0),
-    (float("inf"), 0.45, 181920.0),
-)
-
-
-def money(value) -> float:
-    return float(Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def _as_date(value, field: str = "日期") -> date | None:
@@ -59,13 +44,6 @@ def _as_date(value, field: str = "日期") -> date | None:
         return date.fromisoformat(str(value))
     except ValueError as exc:
         raise ValueError(f"{field}格式非法，应为 YYYY-MM-DD") from exc
-
-
-def _bracket(cum_taxable: float) -> tuple[float, float]:
-    for cap, rate, quick in BRACKETS:
-        if cum_taxable <= cap:
-            return rate, quick
-    return BRACKETS[-1][1], BRACKETS[-1][2]
 
 
 # ---------------- 员工 ----------------
@@ -270,10 +248,18 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
         raise ValueError("没有在职/试用员工，无法生成薪资")
 
     allowance = money(allowance)
+    target_year = int(month[:4])
+    target_month = int(month[5:])
     created = []
+    warnings = []
     for emp in employees:
         att = (db.query(HrAttendance)
                .filter(HrAttendance.emp_id == emp.id, HrAttendance.month == month).first())
+        if att is None:
+            warnings.append(
+                f"{month} 缺少考勤记录：{emp.emp_no} {emp.name}；"
+                "已按无请假、无加班生成薪资，请补录考勤后复核"
+            )
         leave_days = float(att.leave_days or 0) if att else 0.0
         overtime_hours = float(att.overtime_hours or 0) if att else 0.0
 
@@ -298,11 +284,15 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
             for p in priors
         )
         prior_tax = sum(float(p.tax or 0) for p in priors)
-        months_count = len(priors) + 1
-        cum_taxable = prior_base + current_base - MONTHLY_DEDUCTION * months_count
-        rate, quick = _bracket(max(0.0, cum_taxable))
-        cum_tax = max(0.0, cum_taxable * rate - quick)
-        tax = max(0.0, round(cum_tax - prior_tax, 2))
+        hire_start_month = (
+            emp.hire_date.month
+            if emp.hire_date and emp.hire_date.year == target_year else 1
+        )
+        months_count = max(len(priors) + 1, target_month - hire_start_month + 1)
+        withholding = calc_cumulative_withholding(
+            prior_base + current_base, prior_tax, months_count,
+        )
+        tax = withholding["monthly_withholding"]
         net = money(gross - deduction - social - housing - tax)
 
         row = HrPayroll(
@@ -326,6 +316,7 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
         "total_tax": money(sum(x["tax"] for x in items)),
         "total_net": money(sum(x["net_pay"] for x in items)),
         "items": items,
+        "warnings": warnings,
     }
 
 
@@ -436,7 +427,7 @@ def payroll_export(db: Session, month: str) -> bytes:
     return _xlsx(f"薪资表{month}", headers, rows)
 
 
-def hr_summary_tool() -> dict:
-    """人事看板摘要（只读）：在职/试用/30 天到期人数。"""
+def hr_summary_tool(month: str = "") -> dict:
+    """人事看板摘要（只读）：可按 YYYY-MM 月份读取薪资汇总，缺省保持原行为。"""
     with SessionLocal() as db:
-        return {"ok": True, **hr_summary(db)}
+        return {"ok": True, **hr_summary(db, month=month)}

@@ -9,11 +9,12 @@
 """
 from __future__ import annotations
 
-from ...config import get_finance_data_dir
+from decimal import Decimal
 from pathlib import Path
 
-# 减除费用（元/月）
-MONTHLY_DEDUCTION = 5000.0
+from ...config import get_finance_data_dir
+from ...finance_iit_common import BRACKETS, MONTHLY_DEDUCTION, calc_cumulative_withholding
+from ...utils_money import money
 
 # 专项附加扣除标准（元/月，国发〔2023〕13号）
 SPECIAL_DEDUCTION_STANDARDS = {
@@ -25,25 +26,6 @@ SPECIAL_DEDUCTION_STANDARDS = {
     "medical": {"label": "大病医疗（年度限额8万，月度按实际）", "monthly_max": None},
 }
 
-# 综合所得年度预扣率表 [(上限元, 税率, 速算扣除数)]
-BRACKETS = [
-    (36_000, 0.03, 0.0),
-    (144_000, 0.10, 2_520.0),
-    (300_000, 0.20, 16_920.0),
-    (420_000, 0.25, 31_920.0),
-    (660_000, 0.30, 52_920.0),
-    (960_000, 0.35, 85_920.0),
-    (float("inf"), 0.45, 181_920.0),
-]
-
-
-def _bracket(cumulative_taxable: float) -> tuple[float, float]:
-    """取累计应纳税所得额对应的 (税率, 速算扣除数)。"""
-    for cap, rate, quick in BRACKETS:
-        if cumulative_taxable <= cap:
-            return rate, quick
-    return 0.45, 181_920.0
-
 
 def calc_filing(year: str, rows: list[dict]) -> dict:
     """累计预扣法逐月模拟。
@@ -52,10 +34,15 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
     （金额均为元/月；special_additional 为该员工当月专项附加扣除合计）
     返回 {employees: [{name, months: [...]}], totals: {tax_withheld}}
     """
+    from ..finance_tax.config.policy_validity import policy_status
+
     if not str(year).isdigit() or len(str(year)) != 4:
         raise ValueError("year 须为 4 位年度")
     if not rows:
         raise ValueError("员工月度行不能为空")
+    special_policy = policy_status("iit_special_deductions", year)
+    if not special_policy["valid"]:
+        raise ValueError(special_policy["message"])
     grouped: dict[str, list[dict]] = {}
     display_names: dict[str, str] = {}
     for idx, r in enumerate(rows, 1):
@@ -102,8 +89,7 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
             )
 
         months_out = []
-        cum_income = 0.0
-        cum_taxable = 0.0
+        cum_income = Decimal("0.00")
         cum_withheld = 0.0
         for r in rs:
             m = int(r["month"])
@@ -118,26 +104,23 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
                 raise ValueError(f"{name} {m}月专项附加扣除异常（>{30_000}，请核实）")
             # 累计预扣法：累计收入 − 累计扣除；减除费用按「任职月份数 × 5000」，
             # 缺月不会少计（BUGfix FIL-09）。允许负累计冲减以后月份（FIL-02）。
-            cum_income += salary - social - special - other
+            current_base = money(
+                Decimal(str(salary)) - Decimal(str(social))
+                - Decimal(str(special)) - Decimal(str(other))
+            )
+            cum_income += Decimal(str(current_base))
             months_count = m - start_month + 1
-            cum_taxable = cum_income - MONTHLY_DEDUCTION * months_count
-            rate, quick = _bracket(max(0.0, cum_taxable))
-            cumulative = max(0.0, cum_taxable * rate - quick)
-            # 累计应纳税额小于已预扣时，本期暂不退税（0），已预扣额保持不变，
-            # 差额留待以后月份继续抵减（61 号公告口径）。
-            monthly = round(cumulative - cum_withheld, 2)
-            if monthly < 0:
-                monthly = 0.0
+            withholding = calc_cumulative_withholding(cum_income, cum_withheld, months_count)
+            monthly = withholding["monthly_withholding"]
             months_out.append({
                 "month": m,
-                "taxable_income": round(max(0.0, salary - 5000.0 - social - special - other), 2),
-                "cumulative_taxable": round(cum_taxable, 2),
-                "rate": rate,
-                "cumulative_withholding": round(cumulative, 2),
+                "taxable_income": money(max(0.0, current_base - MONTHLY_DEDUCTION)),
+                "cumulative_taxable": withholding["cumulative_taxable"],
+                "rate": withholding["rate"],
+                "cumulative_withholding": withholding["cumulative_withholding"],
                 "monthly_withholding": monthly,
             })
-            if monthly > 0:
-                cum_withheld = cumulative
+            cum_withheld = money(cum_withheld + monthly)
             total_withheld += monthly
         employees.append({
             "employee_id": key if key != name else "",
@@ -149,9 +132,11 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
     return {
         "employees": employees,
         "warnings": warnings,
-        "totals": {"tax_withheld": round(total_withheld, 2)},
+        "totals": {"tax_withheld": money(total_withheld)},
         "policy": {
-            "policy_basis": "个人所得税法+国发〔2023〕13号",
+            "policy_key": special_policy["policy_key"],
+            "status": special_policy["status"],
+            "policy_basis": f"个人所得税法+{special_policy['policy_basis']}",
             "monthly_deduction": MONTHLY_DEDUCTION,
             "special_deduction_standards": SPECIAL_DEDUCTION_STANDARDS,
         },

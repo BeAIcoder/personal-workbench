@@ -19,6 +19,7 @@ router = APIRouter(tags=["经营模块·招商管理"])
 
 UnitStatus = Literal["vacant", "negotiating", "reserved", "leased"]
 LeadStage = Literal["lead", "contact", "offer", "intent", "signed", "lost"]
+RentForm = Literal["fixed", "percentage", "guaranteed_percentage"]
 
 
 class UnitIn(BaseModel):
@@ -29,6 +30,7 @@ class UnitIn(BaseModel):
     rent_price: float = Field(default=0, ge=0, le=10_000_000)
     property_fee: float = Field(default=0, ge=0, le=10_000_000)
     status: UnitStatus = "vacant"
+    opened_at: date | None = None
     note: str = Field(default="", max_length=2000)
 
 
@@ -40,6 +42,7 @@ class UnitUpdate(BaseModel):
     rent_price: float | None = Field(default=None, ge=0, le=10_000_000)
     property_fee: float | None = Field(default=None, ge=0, le=10_000_000)
     status: UnitStatus | None = None
+    opened_at: date | None = None
     note: str | None = Field(default=None, max_length=2000)
 
 
@@ -51,6 +54,12 @@ class LeadIn(BaseModel):
     demand_area: float = Field(default=0, ge=0, le=10_000_000)
     budget: float = Field(default=0, ge=0, le=1_000_000_000)
     stage: LeadStage = "lead"
+    unit_id: int | None = Field(default=None, ge=1)
+    rent_form: RentForm | None = None
+    free_rent_months: int | None = Field(default=None, ge=0, le=120)
+    escalation_rate: float | None = Field(default=None, ge=0, le=1_000_000)
+    fitout_subsidy: float | None = Field(default=None, ge=0, le=1_000_000_000)
+    lease_term_months: int | None = Field(default=None, ge=1, le=600)
     owner: str = Field(default="", max_length=50)
     next_action_at: date | None = None
     note: str = Field(default="", max_length=2000)
@@ -64,6 +73,12 @@ class LeadUpdate(BaseModel):
     demand_area: float | None = Field(default=None, ge=0, le=10_000_000)
     budget: float | None = Field(default=None, ge=0, le=1_000_000_000)
     stage: LeadStage | None = None
+    unit_id: int | None = Field(default=None, ge=1)
+    rent_form: RentForm | None = None
+    free_rent_months: int | None = Field(default=None, ge=0, le=120)
+    escalation_rate: float | None = Field(default=None, ge=0, le=1_000_000)
+    fitout_subsidy: float | None = Field(default=None, ge=0, le=1_000_000_000)
+    lease_term_months: int | None = Field(default=None, ge=1, le=600)
     owner: str | None = Field(default=None, max_length=50)
     next_action_at: date | None = None
     note: str | None = Field(default=None, max_length=2000)
@@ -113,7 +128,7 @@ def create_unit(payload: UnitIn, db: Session = Depends(get_db)):
 
 @router.put("/units/{unit_id}", summary="更新铺位")
 def update_unit(unit_id: int, payload: UnitUpdate, db: Session = Depends(get_db)):
-    data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    data = payload.model_dump(exclude_unset=True)
     try:
         return service.unit_save(db, data, unit_id)
     except LookupError as exc:
@@ -122,12 +137,14 @@ def update_unit(unit_id: int, payload: UnitUpdate, db: Session = Depends(get_db)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.delete("/units/{unit_id}", summary="删除铺位")
+@router.delete("/units/{unit_id}", summary="删除铺位（有效签约引用时拒绝）")
 def delete_unit(unit_id: int, db: Session = Depends(get_db)):
     try:
         service.unit_delete(db, unit_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -155,6 +172,8 @@ def leads(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200),
 def create_lead(payload: LeadIn, db: Session = Depends(get_db)):
     try:
         return service.lead_save(db, payload.model_dump())
+    except service.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -166,16 +185,20 @@ def update_lead(lead_id: int, payload: LeadUpdate, db: Session = Depends(get_db)
         return service.lead_save(db, data, lead_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.delete("/leads/{lead_id}", summary="删除线索（连同跟进记录）")
+@router.delete("/leads/{lead_id}", summary="删除线索（须先取消签约，连同跟进记录）")
 def delete_lead(lead_id: int, db: Session = Depends(get_db)):
     try:
         service.lead_delete(db, lead_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
 
 

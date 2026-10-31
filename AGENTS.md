@@ -170,7 +170,7 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **每个模块的工程约定**：金额 `Decimal(ROUND_HALF_UP)` 两位；日期 `YYYY-MM-DD`、期间 `YYYY-MM` 严格校验；状态用 `Literal` + 服务层白名单双保险；删除有级联（合同→账单、线索→跟进、员工→考勤/薪资）；导出 xlsx 对 `= + - @` 前缀加 `'` 防公式注入；每模块 1 个只读 Agent 工具（`leasing_summary`/`ops_summary`/`planning_summary`/`legal_summary`/`hr_summary`），并**预置到对口内置专家**（`leasing`→招商专员、`operations`→运营专员、`planning`→企划策划、`legal`/`hr`→商业地产管家），启动时幂等并入专家白名单；测试全部用临时 SQLite + 合成数据，不写真实 `backend/data`。
 - **五模块后端测试 28 例全绿**（leasing 4 / operations 9 / planning 5 / legal 5 / hr 5），覆盖 CRUD 往返、重复 409、状态枚举 422、超收 400、账单重复生成 409、薪资累计预扣跨月、导出 xlsx 魔数；前端新增 `tests/business-modules.test.js`（3 例，路由/菜单/唯一性）。
 - **本轮回归**：后端全量 **1281 passed（594.72s）**；收尾改动（AGT-01 一行 + 五模块专家工具预置）另跑聚焦 **94 passed**；前端 **51 文件 820 项**全绿；`npm run build` 通过（9.76s，五个新视图已打进独立 chunk）。后端全量日志 `backend/.pytest_tmp/full-20261030-bugfix.log`。
-- **文档**：新增 `新增业务模块需求与设计.md`（岗位痛点→需求→数据模型→API→页面→财务联动→非目标→验收）；`BUGfix.md` 为诊断台账。`使用说明.md` 补「经营/职能菜单」操作入口，`README.md`/`功能模块拓扑图.md` 的模块数需在下一轮文档追平时同步（当前实现 16 个后端模块 + 5 个新业务模块）。
+- **文档**：新增 `新增业务模块需求与设计.md`（岗位痛点→需求→数据模型→API→页面→财务联动→非目标→验收）；`BUGfix.md` 为诊断台账。`使用说明.md` 补「经营/职能菜单」操作入口，`README.md`/`功能模块拓扑图.md` 的模块数需在下一轮文档追平时同步（该轮时 16 个后端模块 + 5 个新业务模块；2026-10-31 已追平为 22 个模块 / 43 张模块表）。
 
 ### 第二轮：剩余 P1 + 真实申报数据对拍（2026-10-30 下午）
 
@@ -185,3 +185,13 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **新增测试**：`test_tax_real_case_regression.py`（7 例真实数字）、`test_bugfix_p1_20261030.py`（5 例：null 422、冲红、非回环、备份恢复）。**第二轮全量回归**：1290 passed / 5 failed（607.96s）；5 个失败均为本轮改动的测试接缝/文案断言（日程 null 中文文案、图片探测 patch 点），修复后复跑相关套件 87 + 41 全绿；前端 51 文件 820 passed + 构建通过。
 - **仍未做**：原报告 P2/P3（前端响应式/键盘可达、CORE-13～17 调度器细节、TAX-10～14 等）按 `BUGfix.md` 第 17 章排期；第二轮列出的 AGT-02/FIL-08/09/FE-03/04/06/10/TL-04/TL-11/12/13 已在第三轮关闭。
 - **第三轮（清空剩余清单）**：AGT-02 同会话运行锁（chat 409 / SSE error，删除会话清锁）；FIL-08 个税按 `employee_id` 分组、FIL-09 任职起始月与缺月 warning（减除费用按任职月份数，不再按提交行数）；TL-04 同步脚本 `seal/unseal`；FE-03 七处下载 URL 统一 `api.defaults.baseURL`；FE-04 列映射标签修复；FE-06 四填报删除确认；FE-10 提交锁前移；TL-11 conftest 对 client 用例统一 drop/create（含 7 个自覆写文件）；TL-12 uploads/skills/expert-packs 重定向临时目录；TL-13 `WORKBENCH_ENV_FILE=""` 禁用真实 .env；TL-01 新增 `test_release_scan.py`（剔除 dev/tests、GBK bat 扫描、PII 硬失败）。**测试**：新增 AGT-02 1 例、个税 3 例、打包扫描 3 例；**后端全量 1302 passed（723.07s）**、前端 51 文件 820 passed、构建通过（日志 `backend/.pytest_tmp/full-20261030-final.log`）。
+
+
+## QwenPaw 15 角色证据评审与后续开发（2026-10-31）
+
+- **输入与本地文件**：根目录 `QwenPaw智能体提示词.json`（15 agents / 62 declared / 58 existing / 4 missing）作为角色基准；JSON 与汇总 md 保留原样并已根锚定加入 `.gitignore`（local-only），防止 PROFILE/MEMORY 词表外信息进提交/分发包。新评审 `20261031_QwenPaw专家团评审_业务需求覆盖度综合判断.md` 与计划 `20261031_QwenPaw后续开发计划.md` 已落盘，历史 `20261030_...` 不改。
+- **B0 真实回归**：`business_operations/service.py` 曾在评审后被编辑污染（`text?`、`ops_summary` 截断、`ops_bills_export` 丢失）；已恢复并通过 16 项聚焦。教训继续有效：长文件写后必须 `py_compile`；registry 对导入失败是静默跳过，可用 `test_manifest_loaded` 兜底。
+- **本轮闭环**：`utils_money.money` + `finance_iit_common` 统一；招商 `lead.unit_id` + 原子占用/换铺/删除守卫 + 租决五字段/双口径；营运账龄四桶/出账守卫/SLA/设备关联/followup；企划 Decimal ROI/档期/跨月；法务迁移矩阵/逾期/显式 null；人事缺考勤 warning/任职月；`business_facility` 设备+合规；`business_gm` 六域只读聚合与指标字典。
+- **模块计数**：当前 **22 个模块、43 张模块表**（宿主 12 张，合计 SQLite 56 含遗留表）。财务菜单 13 + 模块示例；经营/职能菜单 7（GM 70、招商 71、营运 72、企划 73、工程 74、法务 81、人事 82）。
+- **验证（最终）**：后端全量 **1427 passed**（738.35s；首轮 3 个失败均为新探针未满足 19 区隔离契约，修复后清零）；前端全量 **57 文件 / 871 passed**；`npm run build` 通过（stamp `b17369e5ff92`）；两个隔离浏览器探针分别为业务闭环 **4/4**、GM **3/3**，`page_errors=0`。真实 `backend/data` 198 文件路径哈希 `d9602a9d...` 在验收窗口内零变化；未提交 git。
+- **仍未做（准入制）**：政策税率版本化需逐条官方日期复核；房产税/城镇土地使用税需地方口径+真实脱敏样本；13 周现金流需业务口径。无材料不编税率；Task 8/9 部分独立评审因子代理 429 改为主线程复核，最终 whole-branch review 需重点看 GM/facility。

@@ -613,7 +613,7 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 
 ---
 
-## 经营/职能模块接口（2026-10-30 新增）
+## 经营/职能模块接口（2026-10-31 as-built）
 
 > 统一约定：列表 `{total, items, page, page_size}`；创建 201；参数非法 400/422（中文）；不存在 404；唯一键/状态冲突 409；金额两位小数；日期 `YYYY-MM-DD`、月份 `YYYY-MM`；导出为 xlsx（`Content-Disposition` 含 ASCII 回退名 + RFC5987 中文名）。
 
@@ -621,11 +621,11 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 
 | 端点 | 说明 |
 |---|---|
-| `GET /units/summary` | 铺位总数/总面积/空置面积/空置率/各状态数量/楼栋清单 |
-| `GET/POST /units` · `PUT/DELETE /units/{id}` | 铺位 CRUD（同楼栋+楼层+铺位号唯一，重复 409） |
+| `GET /units/summary` | 总数/总面积/空置率/出租率/开业率/在谈面积/各状态与楼栋 |
+| `GET/POST /units` · `PUT/DELETE /units/{id}` | 铺位 CRUD（同楼栋+楼层+铺位号唯一）；任一线索引用时删除 409；状态与有效签约冲突 409 |
 | `GET /funnel` | 线索漏斗：各阶段数量/需求面积/预算 + 转化率 |
-| `GET /leads/due` | 下次跟进日期 ≤ 今天且未签约/未流失的线索 |
-| `GET/POST /leads` · `PUT/DELETE /leads/{id}` | 线索 CRUD（删除级联跟进记录） |
+| `GET /leads/due` | 下次跟进 ≤ 今天且未签约/未流失；最多 100 条（计数走 summary） |
+| `GET/POST /leads` · `PUT/DELETE /leads/{id}` | 线索 CRUD；`stage=signed` 必须有可用 `unit_id` 并原子置铺位 leased；换铺/取消同事务；已签线索直接删除 409 |
 | `GET/POST /leads/{id}/followups` | 跟进记录（渠道：电话/微信/面谈/邮件/其他） |
 | `GET /export/units.xlsx` · `/export/leads.xlsx` | 导出 |
 
@@ -633,22 +633,24 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 
 | 端点 | 说明 |
 |---|---|
-| `GET /summary?period=` | 履约合同数/出租面积/应收/实收/收缴率/欠费/30 天到期/未结工单 |
-| `GET /contracts/expiring?days=30` | 到期合同 |
-| `GET/POST /contracts` · `PUT/DELETE /contracts/{id}` | 合同 CRUD（合同编号唯一，结束日不得早于开始日；删除级联账单） |
-| `POST /contracts/{id}/bills` | 按期间生成账单（同合同同期间唯一，重复 409） |
-| `GET /bills?period=&status=&contract_id=` | 账单列表（含租户/铺位/欠费） |
-| `POST /bills/{id}/payments` | 登记收款（累计；超应收 400；收清后状态 paid） |
-| `GET/POST /work-orders` · `PUT/DELETE /work-orders/{id}` | 工单 CRUD（类型 repair/complaint/inspection；状态 open/processing/done/closed） |
-| `GET /export/contracts.xlsx` · `/export/bills.xlsx` | 导出 |
+| `GET /summary?period=` | 履约合同/出租面积/应收/实收/收缴率/欠费/欠费合同/已过期履约/30 天到期/未结工单 |
+| `GET /contracts/expiring?days=30` | 到期合同（days 可 30/60/90） |
+| `GET/POST /contracts` · `PUT/DELETE /contracts/{id}` | 合同 CRUD（编号唯一、起止校验；active→terminated 单向；删除级联账单） |
+| `POST /contracts/{id}/bills` | active 且期间与租期相交才可出账（同合同同期间唯一，重复 409） |
+| `GET /bills?period=&status=&contract_id=` | 账单列表（含欠费） |
+| `GET /bills/aging?as_of=YYYY-MM-DD` | 四桶 not_due/1_30/31_90/over_90（金额/笔数/合同数）与按逾期倒序未清清单 |
+| `POST /bills/{id}/payments` | 登记收款（累计；超应收 400；收清后 paid） |
+| `GET/POST /work-orders` · `PUT/DELETE /work-orders/{id}` | 工单 CRUD；优先级含 urgent，due_at/parent_id/equipment_id 可空；迁移矩阵；有子单时删除 409 |
+| `GET/POST /work-orders/{id}/followups` · `PUT/DELETE /work-orders/{id}/followups/{fid}` | 处理留痕：时间/内容/结果/满意度 1-5，删工单级联 |
+| `GET /export/contracts.xlsx` · `/export/bills.xlsx` · `/export/work-orders.xlsx` | 导出（工单与筛选列表一致，含设备/SLA/父单） |
 
 ### 企划管理 `/api/business/planning`
 
 | 端点 | 说明 |
 |---|---|
-| `GET /summary?year=` | 年度预算/实际/差异/超支场次/进行中/已结束/平均 ROI |
-| `GET /campaigns/calendar?year=` | 年度日历（12 个月分组） |
-| `GET/POST /campaigns` · `PUT/DELETE /campaigns/{id}` | 活动 CRUD（预算明细 `[{item,budget,actual}]` 自动合计；指标 `{footfall_lift,sales_lift,roi,review}`） |
+| `GET /summary?year=` | 年度预算/实际/差异/超支/进行中/已结束/calculated 平均 ROI/手填计数 |
+| `GET /campaigns/calendar?year=` | 年度日历（跨月活动展开到每个覆盖月份） |
+| `GET/POST /campaigns` · `PUT/DELETE /campaigns/{id}` | 活动 CRUD；预算明细自动合计；`grade` + `sales_baseline/sales_during/merchant_share/roi_target`；三项金额齐全时服务端 Decimal 计算 ROI，零投入 null+warning，手填不混算；档期冲突 409，显式 `allow_conflict=true` 才覆盖 |
 | `GET/POST /vendors` · `PUT/DELETE /vendors/{id}` | 供应商 CRUD（服务类型 物料/美陈/演艺/投放/执行；评分 1-5） |
 | `GET /export/campaigns.xlsx?year=` | 导出 |
 
@@ -656,9 +658,9 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 
 | 端点 | 说明 |
 |---|---|
-| `GET /summary` | 待审/高风险/30 天到期合同/未结案件/7 天内开庭/未结标的额 |
-| `GET/POST /contracts` · `PUT/DELETE /contracts/{id}` | 合同审查 CRUD（状态 pending/reviewing/approved/rejected/archived；风险 low/medium/high） |
-| `GET/POST /cases` · `PUT/DELETE /cases/{id}` | 案件 CRUD（类型 litigation/arbitration/dispute；阶段 filed/hearing/judgment/appeal/closed） |
+| `GET /summary` | 待审/高风险/临期与逾期合同/未结案件/7 天内与逾期开庭/未结标的额 |
+| `GET/POST /contracts` · `PUT/DELETE /contracts/{id}` | 合同审查 CRUD；pending→reviewing→approved/rejected→archived，禁止回跳；可空日期支持显式 null 清空 |
+| `GET/POST /cases` · `PUT/DELETE /cases/{id}` | 案件 CRUD；filed→hearing→judgment→appeal/closed，closed 终态；开庭逾期可见 |
 | `GET/POST /seals` · `PUT/DELETE /seals/{id}` | 用印台账 CRUD（份数 ≥1） |
 | `GET /export/contracts.xlsx` · `/export/cases.xlsx` | 导出 |
 
@@ -670,7 +672,24 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `GET /employees/expiring?days=30` | 试用或合同到期员工 |
 | `GET/POST /employees` · `PUT/DELETE /employees/{id}` | 员工 CRUD（工号唯一；删除级联考勤/薪资） |
 | `GET /attendance?month=` · `PUT /attendance/{emp_id}/{month}` | 月度考勤查询/upsert（同员工同月唯一） |
-| `POST /payroll/generate` | 按月份生成薪资（`month/allowance/social_rate/housing_rate`；同月重复 409） |
+| `POST /payroll/generate` | 按月份生成薪资（`month/allowance/social_rate/housing_rate`；同月重复 409）；响应 `warnings[]` 逐人提示缺考勤；减除费用按入职月份数 |
 | `GET /payroll?month=` | 月度薪资列表（含应发/社保/公积金/个税/实发） |
 | `POST /payroll/{id}/confirm` · `DELETE /payroll/{id}` | 确认薪资（确认后不可删/不可重复确认）；删除仅草稿 |
 | `GET /export/employees.xlsx` · `/export/payroll.xlsx?month=` | 导出 |
+
+### 工程物业 `/api/business/facility`（2026-10-31 新增）
+
+| 端点 | 说明 |
+|---|---|
+| `GET /summary?as_of=YYYY-MM-DD` | 设备总数/ABC 分布/运行维修报废/30 天内到期/逾期/楼宇级合规数 |
+| `GET/POST /equipment` · `PUT/DELETE /equipment/{id}` | 设备一机一档（code 唯一 409）；仍有关联合规记录时删除 409；导出设备台账 |
+| `GET/POST /compliance` · `PUT/DELETE /compliance/{id}` | 合规到期 CRUD（`equipment_id` 可空=楼宇级；kind annual_inspection/fire/maintenance/other；status pending/done/overdue 派生） |
+| `GET /export/equipment.xlsx` · `/export/compliance.xlsx` | xlsx 导出（筛选一致、公式注入防护） |
+
+### 总经理经营聚合 `/api/business/gm`（2026-10-31 新增）
+
+| 端点 | 说明 |
+|---|---|
+| `GET /summary?period=YYYY-MM` | 六域 `{available,data,gap_reasons}` + 指标字典 + 缺源说明 + 高优先提醒；失败域不填 0；含 12 个月到期面积集中度（严格 >25% 才 warning） |
+
+`business_gm` 无表、只读；Agent 工具 `gm_summary` 预置 `realestate`/存在的 `cre_gm`。签名与错误码：非法 period 422，缺指标时 value=null 且 reason 非空。

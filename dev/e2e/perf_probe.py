@@ -305,6 +305,9 @@ def request_once(path: str, method: str = "GET") -> tuple[float, int, int]:
     # safe 保留 URL 结构字符，已手工 quote 过的 %xx 不会被二次编码。
     safe_path = urllib.parse.quote(path, safe="/?&=:%-_~.")
     url = f"{BASE}{safe_path}"
+    # 回环边界：本探针只打本机工作台；显式校验防 BASE 误配指向外部（SSRF 门禁可判定）
+    if urllib.parse.urlparse(url).hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise RuntimeError(f"perf_probe 仅允许回环地址目标：{url}")
     req = urllib.request.Request(url, method=method)
     t0 = time.perf_counter()
     try:

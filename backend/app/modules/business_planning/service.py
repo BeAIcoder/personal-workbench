@@ -23,8 +23,77 @@ STATUS_LABELS = {
 VENDOR_SERVICES = ("物料", "美陈", "演艺", "投放", "执行")
 
 
+class ConflictError(ValueError):
+    pass
+
+
 def money(value) -> float:
     return float(Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _optional_money(value) -> float | None:
+    return None if value is None else money(value)
+
+
+def _decimal_or_none(value) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        result = Decimal(str(value))
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    return result if result.is_finite() else None
+
+
+def _optional_number(value, field: str) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    result = _decimal_or_none(value)
+    if result is None:
+        raise ValueError(f"{field}必须是有效数字")
+    return result
+
+
+def _roi_number(value: Decimal) -> float:
+    return float(value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+
+
+def _raw_calculated_roi(c: PlanCampaign) -> Decimal | None:
+    baseline = _decimal_or_none(c.sales_baseline)
+    during = _decimal_or_none(c.sales_during)
+    share = _decimal_or_none(c.merchant_share)
+    if any(value is None for value in (baseline, during, share)):
+        return None
+    total = Decimal(str(c.actual_total or 0)) + share
+    if total == 0:
+        return None
+    return (during - baseline) / total
+
+
+def _roi_details(c: PlanCampaign) -> dict:
+    metrics = c.metrics or {}
+    baseline = _decimal_or_none(c.sales_baseline)
+    during = _decimal_or_none(c.sales_during)
+    share = _decimal_or_none(c.merchant_share)
+    target = _decimal_or_none(c.roi_target)
+    warning = None
+    if all(value is not None for value in (baseline, during, share)):
+        source = "calculated"
+        raw_roi = _raw_calculated_roi(c)
+        if raw_roi is None:
+            warning = "总投入为 0（实际投入 + 商户分摊），无法计算 ROI"
+        roi = _roi_number(raw_roi) if raw_roi is not None else None
+    else:
+        manual = metrics.get("roi")
+        raw_roi = _decimal_or_none(manual)
+        roi = manual if manual not in (None, "") else None
+        source = "manual" if roi is not None else "none"
+    return {
+        "roi": roi,
+        "roi_source": source,
+        "roi_warning": warning,
+        "target_met": None if target is None or raw_roi is None else raw_roi >= target,
+    }
 
 
 def _as_date(value, field: str = "日期") -> date | None:
@@ -44,8 +113,8 @@ def _normalize_items(items) -> tuple[list[dict], float, float]:
     if not isinstance(items, list):
         raise ValueError("预算明细必须是列表")
     out: list[dict] = []
-    budget_total = 0.0
-    actual_total = 0.0
+    budget_total = Decimal("0")
+    actual_total = Decimal("0")
     for idx, item in enumerate(items, 1):
         if not isinstance(item, dict):
             raise ValueError(f"第 {idx} 条预算明细格式非法")
@@ -57,8 +126,8 @@ def _normalize_items(items) -> tuple[list[dict], float, float]:
         if budget < 0 or actual < 0:
             raise ValueError(f"第 {idx} 条预算/实际不能为负数")
         out.append({"item": name[:100], "budget": budget, "actual": actual})
-        budget_total += budget
-        actual_total += actual
+        budget_total += Decimal(str(budget))
+        actual_total += Decimal(str(actual))
     return out, money(budget_total), money(actual_total)
 
 
@@ -83,7 +152,12 @@ def campaign_to_dict(c: PlanCampaign) -> dict:
         "over_budget": bool(money(c.actual_total) > money(c.budget_total) + 0.005),
         "variance": money(money(c.budget_total) - money(c.actual_total)),
         "metrics": metrics,
-        "roi": metrics.get("roi"),
+        "grade": c.grade,
+        "sales_baseline": _optional_money(c.sales_baseline),
+        "sales_during": _optional_money(c.sales_during),
+        "merchant_share": _optional_money(c.merchant_share),
+        "roi_target": None if c.roi_target is None else float(c.roi_target),
+        **_roi_details(c),
         "note": c.note or "",
         "created_at": str(c.created_at),
     }
@@ -152,6 +226,26 @@ def campaign_save(db: Session, data: dict, campaign_id: int | None = None) -> di
                     raise ValueError(f"复盘指标 {key} 必须是数字") from exc
         normalized["review"] = str(metrics.get("review") or "").strip()[:2000]
         c.metrics = normalized
+    if "grade" in data:
+        grade = data["grade"]
+        c.grade = None if grade is None else str(grade).strip()[:20] or None
+    for field, label in (
+        ("sales_baseline", "基准销售"),
+        ("sales_during", "活动期间销售"),
+        ("merchant_share", "商户分摊"),
+        ("roi_target", "ROI 目标"),
+    ):
+        if field not in data:
+            continue
+        value = _optional_number(data[field], label)
+        if field != "roi_target" and value is not None and value < 0:
+            raise ValueError(f"{label}不能为负数")
+        if value is None:
+            setattr(c, field, None)
+        elif field == "roi_target":
+            c.roi_target = float(value)
+        else:
+            setattr(c, field, money(value))
     if not c.name:
         raise ValueError("活动名称不能为空")
     if c.start_date is None or c.end_date is None:
@@ -160,6 +254,19 @@ def campaign_save(db: Session, data: dict, campaign_id: int | None = None) -> di
         raise ValueError("活动结束日期不能早于开始日期")
     if c.year is None:
         c.year = c.start_date.year
+    if c.status != "cancelled" and data.get("allow_conflict") is not True:
+        q = db.query(PlanCampaign).filter(
+            PlanCampaign.status != "cancelled",
+            PlanCampaign.start_date <= c.end_date,
+            PlanCampaign.end_date >= c.start_date,
+        )
+        if campaign_id is not None:
+            q = q.filter(PlanCampaign.id != campaign_id)
+        names = [row.name for row in q.order_by(PlanCampaign.start_date, PlanCampaign.id).all()]
+        if names:
+            raise ConflictError(
+                f"档期冲突：{'、'.join(names)}；如确认有意并行，请设置 allow_conflict=true"
+            )
     if campaign_id is None:
         db.add(c)
     db.commit()
@@ -176,16 +283,24 @@ def campaign_delete(db: Session, campaign_id: int) -> None:
 
 
 def calendar(db: Session, year: int) -> dict:
-    rows = (db.query(PlanCampaign).filter(PlanCampaign.year == year)
-            .order_by(PlanCampaign.start_date).all())
+    year_start = date(year, 1, 1)
+    year_end = date(year, 12, 31)
+    rows = (db.query(PlanCampaign).filter(
+        PlanCampaign.start_date <= year_end,
+        PlanCampaign.end_date >= year_start,
+    ).order_by(PlanCampaign.start_date, PlanCampaign.id).all())
     months = {m: [] for m in range(1, 13)}
     for c in rows:
-        months.setdefault(c.start_date.month, []).append({
+        item = {
             "id": c.id, "name": c.name, "start_date": c.start_date.isoformat(),
             "end_date": c.end_date.isoformat(), "status": c.status,
             "status_label": STATUS_LABELS.get(c.status, c.status),
             "budget_total": money(c.budget_total),
-        })
+        }
+        first = max(c.start_date, year_start)
+        last = min(c.end_date, year_end)
+        for month in range(first.month, last.month + 1):
+            months[month].append(dict(item))
     return {"year": year,
             "months": [{"month": m, "items": months[m]} for m in range(1, 13)]}
 
@@ -198,8 +313,17 @@ def summary(db: Session, year: int | None = None) -> dict:
     budget = money(sum(float(c.budget_total or 0) for c in rows))
     actual = money(sum(float(c.actual_total or 0) for c in rows))
     over = [c for c in rows if money(c.actual_total) > money(c.budget_total) + 0.005]
-    rois = [float((c.metrics or {}).get("roi")) for c in rows
-            if (c.metrics or {}).get("roi") not in (None, "")]
+    details = [_roi_details(c) for c in rows]
+    rois = []
+    for c, item in zip(rows, details):
+        if item["roi_source"] != "calculated":
+            continue
+        raw_roi = _raw_calculated_roi(c)
+        if raw_roi is not None:
+            rois.append(raw_roi)
+    manual_roi_count = sum(
+        1 for item in details if item["roi_source"] == "manual" and item["roi"] is not None
+    )
     return {
         "year": year,
         "campaigns": len(rows),
@@ -210,7 +334,8 @@ def summary(db: Session, year: int | None = None) -> dict:
         "over_budget_names": [c.name for c in over][:10],
         "running": sum(1 for c in rows if c.status == "running"),
         "done": sum(1 for c in rows if c.status == "done"),
-        "avg_roi": round(sum(rois) / len(rois), 4) if rois else None,
+        "avg_roi": _roi_number(sum(rois, Decimal("0")) / len(rois)) if rois else None,
+        "manual_roi_count": manual_roi_count,
         "by_status": [
             {"status": s, "label": STATUS_LABELS[s],
              "count": sum(1 for c in rows if c.status == s)}
@@ -291,9 +416,14 @@ def campaigns_export(db: Session, year: int | None = None) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "企划活动"
-    ws.append(["年度", "活动名称", "类型", "开始日期", "结束日期", "负责人",
-               "渠道", "状态", "预算合计", "实际合计", "差异", "ROI", "复盘结论"])
+    ws.append([
+        "年度", "活动名称", "类型", "开始日期", "结束日期", "负责人", "渠道", "状态",
+        "预算合计", "实际合计", "差异", "等级", "基准销售", "活动期间销售", "商户分摊",
+        "ROI目标", "ROI", "手填ROI", "ROI来源", "目标达成", "ROI警告", "复盘结论",
+    ])
     for c in rows:
+        details = _roi_details(c)
+        target_met = details["target_met"]
         ws.append([cell(v) for v in [
             c.year, c.name, CATEGORY_LABELS.get(c.category, c.category),
             c.start_date.isoformat() if c.start_date else "",
@@ -301,9 +431,27 @@ def campaigns_export(db: Session, year: int | None = None) -> bytes:
             c.owner, c.channel, STATUS_LABELS.get(c.status, c.status),
             money(c.budget_total), money(c.actual_total),
             money(money(c.budget_total) - money(c.actual_total)),
-            (c.metrics or {}).get("roi"), (c.metrics or {}).get("review", ""),
+            c.grade or "", _optional_money(c.sales_baseline), _optional_money(c.sales_during),
+            _optional_money(c.merchant_share), c.roi_target, details["roi"],
+            (c.metrics or {}).get("roi"), details["roi_source"],
+            "是" if target_met is True else "否" if target_met is False else "",
+            details["roi_warning"] or "", (c.metrics or {}).get("review", ""),
         ]])
     ws.freeze_panes = "A2"
+
+    methodology = wb.create_sheet("口径说明")
+    methodology.append(["项目", "说明"])
+    for item, text in (
+        ("统一 ROI 公式", "(活动期间销售 - 基准销售) / (实际投入 + 商户分摊)"),
+        ("输入要求", "基准销售、活动期间销售、商户分摊三项齐全时由服务端计算"),
+        ("零投入", "总投入为 0 时 ROI 留空并返回警告"),
+        ("历史手填", "手填 ROI 不参与平均，仅单列计数"),
+        ("目标与等级", "未设 ROI 目标时不判定达成；等级仅人工记录，不自动套阈值"),
+        ("汇总", "平均 ROI 仅汇总 calculated 且 ROI 非空的活动"),
+    ):
+        methodology.append([item, text])
+    methodology.freeze_panes = "A2"
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

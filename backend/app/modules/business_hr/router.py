@@ -110,6 +110,9 @@ def create_employee(payload: EmployeeIn, db: Session = Depends(get_db)):
 @router.put("/employees/{employee_id}", summary="更新员工")
 def update_employee(employee_id: int, payload: EmployeeUpdate, db: Session = Depends(get_db)):
     data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    for field in ("probation_end", "contract_end"):
+        if field in payload.model_fields_set and getattr(payload, field) is None:
+            data[field] = None
     try:
         return service.employee_save(db, data, employee_id)
     except LookupError as exc:

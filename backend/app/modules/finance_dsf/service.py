@@ -2,14 +2,10 @@
 """残保金计税服务：财政部公告2023年第8号（30人以下免征 + 分档减收）。"""
 from __future__ import annotations
 
-from ...config import get_finance_data_dir
 from pathlib import Path
-from decimal import Decimal, ROUND_HALF_UP
 
-
-def money(value) -> float:
-    """金额/人数两位小数，四舍五入（不用二进制 round）。"""
-    return float(Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+from ...config import get_finance_data_dir
+from ...utils_money import money
 
 # 分档减缴（财政部 税务总局公告2023年第8号）：
 # - 安排比例 ≥1% 且 <规定比例：按规定应缴费额的 50% 缴纳；
@@ -78,11 +74,11 @@ def calc_dsf(year: str, total_employees: int, total_salary: float,
             "exempt": True,
             "payable": 0.0,
             "shortfall_persons": shortfall,
-            "avg_salary": round(avg_salary, 2),
-            "local_avg_wage": round(float(local_avg_wage), 2) if local_avg_wage is not None else None,
-            "wage_cap": round(wage_cap, 2) if wage_cap is not None else None,
-            "charge_wage": round(charge_wage, 2),
-            "base_amount": round(base_amount, 2),
+            "avg_salary": money(avg_salary),
+            "local_avg_wage": money(local_avg_wage) if local_avg_wage is not None else None,
+            "wage_cap": money(wage_cap) if wage_cap is not None else None,
+            "charge_wage": money(charge_wage),
+            "base_amount": money(base_amount),
             "note": (f"在职职工 {total_employees} 人 ≤ 30 人，免征残保金"
                      f"（优惠前应纳 {base_amount:,.2f} 元）"),
             "policy": {"policy_key": "disability_fund_exemption",
@@ -102,13 +98,13 @@ def calc_dsf(year: str, total_employees: int, total_salary: float,
     return {
         "exempt": False,
         "tier": tier,
-        "shortfall_persons": round(shortfall, 2),
-        "avg_salary": round(avg_salary, 2),
-        "local_avg_wage": round(float(local_avg_wage), 2) if local_avg_wage is not None else None,
-        "wage_cap": round(wage_cap, 2) if wage_cap is not None else None,
-        "charge_wage": round(charge_wage, 2),
-        "base_amount": round(base_amount, 2),
-        "payable": round(payable, 2),
+        "shortfall_persons": money(shortfall),
+        "avg_salary": money(avg_salary),
+        "local_avg_wage": money(local_avg_wage) if local_avg_wage is not None else None,
+        "wage_cap": money(wage_cap) if wage_cap is not None else None,
+        "charge_wage": money(charge_wage),
+        "base_amount": money(base_amount),
+        "payable": money(payable),
         "actual_ratio": round(actual_ratio, 4),
         "note": (f"差额 {shortfall:.2f} 人 × 计征工资 {charge_wage:,.2f} 元"
                  f"（分档：{tier}）"),

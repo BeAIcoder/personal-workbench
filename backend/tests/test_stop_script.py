@@ -36,3 +36,25 @@ def test_stop_script_pid_filter_only_matches_workbench_listener():
     assert len(matched) == 1, "findstr 正则不能含空格，否则空格会分隔成 OR 搜索串"
     assert ":8000 " in matched[0]
     assert matched[0].rstrip().endswith("28032")
+
+
+@pytest.mark.skipif(not __import__("shutil").which("findstr"), reason="需要 Windows findstr")
+def test_stop_script_command_filter_requires_uvicorn_not_any_python():
+    bat = Path(__file__).resolve().parents[2] / "停止服务.bat"
+    text = bat.read_bytes().decode("gbk")
+    match = re.search(r'echo %cmdline% \| findstr\s+/i\s+/c:"([^"]+)"', text)
+    assert match, "停止脚本二次核验必须使用 uvicorn 单串匹配，不能按空格做 OR 匹配"
+    needle = match.group(1)
+
+    def matches(command_line: str) -> bool:
+        result = subprocess.run(
+            ["findstr", "/i", f"/c:{needle}"],
+            input=command_line + "\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0
+
+    assert not matches(r'"D:\venv\python.exe" -m http.server 8000')
+    assert matches(r'"D:\venv\python.exe" -m uvicorn app.main:app --port 8000')

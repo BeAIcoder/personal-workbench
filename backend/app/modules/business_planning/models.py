@@ -31,6 +31,11 @@ class PlanCampaign(Base):
     actual_total: Mapped[float] = mapped_column(Float, default=0.0)
     # {footfall_lift, sales_lift, roi, review}
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    grade: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    sales_baseline: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sales_during: Mapped[float | None] = mapped_column(Float, nullable=True)
+    merchant_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    roi_target: Mapped[float | None] = mapped_column(Float, nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(

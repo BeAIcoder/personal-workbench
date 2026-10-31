@@ -15,8 +15,10 @@ manifest = ModuleManifest(
         {
             "name": "hr_summary",
             "func": hr_summary_tool,
-            "description": "人事看板摘要：在职/试用/30 天到期人数（只读）",
-            "params": {},
+            "description": "人事看板摘要：在职/试用/30 天到期人数，可按月份读取薪资汇总（只读）",
+            "params": {
+                "month": ("string", "薪资所属月 YYYY-MM，默认不汇总薪资", False),
+            },
             "required": [],
             "readonly": True,
         }

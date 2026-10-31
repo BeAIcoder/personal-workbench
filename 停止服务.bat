@@ -19,7 +19,7 @@ set "cmdline="
 for /f "delims=" %%c in ('powershell -noprofile -command "(Get-CimInstance Win32_Process -Filter 'ProcessId=%pid%').CommandLine"') do set "cmdline=%%c"
 echo 命令行：%cmdline%
 
-echo %cmdline% | findstr /i "uvicorn python" >nul
+echo %cmdline% | findstr /i /c:"uvicorn" >nul
 if errorlevel 1 (
     echo 该进程不是 uvicorn/python，%PORT% 端口可能被其他程序占用，已取消操作。
     pause

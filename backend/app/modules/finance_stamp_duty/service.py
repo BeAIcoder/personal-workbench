@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ...config import get_finance_data_dir
 from ...database import SessionLocal
+from ...utils_money import money
 
 # ---------- 税目税率表（印花税法 2022-07-01 施行，rate 为千分比） ----------
 
@@ -88,20 +89,19 @@ def calc_filing(period: str, items: list[dict], half_discount: bool) -> dict:
             raise ValueError(f"第 {idx} 行计税金额非法（须 ≥ 0）")
         amount = float(amount)
         exempt = bool(it.get("exempt", False))
-        tax = 0.0 if exempt else amount * rate / 1000.0
-        tax = round(tax, 2)
+        tax = money(0.0 if exempt else amount * rate / 1000.0)
         raw_total += tax
         details.append({
             "tax_item": name, "amount": amount, "rate_permille": rate,
             "exempt": exempt, "tax": tax,
         })
 
-    raw_total = round(raw_total, 2)
+    raw_total = money(raw_total)
     total = raw_total
     half_saved = 0.0
     if half_discount:
-        total = round(raw_total / 2, 2)
-        half_saved = round(raw_total - total, 2)
+        total = money(raw_total / 2)
+        half_saved = money(raw_total - total)
     return {
         "total_tax": total,
         "raw_total": raw_total,

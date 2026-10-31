@@ -5,7 +5,7 @@
         <div class="card-head">
           <span>企划管理</span>
           <div>
-            <el-select v-model="year" size="small" style="width: 110px" @change="loadAll">
+            <el-select v-model="year" size="small" style="width: 110px" @change="changeYear">
               <el-option v-for="y in years" :key="y" :label="`${y} 年`" :value="y" />
             </el-select>
             <el-button size="small" @click="loadAll">刷新</el-button>
@@ -18,34 +18,42 @@
         <el-col :span="6"><div class="kpi-box"><div class="kpi-label">年度活动数</div><div class="kpi-value">{{ summary.campaigns }}</div></div></el-col>
         <el-col :span="6"><div class="kpi-box"><div class="kpi-label">预算 / 实际</div><div class="kpi-value">¥{{ fmt(summary.budget_total) }} / ¥{{ fmt(summary.actual_total) }}</div></div></el-col>
         <el-col :span="6"><div class="kpi-box"><div class="kpi-label">超支场次</div><div class="kpi-value">{{ summary.over_budget_count }}</div></div></el-col>
-        <el-col :span="6"><div class="kpi-box"><div class="kpi-label">平均 ROI</div><div class="kpi-value">{{ summary.avg_roi === null ? '—' : summary.avg_roi }}</div></div></el-col>
+        <el-col :span="6"><div class="kpi-box"><div class="kpi-label">平均 ROI（统一口径）</div><div class="kpi-value">{{ summary.avg_roi === null ? '—' : summary.avg_roi }}</div><div class="kpi-note">手填 {{ summary.manual_roi_count || 0 }} 场，不参与平均</div></div></el-col>
       </el-row>
+      <el-alert :title="roiMethodNote" type="info" :closable="false" show-icon />
 
       <el-tabs v-model="tab" class="mt8">
         <el-tab-pane label="活动台账" name="campaigns">
           <div class="filters">
-            <el-input v-model="query.keyword" placeholder="活动名称" size="small" clearable style="width: 170px" @keyup.enter="loadCampaigns" />
+            <el-input v-model="query.keyword" placeholder="活动名称" size="small" clearable style="width: 170px" @keyup.enter="searchCampaigns" />
             <el-select v-model="query.status" placeholder="状态" size="small" clearable style="width: 120px">
               <el-option v-for="s in statuses" :key="s.value" :label="s.label" :value="s.value" />
             </el-select>
             <el-select v-model="query.category" placeholder="类型" size="small" clearable style="width: 110px">
               <el-option v-for="c in categories" :key="c.value" :label="c.label" :value="c.value" />
             </el-select>
-            <el-button size="small" type="primary" @click="loadCampaigns">筛选</el-button>
+            <el-button size="small" type="primary" @click="searchCampaigns">筛选</el-button>
             <el-button size="small" type="success" @click="openCampaign()">新建活动</el-button>
           </div>
           <el-table :data="campaigns" size="small" border>
-            <el-table-column prop="name" label="活动名称" min-width="170" show-overflow-tooltip />
+            <el-table-column prop="name" label="活动名称" min-width="150" show-overflow-tooltip />
             <el-table-column prop="category_label" label="类型" width="80" />
             <el-table-column label="档期" width="190"><template #default="{ row }">{{ row.start_date }} ~ {{ row.end_date }}</template></el-table-column>
             <el-table-column prop="owner" label="负责人" width="90" />
-            <el-table-column label="预算" width="110" align="right"><template #default="{ row }">¥{{ fmt(row.budget_total) }}</template></el-table-column>
-            <el-table-column label="实际" width="110" align="right">
+            <el-table-column label="预算" width="105" align="right"><template #default="{ row }">¥{{ fmt(row.budget_total) }}</template></el-table-column>
+            <el-table-column label="实际" width="105" align="right">
               <template #default="{ row }">
                 <span :class="{ danger: row.over_budget }">¥{{ fmt(row.actual_total) }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="ROI" width="90" align="right"><template #default="{ row }">{{ row.roi ?? '—' }}</template></el-table-column>
+            <el-table-column prop="grade" label="等级" width="65"><template #default="{ row }">{{ row.grade || '—' }}</template></el-table-column>
+            <el-table-column label="ROI / 来源" width="150" align="right">
+              <template #default="{ row }">
+                <div>{{ row.roi ?? '—' }} <span class="muted">{{ roiSourceLabel(row.roi_source) }}</span></div>
+                <div v-if="row.roi_warning" class="danger">{{ row.roi_warning }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="目标" width="70"><template #default="{ row }">{{ targetLabel(row.target_met) }}</template></el-table-column>
             <el-table-column label="状态" width="90">
               <template #default="{ row }"><el-tag size="small" :type="statusTag(row.status)">{{ row.status_label }}</el-tag></template>
             </el-table-column>
@@ -56,6 +64,11 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination
+            class="mt8" layout="total, prev, pager, next" :total="campaignTotal"
+            :page-size="query.page_size" :current-page="query.page"
+            @current-change="changeCampaignPage"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="供应商" name="vendors">
@@ -131,11 +144,20 @@
         <el-button size="small" class="mt8" @click="campaignForm.budget_items.push({ item: '', budget: 0, actual: 0 })">+ 加一行</el-button>
         <div class="sum-line">预算合计 ¥{{ fmt(budgetSum) }}　实际合计 ¥{{ fmt(actualSum) }}</div>
 
-        <el-divider>效果复盘</el-divider>
+        <el-divider>效果复盘与统一 ROI 口径</el-divider>
         <el-row :gutter="12">
+          <el-col :span="8"><el-form-item label="基准销售"><el-input-number v-model="campaignForm.sales_baseline" :min="0" :precision="2" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="期间销售"><el-input-number v-model="campaignForm.sales_during" :min="0" :precision="2" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="商户分摊"><el-input-number v-model="campaignForm.merchant_share" :min="0" :precision="2" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="人工等级"><el-select v-model="campaignForm.grade" clearable placeholder="不自动定级"><el-option v-for="g in ['S', 'A', 'B', 'C']" :key="g" :label="g" :value="g" /></el-select></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="ROI 目标"><el-input-number v-model="campaignForm.roi_target" :controls="false" placeholder="留空不判定" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="实际投入"><el-input :model-value="fmt(actualSum)" disabled /></el-form-item></el-col>
+        </el-row>
+        <div class="sum-line">{{ roiMethodNote }}</div>
+        <el-row :gutter="12" class="mt8">
           <el-col :span="8"><el-form-item label="客流提升%"><el-input-number v-model="campaignForm.metrics.footfall_lift" :controls="false" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="8"><el-form-item label="销售提升%"><el-input-number v-model="campaignForm.metrics.sales_lift" :controls="false" style="width: 100%" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="ROI"><el-input-number v-model="campaignForm.metrics.roi" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="手填 ROI"><el-input-number v-model="campaignForm.metrics.roi" :controls="false" style="width: 100%" /></el-form-item></el-col>
         </el-row>
         <el-form-item label="复盘结论"><el-input v-model="campaignForm.metrics.review" type="textarea" :rows="2" /></el-form-item>
       </el-form>
@@ -188,17 +210,23 @@ const categories = [
 ]
 const vendorServices = ['物料', '美陈', '演艺', '投放', '执行']
 
-const summary = ref({ campaigns: 0, budget_total: 0, actual_total: 0, over_budget_count: 0, avg_roi: null })
+const summary = ref({
+  campaigns: 0, budget_total: 0, actual_total: 0, over_budget_count: 0,
+  avg_roi: null, manual_roi_count: 0,
+})
 const campaigns = ref([])
+const campaignTotal = ref(0)
 const vendors = ref([])
 const calendar = ref({ year: year.value, months: [] })
-const query = reactive({ keyword: '', status: '', category: '' })
+const query = reactive({ keyword: '', status: '', category: '', page: 1, page_size: 20 })
 const vendorQuery = reactive({ keyword: '', service: '' })
+const roiMethodNote = '统一 ROI = (活动期间销售 - 基准销售) / (实际投入 + 商户分摊)；三项输入齐全才计算；手填 ROI 不参与平均；未设 ROI 目标时不判定达成或等级'
 
 const campaignDialog = ref(false)
 const campaignForm = reactive({
   id: null, name: '', year: year.value, category: 'promo', status: 'planning',
   start_date: '', end_date: '', owner: '', channel: '', target: '',
+  grade: null, sales_baseline: null, sales_during: null, merchant_share: null, roi_target: null,
   budget_items: [], metrics: { footfall_lift: null, sales_lift: null, roi: null, review: '' },
 })
 const vendorDialog = ref(false)
@@ -215,6 +243,12 @@ function fmt(v) {
 function statusTag(s) {
   return { planning: 'info', approved: 'primary', running: 'warning', done: 'success', cancelled: 'danger' }[s] || 'info'
 }
+function roiSourceLabel(source) {
+  return { calculated: '统一计算', manual: '历史手填', none: '未计算' }[source] || '未计算'
+}
+function targetLabel(met) {
+  return met === true ? '达成' : met === false ? '未达成' : '—'
+}
 
 async function loadSummary() {
   try {
@@ -228,9 +262,20 @@ async function loadCampaigns() {
   try {
     const { data } = await api.get('/business/planning/campaigns', { params: { ...query, year: year.value } })
     campaigns.value = data.items || []
+    campaignTotal.value = data.total || 0
   } catch { /* 拦截器已提示 */ } finally {
     loading.value = false
   }
+}
+
+async function searchCampaigns() {
+  query.page = 1
+  await loadCampaigns()
+}
+
+async function changeCampaignPage(page) {
+  query.page = page
+  await loadCampaigns()
 }
 
 async function loadVendors() {
@@ -252,12 +297,22 @@ async function loadAll() {
   await Promise.all([loadCampaigns(), loadVendors(), loadCalendar()])
 }
 
+async function changeYear() {
+  query.page = 1
+  await loadAll()
+}
+
 function openCampaign(row) {
   if (row) {
     Object.assign(campaignForm, {
       id: row.id, name: row.name, year: row.year, category: row.category, status: row.status,
       start_date: row.start_date, end_date: row.end_date, owner: row.owner, channel: row.channel,
       target: row.target,
+      grade: row.grade ?? null,
+      sales_baseline: row.sales_baseline ?? null,
+      sales_during: row.sales_during ?? null,
+      merchant_share: row.merchant_share ?? null,
+      roi_target: row.roi_target ?? null,
       budget_items: (row.budget_items || []).map((i) => ({ ...i })),
       metrics: {
         footfall_lift: row.metrics?.footfall_lift ?? null,
@@ -270,6 +325,7 @@ function openCampaign(row) {
     Object.assign(campaignForm, {
       id: null, name: '', year: year.value, category: 'promo', status: 'planning',
       start_date: '', end_date: '', owner: '', channel: '', target: '',
+      grade: null, sales_baseline: null, sales_during: null, merchant_share: null, roi_target: null,
       budget_items: [{ item: '物料', budget: 0, actual: 0 }],
       metrics: { footfall_lift: null, sales_lift: null, roi: null, review: '' },
     })
@@ -288,17 +344,33 @@ async function saveCampaign() {
     return
   }
   saving.value = true
+  let allowConflict = false
   try {
-    const payload = { ...campaignForm }
-    delete payload.id
-    if (campaignForm.id) {
-      await api.put(`/business/planning/campaigns/${campaignForm.id}`, payload)
-    } else {
-      await api.post('/business/planning/campaigns', payload)
+    while (true) {
+      const payload = { ...campaignForm }
+      delete payload.id
+      if (allowConflict) payload.allow_conflict = true
+      try {
+        if (campaignForm.id) {
+          await api.put(`/business/planning/campaigns/${campaignForm.id}`, payload)
+        } else {
+          await api.post('/business/planning/campaigns', payload)
+        }
+        campaignDialog.value = false
+        await loadAll()
+        break
+      } catch (error) {
+        if (error?.response?.status !== 409 || allowConflict) break
+        const detail = error?.response?.data?.detail || '活动档期冲突'
+        try {
+          await ElMessageBox.confirm(`${detail}。是否确认有意并行并继续保存？`, '档期冲突确认', {
+            type: 'warning', confirmButtonText: '确认并行', cancelButtonText: '返回编辑',
+          })
+        } catch { break }
+        allowConflict = true
+      }
     }
-    campaignDialog.value = false
-    await loadAll()
-  } catch { /* 拦截器已提示 */ } finally {
+  } finally {
     saving.value = false
   }
 }

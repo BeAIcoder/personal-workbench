@@ -79,6 +79,10 @@ export const dashboardApi = {
   summary: () => api.get('/dashboard/summary'),
 }
 
+export const gmApi = {
+  summary: (period) => api.get('/business/gm/summary', { params: { period } }),
+}
+
 export const searchApi = {
   query: (q) => api.get('/search', { params: { q } }),
 }

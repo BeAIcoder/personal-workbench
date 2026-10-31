@@ -106,6 +106,66 @@ def test_payroll_generate_confirm_and_tax(client):
     assert client.delete(f"{P}/payroll/{feb['id']}").status_code == 200
 
 
+def test_employee_update_explicit_null_clears_contract_end(client):
+    eid = _employee(client).json()["id"]
+    ordinary = client.put(f"{P}/employees/{eid}", json={"position": "经理"})
+    assert ordinary.status_code == 200, ordinary.text
+    assert ordinary.json()["contract_end"] is not None
+
+    cleared = client.put(f"{P}/employees/{eid}", json={"contract_end": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["contract_end"] is None
+    rows = client.get(f"{P}/employees").json()["items"]
+    assert next(row for row in rows if row["id"] == eid)["contract_end"] is None
+
+
+def test_payroll_generate_warns_for_each_employee_without_attendance(client):
+    attended_id = _employee(client, no="E001", name="合成有考勤").json()["id"]
+    _employee(client, no="E002", name="合成缺考勤")
+    month = "2026-04"
+    response = client.put(f"{P}/attendance/{attended_id}/{month}", json={"actual_days": 21.75})
+    assert response.status_code == 200, response.text
+
+    generated = client.post(f"{P}/payroll/generate", json={
+        "month": month, "social_rate": 0, "housing_rate": 0,
+    })
+    assert generated.status_code == 201, generated.text
+    body = generated.json()
+    assert body["count"] == 2
+    assert len(body["items"]) == 2
+    assert len(body["warnings"]) == 1
+    assert "E002" in body["warnings"][0]
+    assert "合成缺考勤" in body["warnings"][0]
+    assert month in body["warnings"][0]
+    assert "E001" not in body["warnings"][0]
+
+
+def test_payroll_mid_year_hire_uses_employment_months_not_payroll_rows(client):
+    _employee(client, hire_date="2026-07-15")
+    generated = client.post(f"{P}/payroll/generate", json={
+        "month": "2026-08", "social_rate": 0, "housing_rate": 0,
+    })
+    assert generated.status_code == 201, generated.text
+    # 7 月入职，截至 8 月减除 2×5000；即使这是首张薪资单也不能只减 1 个月。
+    assert generated.json()["items"][0]["tax"] == pytest.approx(0.0)
+
+
+def test_payroll_missing_month_does_not_reduce_employment_month_count(client):
+    _employee(client, hire_date="2026-01-10")
+    january = client.post(f"{P}/payroll/generate", json={
+        "month": "2026-01", "social_rate": 0, "housing_rate": 0,
+    })
+    assert january.status_code == 201, january.text
+    assert january.json()["items"][0]["tax"] == pytest.approx(150.0)
+
+    march = client.post(f"{P}/payroll/generate", json={
+        "month": "2026-03", "social_rate": 0, "housing_rate": 0,
+    })
+    assert march.status_code == 201, march.text
+    # 2 月未生成薪资，3 月仍按任职第 3 个月减除；累计税额 150，减已预扣 150。
+    assert march.json()["items"][0]["tax"] == pytest.approx(0.0)
+
+
 def test_export(client):
     _employee(client)
     client.post(f"{P}/payroll/generate", json={"month": "2026-03"})
