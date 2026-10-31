@@ -37,6 +37,7 @@ ATTACH = Path(os.environ.get("VERIFY_ATTACH_DIR", ""))
 POS_SRC = Path(r"D:\2022.5.24起财务工作存档\BaiduSyncdisk\0x09收款认领\POS刷卡清单\01_刷卡对账单_按年份\2026年\10")
 CASH_SRC = Path(r"D:\2022.5.24起财务工作存档\BaiduSyncdisk\06.现金流\2026\10")
 
+# 保勾稽需要可复现的固定种子（凭证借=贷、余额链），非密码学用途，不用 secrets
 rng = random.Random(20261022)
 
 # 已知敏感字串（本项目数据集特定）：公司名全文由 ledger_map 动态收集，

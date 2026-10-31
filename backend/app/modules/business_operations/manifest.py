@@ -27,6 +27,7 @@ manifest = ModuleManifest(
         }
     ],
     column_patches={
+        "mod_ops_contract": {"unit_id": "INTEGER"},
         "mod_ops_work_order": {
             "due_at": "DATETIME", "parent_id": "INTEGER", "equipment_id": "INTEGER",
         },

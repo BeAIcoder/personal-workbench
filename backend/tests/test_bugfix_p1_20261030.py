@@ -153,9 +153,14 @@ def test_backup_and_restore_roundtrip(tmp_path):
     # 已有 workbench.db 且未 force → 拒绝
     with pytest.raises(FileExistsError):
         restore_mod.restore(zip_path, target)
-    # force → 覆盖并留 .before_restore_* 备份
+    # force → 原子换入，旧数据整体快照为 data.before_restore_*
     restore_mod.restore(zip_path, target, force=True)
-    assert list(target.glob("workbench.db.before_restore_*"))
+    snapshots = list(target.parent.glob("data.before_restore_*"))
+    assert snapshots, "force 恢复应留下整目录快照"
+    # 快照内容与旧库一致（可继续作为回滚点）
+    prev = sqlite3.connect(snapshots[-1] / "workbench.db")
+    assert prev.execute("SELECT x FROM t").fetchone()[0] == 42
+    prev.close()
 
 
 # ---------------- AGT-02：同会话运行锁 ----------------

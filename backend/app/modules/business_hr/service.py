@@ -105,7 +105,7 @@ def employee_save(db: Session, data: dict, employee_id: int | None = None) -> di
     for field in ("emp_no", "name", "department", "position", "phone", "note"):
         if field in data and data[field] is not None:
             setattr(e, field, str(data[field]).strip())
-    for field in ("base_salary", "social_base"):
+    for field in ("base_salary", "social_base", "special_additional"):
         if field in data and data[field] is not None:
             if float(data[field]) < 0:
                 raise ValueError(f"{field} 不能为负数")
@@ -219,7 +219,9 @@ def payroll_to_dict(p: HrPayroll, e: HrEmployee | None = None) -> dict:
         "base_salary": money(p.base_salary), "allowance": money(p.allowance),
         "overtime_pay": money(p.overtime_pay), "deduction": money(p.deduction),
         "social_insurance": money(p.social_insurance),
-        "housing_fund": money(p.housing_fund), "tax": money(p.tax),
+        "housing_fund": money(p.housing_fund),
+        "special_additional": money(p.special_additional),
+        "tax": money(p.tax),
         "gross_pay": money((p.base_salary or 0) + (p.allowance or 0) + (p.overtime_pay or 0)),
         "net_pay": money(p.net_pay),
         "status": p.status,
@@ -289,7 +291,7 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
         prior_base = sum(
             float(p.base_salary or 0) + float(p.allowance or 0) + float(p.overtime_pay or 0)
             - float(p.deduction or 0) - float(p.social_insurance or 0)
-            - float(p.housing_fund or 0)
+            - float(p.housing_fund or 0) - float(p.special_additional or 0)
             for p in priors
         )
         prior_tax = sum(float(p.tax or 0) for p in priors)
@@ -298,6 +300,8 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
             if emp.hire_date and emp.hire_date.year == target_year else 1
         )
         months_count = max(len(priors) + 1, target_month - hire_start_month + 1)
+        special_monthly = money(emp.special_additional or 0)
+        current_base = money(current_base - special_monthly)
         withholding = calc_cumulative_withholding(
             prior_base + current_base, prior_tax, months_count,
         )
@@ -307,7 +311,8 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
         row = HrPayroll(
             emp_id=emp.id, month=month, base_salary=base, allowance=allowance,
             overtime_pay=overtime_pay, deduction=deduction,
-            social_insurance=social, housing_fund=housing, tax=tax,
+            social_insurance=social, housing_fund=housing,
+            special_additional=special_monthly, tax=tax,
             net_pay=net, status="draft",
         )
         db.add(row)

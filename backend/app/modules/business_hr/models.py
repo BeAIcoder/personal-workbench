@@ -26,6 +26,8 @@ class HrEmployee(Base):
     phone: Mapped[str] = mapped_column(String(50), default="")
     base_salary: Mapped[float] = mapped_column(Float, default=0.0)
     social_base: Mapped[float] = mapped_column(Float, default=0.0)
+    # 个税专项附加扣除（元/月，员工申报口径，出薪时进入累计预扣）
+    special_additional: Mapped[float] = mapped_column(Float, default=0.0)
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -72,6 +74,7 @@ class HrPayroll(Base):
     deduction: Mapped[float] = mapped_column(Float, default=0.0)
     social_insurance: Mapped[float] = mapped_column(Float, default=0.0)
     housing_fund: Mapped[float] = mapped_column(Float, default=0.0)
+    special_additional: Mapped[float] = mapped_column(Float, default=0.0)
     tax: Mapped[float] = mapped_column(Float, default=0.0)
     net_pay: Mapped[float] = mapped_column(Float, default=0.0)
     # draft / confirmed

@@ -62,6 +62,7 @@ def _contract_dict(c: OpsContract) -> dict:
         "contract_no": c.contract_no,
         "tenant": c.tenant,
         "unit_no": c.unit_no,
+        "unit_id": c.unit_id,
         "area": money(c.area),
         "start_date": c.start_date.isoformat() if c.start_date else None,
         "end_date": c.end_date.isoformat() if c.end_date else None,
@@ -95,6 +96,59 @@ def contract_list(db: Session, status: str = "", tenant: str = "", keyword: str 
             "page": page, "page_size": page_size}
 
 
+def _resolve_unit(db: Session, unit_id: int | None, exclude_contract_id: int | None = None) -> tuple[int | None, str]:
+    """勾稽铺位：unit_id 必须真实存在，且同铺位不允许两份生效合同（防重复出租）。
+
+    返回 (unit_id, unit_no)；unit_id 为 None 时返回 (None, "")。
+    """
+    if unit_id is None:
+        return None, ""
+    try:
+        from ..business_leasing.models import LeasingUnit
+    except ImportError:
+        raise ValueError("招商模块不可用，无法关联铺位") from None
+    unit = db.get(LeasingUnit, int(unit_id))
+    if unit is None:
+        raise ValueError(f"铺位不存在：unit_id={unit_id}")
+    dup = (db.query(OpsContract)
+           .filter(OpsContract.unit_id == int(unit_id),
+                   OpsContract.status == "active",
+                   OpsContract.id != (exclude_contract_id or -1))
+           .first())
+    if dup is not None:
+        raise ValueError(
+            f"铺位 {unit.unit_no} 已存在生效合同（{dup.contract_no}），不能重复出租；"
+            "请先终止旧合同或更换铺位")
+    return int(unit.id), str(unit.unit_no or "")
+
+
+def _lease_terms(db: Session, contract: OpsContract) -> dict:
+    """从招商签约线索读取租决参数（免租期 / 年递增率 / 租金形式）。
+
+    勾稽链：合同.unit_id → LeasingLead.unit_id 且 status='signed'（取最新一条）。
+    未关联铺位或无签约线索时返回空 dict（保持旧的固定租金出账行为）。
+    """
+    if contract.unit_id is None:
+        return {}
+    try:
+        from ..business_leasing.models import LeasingLead
+    except ImportError:
+        return {}
+    lead = (db.query(LeasingLead)
+            .filter(LeasingLead.unit_id == contract.unit_id,
+                    LeasingLead.stage == "signed")
+            .order_by(LeasingLead.id.desc())
+            .first())
+    if lead is None:
+        return {}
+    return {
+        "free_rent_months": int(lead.free_rent_months or 0),
+        # 递增率为百分数语义：5 表示每年 5%
+        "escalation_rate": float(lead.escalation_rate or 0.0),
+        "rent_form": str(lead.rent_form or "fixed"),
+    }
+
+
 def contract_save(db: Session, data: dict, contract_id: int | None = None) -> dict:
     c = db.get(OpsContract, contract_id) if contract_id else OpsContract()
     if c is None:
@@ -110,6 +164,13 @@ def contract_save(db: Session, data: dict, contract_id: int | None = None) -> di
     for field in ("start_date", "end_date", "signed_at"):
         if field in data:
             setattr(c, field, _as_date(data[field], field))
+    if "unit_id" in data:
+        resolved_id, resolved_no = _resolve_unit(
+            db, data.get("unit_id"), exclude_contract_id=contract_id)
+        c.unit_id = resolved_id
+        # 关联铺位时铺位号以招商台账为准（口径一致）；未填 unit_no 才回填
+        if resolved_id is not None and not str(data.get("unit_no") or "").strip():
+            c.unit_no = resolved_no
     if "status" in data and data["status"] is not None:
         new_status = data["status"]
         if new_status not in CONTRACT_STATUSES:
@@ -208,11 +269,26 @@ def generate_bill(db: Session, contract_id: int, period: str,
     period_end = next_month - timedelta(days=1)
     if period_end < c.start_date or period_start > c.end_date:
         raise ValueError("所属期与合同租期不相交，不能生成账单")
-    total = money((c.rent_monthly or 0) + (c.property_fee_monthly or 0) + float(other_amount or 0))
+    # 勾稽租决参数：免租期不出租金（物业费照收）、按年递增、抽成合同拒绝按固定租金出账
+    rent = money(c.rent_monthly)
+    terms = _lease_terms(db, c)
+    if terms:
+        if terms["rent_form"] in ("percentage", "guaranteed_percentage"):
+            raise ValueError(
+                "该铺位签约为抽成/保底抽成租金（无固定月租），按固定租金出账会算错；"
+                "请解除铺位关联或手工登记其他费用")
+        # 合同月序号：起租月为第 1 个月
+        month_index = (year - c.start_date.year) * 12 + (month - c.start_date.month) + 1
+        if month_index <= terms["free_rent_months"]:
+            rent = money(0)
+        elif terms["escalation_rate"] > 0:
+            years_elapsed = (month_index - 1) // 12
+            rent = money(rent * (1.0 + terms["escalation_rate"] / 100.0) ** years_elapsed)
+    total = money(rent + (c.property_fee_monthly or 0) + float(other_amount or 0))
     bill = OpsBill(
         contract_id=contract_id,
         period=period,
-        rent_amount=money(c.rent_monthly),
+        rent_amount=rent,
         property_amount=money(c.property_fee_monthly),
         other_amount=money(other_amount),
         total_amount=total,

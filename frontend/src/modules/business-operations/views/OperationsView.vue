@@ -159,7 +159,8 @@
         <el-row :gutter="12">
           <el-col :span="12"><el-form-item label="合同编号" required><el-input v-model="contractForm.contract_no" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="租户" required><el-input v-model="contractForm.tenant" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="铺位"><el-input v-model="contractForm.unit_no" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="关联铺位"><el-select v-model="contractForm.unit_id" clearable filterable placeholder="从招商铺位选择（可选）" style="width: 100%"><el-option v-for="u in unitOptions" :key="u.id" :label="u.label" :value="u.id" /></el-select></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="铺位号(手填)"><el-input v-model="contractForm.unit_no" placeholder="未关联铺位时手工填写" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="面积(㎡)"><el-input-number v-model="contractForm.area" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="开始日期" required><el-date-picker v-model="contractForm.start_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="结束日期" required><el-date-picker v-model="contractForm.end_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item></el-col>
@@ -298,8 +299,9 @@ const agingWarning = computed(() => {
 })
 
 const contractDialog = ref(false)
+const unitOptions = ref([])
 const contractForm = reactive({
-  id: null, contract_no: '', tenant: '', unit_no: '', area: 0,
+  id: null, contract_no: '', tenant: '', unit_no: '', unit_id: null, area: 0,
   start_date: '', end_date: '', rent_monthly: 0, property_fee_monthly: 0,
   deposit: 0, status: 'active', note: '',
 })
@@ -451,18 +453,32 @@ async function loadAll() {
   await loadSummary()
   await Promise.all([
     loadContracts(), loadBills(), loadOrders(), loadExpiring(), loadAging(),
-    loadOrderOptions(), loadEquipmentOptions(),
+    loadOrderOptions(), loadEquipmentOptions(), loadUnitOptions(),
   ])
+}
+
+async function loadUnitOptions() {
+  try {
+    const { data } = await api.get('/business/leasing/units', { params: { page: 1, page_size: 500 } })
+    unitOptions.value = (data.items || []).map((u) => ({
+      id: u.id,
+      label: `${u.building || ''}${u.floor ? '/' + u.floor : ''} ${u.unit_no}`.trim() || `#${u.id}`,
+      unit_no: u.unit_no,
+    }))
+  } catch {
+    unitOptions.value = [] // 招商模块不可用时退化为纯手填
+  }
 }
 
 function openContract(row) {
   Object.assign(contractForm, row ? {
     id: row.id, contract_no: row.contract_no, tenant: row.tenant, unit_no: row.unit_no,
+    unit_id: row.unit_id ?? null,
     area: row.area, start_date: row.start_date, end_date: row.end_date,
     rent_monthly: row.rent_monthly, property_fee_monthly: row.property_fee_monthly,
     deposit: row.deposit, status: row.status, note: row.note,
   } : {
-    id: null, contract_no: '', tenant: '', unit_no: '', area: 0,
+    id: null, contract_no: '', tenant: '', unit_no: '', unit_id: null, area: 0,
     start_date: '', end_date: '', rent_monthly: 0, property_fee_monthly: 0,
     deposit: 0, status: 'active', note: '',
   })

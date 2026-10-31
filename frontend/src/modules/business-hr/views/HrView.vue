@@ -128,6 +128,7 @@
           <el-col :span="12"><el-form-item label="手机"><el-input v-model="employeeForm.phone" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="基本工资"><el-input-number v-model="employeeForm.base_salary" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="社保基数"><el-input-number v-model="employeeForm.social_base" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="专项附加扣除(元/月)"><el-input-number v-model="employeeForm.special_additional" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
         </el-row>
         <el-form-item label="备注"><el-input v-model="employeeForm.note" type="textarea" :rows="2" /></el-form-item>
       </el-form>
@@ -164,7 +165,7 @@ const employeeDialog = ref(false)
 const employeeForm = reactive({
   id: null, emp_no: '', name: '', department: '', position: '',
   hire_date: '', probation_end: '', contract_end: '', status: 'active',
-  phone: '', base_salary: 0, social_base: 0, note: '',
+  phone: '', base_salary: 0, social_base: 0, special_additional: 0, note: '',
 })
 
 function fmt(v) {
@@ -222,11 +223,12 @@ function openEmployee(row) {
     id: row.id, emp_no: row.emp_no, name: row.name, department: row.department,
     position: row.position, hire_date: row.hire_date || '', probation_end: row.probation_end || '',
     contract_end: row.contract_end || '', status: row.status, phone: row.phone,
-    base_salary: row.base_salary, social_base: row.social_base, note: row.note,
+    base_salary: row.base_salary, social_base: row.social_base,
+    special_additional: row.special_additional ?? 0, note: row.note,
   } : {
     id: null, emp_no: '', name: '', department: '', position: '',
     hire_date: '', probation_end: '', contract_end: '', status: 'active',
-    phone: '', base_salary: 0, social_base: 0, note: '',
+    phone: '', base_salary: 0, social_base: 0, special_additional: 0, note: '',
   })
   employeeDialog.value = true
 }

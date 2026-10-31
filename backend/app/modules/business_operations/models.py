@@ -17,6 +17,8 @@ class OpsContract(Base):
     contract_no: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     tenant: Mapped[str] = mapped_column(String(200), default="", index=True)
     unit_no: Mapped[str] = mapped_column(String(50), default="", index=True)
+    # 勾稽：关联招商铺位 mod_leasing_unit.id；为空表示未关联（纯台账）
+    unit_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     area: Mapped[float] = mapped_column(Float, default=0.0)
     start_date: Mapped[date] = mapped_column(Date, index=True)
     end_date: Mapped[date] = mapped_column(Date, index=True)

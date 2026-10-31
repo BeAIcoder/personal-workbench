@@ -23,7 +23,10 @@ manifest = ModuleManifest(
             "readonly": True,
         }
     ],
-    column_patches={},
+    column_patches={
+        "mod_hr_employee": {"special_additional": "FLOAT"},
+        "mod_hr_payroll": {"special_additional": "FLOAT"},
+    },
     requires=[],
     preset_experts=["realestate"],
     enabled=True,

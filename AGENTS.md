@@ -218,3 +218,12 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
   - **xlsx 公式注入**：新增 `app/utils_xlsx.py::safe_cell`（`= + - @` 前缀加 `'`），finance_iit/invoice/vat 三处导出接入；业务模块 6 份 `_cell` 拷贝的收敛起点。
   - **脱敏过滤器升级**：`git_sanitize_filter.py` 改**字节级双编码替换**（UTF-8 + GB18030）——旧实现只按 UTF-8 匹配，GBK 文件里的中文真实串永远命中不了（`.vbs` 泄漏的根因）；`.gitattributes` 补 `*.example/*.vbs/*.bat/*.html/*.css/*.mjs/*.sh`；`.env.example` 6 行示例路径改占位符；7 个新覆盖文件 renormalize 后暂存 blob 双编码命中 **0**。
 - **仍未做**：推送待用户在自己终端授权一次（GCM 弹窗无法由代理点击）；`restore_backup.py` 非原子（恢复演练必须先修）；跨模块勾稽三字段（unit_id/免租期/专项附加扣除）未接线；`.env.example`/vbs 的**历史 blob** 残留需 git filter-repo 单独评估。
+- **第 3 批（restore 原子化 + 跨模块勾稽，2026-10-31 深夜二轮）**：
+  - **`restore_backup.py` 重写为原子恢复**：先整体解压到同卷临时目录 → `PRAGMA integrity_check` 校验（坏库/加密/截断统一中文拒绝）→ 旧数据**整目录**快照为 `data.before_restore_*` → 一次性换入；任何一步失败目标目录保持原状。新增防恶意包：条目数 ≤50k、解压总量 ≤2GiB、Windows 设备名与结尾点/空格拒绝。roundtrip 测试同步改整目录快照口径；新增 5 例硬化测试（坏库原子性/设备名/zip-slip/双上限/完整快照）。
+  - **跨模块勾稽三字段接线（上一轮审计的三大缺口的修复）**：
+    - `OpsContract.unit_id`（`mod_ops_contract` 补列）：`_resolve_unit` 校验铺位存在 + **同铺位唯一生效合同**（防重复出租），unit_no 以招商台账回填；显式 `unit_id=null` 解除关联。
+    - **出账读租决参数**：`_lease_terms` 经 `合同.unit_id → LeasingLead(stage=signed)` 读免租期/年递增/租金形式——免租月租金 0（物业费照收）、递增率第 13 个月起按年放大（百分数语义 5=5%）、**抽成/保底抽成合同拒绝按固定租金出账**（409）。
+    - HR `special_additional`（员工+薪资单补列）：进入累计预扣（当月扣 + 历史月份合计扣），`payroll_to_dict` 回显；与 `finance_iit` 同函数同口径。
+    - 前端：OperationsView 合同弹窗「关联铺位」下拉（读招商铺位，招商不可用退化为手填）+ HrView 员工表单「专项附加扣除(元/月)」。
+  - **Mimosa 深度扫描（deep，首次完整完成）**：6 findings 全部定性——`package_release.py` 路径/SSRF 3 处为冒烟固定 `127.0.0.1:{free_port}` 误报；`20261012New/scripts/migrate_tax_data.py` SQL f-string 2 处为历史存档（输入是模块常量，按约定不改历史）；`desensitize_finance_data.py` 固定种子 RNG 为保勾稽设计使然（已加注释）。seal `af19d4d6…`，报告在 `~/.mimosa/security-scans/project-3640d8ab…/scan-2026-10-31T14-03-36…/`。
+- **验证（第 3 批）**：后端全量 **1462 passed（794.44s）**、前端 **57 文件 871 passed**、构建通过（stamp `7cd63a736357`）。新增测试 13 例：`test_restore_hardening_20261031.py`（5）+ `test_cross_module_reconciliation_20261031.py`（8）。

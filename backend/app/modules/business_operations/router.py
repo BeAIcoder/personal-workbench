@@ -27,6 +27,7 @@ class ContractIn(BaseModel):
     contract_no: str = Field(min_length=1, max_length=50)
     tenant: str = Field(min_length=1, max_length=200)
     unit_no: str = Field(default="", max_length=50)
+    unit_id: int | None = Field(default=None, ge=1, description="关联招商铺位 ID")
     area: float = Field(default=0, ge=0, le=10_000_000)
     start_date: date
     end_date: date
@@ -42,6 +43,7 @@ class ContractUpdate(BaseModel):
     contract_no: str | None = Field(default=None, min_length=1, max_length=50)
     tenant: str | None = Field(default=None, min_length=1, max_length=200)
     unit_no: str | None = Field(default=None, max_length=50)
+    unit_id: int | None = Field(default=None, ge=1, description="关联招商铺位 ID")
     area: float | None = Field(default=None, ge=0, le=10_000_000)
     start_date: date | None = None
     end_date: date | None = None
@@ -148,6 +150,9 @@ def create_contract(payload: ContractIn, db: Session = Depends(get_db)):
 @router.put("/contracts/{contract_id}", summary="更新合同")
 def update_contract(contract_id: int, payload: ContractUpdate, db: Session = Depends(get_db)):
     data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    # 显式传 unit_id=null 表示解除铺位关联（exclude_none 会把它丢掉，需补回）
+    if payload.model_fields_set and "unit_id" in payload.model_fields_set and payload.unit_id is None:
+        data["unit_id"] = None
     try:
         return service.contract_save(db, data, contract_id)
     except LookupError as exc:

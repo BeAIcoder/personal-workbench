@@ -32,6 +32,7 @@ class EmployeeIn(BaseModel):
     phone: str = Field(default="", max_length=50)
     base_salary: float = Field(default=0, ge=0, le=100_000_000)
     social_base: float = Field(default=0, ge=0, le=100_000_000)
+    special_additional: float = Field(default=0, ge=0, le=100_000)
     note: str = Field(default="", max_length=2000)
 
 
@@ -47,6 +48,7 @@ class EmployeeUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=50)
     base_salary: float | None = Field(default=None, ge=0, le=100_000_000)
     social_base: float | None = Field(default=None, ge=0, le=100_000_000)
+    special_additional: float | None = Field(default=None, ge=0, le=100_000)
     note: str | None = Field(default=None, max_length=2000)
 
 
