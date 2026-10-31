@@ -2,8 +2,9 @@
 
 字段约定：
 - name：模块目录名（唯一），财务域模块统一 finance_ 前缀，如 finance_hello；
-- prefix：HTTP 路由前缀，财务模块必须以 /api/finance/ 开头，调试类模块以 /api/debug/
-  开头（如 debug_center 的 /api/debug），挂载时 include_router(router, prefix=prefix)；
+- prefix：HTTP 路由前缀。财务模块以 /api/finance/ 开头；经营域（招商/营运/企划）
+  与职能域（法务/行政人事）模块以 /api/business/ 开头；调试类模块以 /api/debug/
+  开头（如 debug_center 的 /api/debug）。挂载时 include_router(router, prefix=prefix)；
 - tables：本模块创建的表名清单，统一 mod_ 前缀（与宿主既有表隔离，便于盘点）；
 - menu：前端菜单元数据 dict，含 group（分组名）/ icon（Element Plus 图标名）/ order（排序）；
 - agent_tools：模块贡献给 Agent 团队的工具 spec 列表，元素至少含
@@ -39,9 +40,14 @@ class ModuleManifest:
         errors: list[str] = []
         if not self.name:
             errors.append("name 不能为空")
-        if not (self.prefix.startswith("/api/finance/") or self.prefix == "/api/debug"
+        if not (self.prefix.startswith("/api/finance/")
+                or self.prefix.startswith("/api/business/")
+                or self.prefix == "/api/debug"
                 or self.prefix.startswith("/api/debug/")):
-            errors.append(f"prefix 必须以 /api/finance/ 或 /api/debug/ 开头，当前 {self.prefix!r}")
+            errors.append(
+                f"prefix 必须以 /api/finance/、/api/business/ 或 /api/debug/ 开头，"
+                f"当前 {self.prefix!r}"
+            )
         for table in self.tables:
             if not str(table).startswith("mod_"):
                 errors.append(f"表名 {table!r} 必须以 mod_ 开头")
