@@ -1,5 +1,6 @@
 <template>
   <div class="page" v-loading="loading">
+    <UsageHelp page="query" />
     <el-card shadow="never">
       <template #header>
         <div class="card-head">
@@ -36,6 +37,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
 import { toTableRows } from '../tableRows'
+import UsageHelp from '../UsageHelp.vue'
 
 const route = useRoute()
 const loading = ref(false)

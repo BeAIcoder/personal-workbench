@@ -97,7 +97,11 @@ async function submitUpload() {
     const fd = new FormData()
     fd.append('name', form.name)
     for (const f of form.files) fd.append('files', f)
-    await api.post('/finance/invoice/batches', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+    // 后端在请求内同步解析 ZIP/PDF，全局 10s 超时会误报失败并诱发重复批次
+    await api.post('/finance/invoice/batches', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
     ElMessage.success('批次已创建，解析完成')
     uploadDialog.value = false
     form.name = ''

@@ -610,3 +610,67 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 
 - 探测直连厂商 `/chat/completions`（openai 兼容）；anthropic 协议走 `/v1/messages`（effort→`output_config.effort`、budget→`thinking.budget_tokens`、off→`thinking{type:disabled}`），失败=200+error（不可达≠不支持，supports_thinking 保持 -1）；429 等 30s 退避重试至多 2 次
 - 模型级自定义配置：temperature（空=跟随）、note、supports_thinking/thinking_levels 手动覆盖；temperature 已接入 build_model 运行时（openai/anthropic 双协议）
+
+---
+
+## 经营/职能模块接口（2026-10-30 新增）
+
+> 统一约定：列表 `{total, items, page, page_size}`；创建 201；参数非法 400/422（中文）；不存在 404；唯一键/状态冲突 409；金额两位小数；日期 `YYYY-MM-DD`、月份 `YYYY-MM`；导出为 xlsx（`Content-Disposition` 含 ASCII 回退名 + RFC5987 中文名）。
+
+### 招商管理 `/api/business/leasing`
+
+| 端点 | 说明 |
+|---|---|
+| `GET /units/summary` | 铺位总数/总面积/空置面积/空置率/各状态数量/楼栋清单 |
+| `GET/POST /units` · `PUT/DELETE /units/{id}` | 铺位 CRUD（同楼栋+楼层+铺位号唯一，重复 409） |
+| `GET /funnel` | 线索漏斗：各阶段数量/需求面积/预算 + 转化率 |
+| `GET /leads/due` | 下次跟进日期 ≤ 今天且未签约/未流失的线索 |
+| `GET/POST /leads` · `PUT/DELETE /leads/{id}` | 线索 CRUD（删除级联跟进记录） |
+| `GET/POST /leads/{id}/followups` | 跟进记录（渠道：电话/微信/面谈/邮件/其他） |
+| `GET /export/units.xlsx` · `/export/leads.xlsx` | 导出 |
+
+### 营运管理 `/api/business/operations`
+
+| 端点 | 说明 |
+|---|---|
+| `GET /summary?period=` | 履约合同数/出租面积/应收/实收/收缴率/欠费/30 天到期/未结工单 |
+| `GET /contracts/expiring?days=30` | 到期合同 |
+| `GET/POST /contracts` · `PUT/DELETE /contracts/{id}` | 合同 CRUD（合同编号唯一，结束日不得早于开始日；删除级联账单） |
+| `POST /contracts/{id}/bills` | 按期间生成账单（同合同同期间唯一，重复 409） |
+| `GET /bills?period=&status=&contract_id=` | 账单列表（含租户/铺位/欠费） |
+| `POST /bills/{id}/payments` | 登记收款（累计；超应收 400；收清后状态 paid） |
+| `GET/POST /work-orders` · `PUT/DELETE /work-orders/{id}` | 工单 CRUD（类型 repair/complaint/inspection；状态 open/processing/done/closed） |
+| `GET /export/contracts.xlsx` · `/export/bills.xlsx` | 导出 |
+
+### 企划管理 `/api/business/planning`
+
+| 端点 | 说明 |
+|---|---|
+| `GET /summary?year=` | 年度预算/实际/差异/超支场次/进行中/已结束/平均 ROI |
+| `GET /campaigns/calendar?year=` | 年度日历（12 个月分组） |
+| `GET/POST /campaigns` · `PUT/DELETE /campaigns/{id}` | 活动 CRUD（预算明细 `[{item,budget,actual}]` 自动合计；指标 `{footfall_lift,sales_lift,roi,review}`） |
+| `GET/POST /vendors` · `PUT/DELETE /vendors/{id}` | 供应商 CRUD（服务类型 物料/美陈/演艺/投放/执行；评分 1-5） |
+| `GET /export/campaigns.xlsx?year=` | 导出 |
+
+### 法务管理 `/api/business/legal`
+
+| 端点 | 说明 |
+|---|---|
+| `GET /summary` | 待审/高风险/30 天到期合同/未结案件/7 天内开庭/未结标的额 |
+| `GET/POST /contracts` · `PUT/DELETE /contracts/{id}` | 合同审查 CRUD（状态 pending/reviewing/approved/rejected/archived；风险 low/medium/high） |
+| `GET/POST /cases` · `PUT/DELETE /cases/{id}` | 案件 CRUD（类型 litigation/arbitration/dispute；阶段 filed/hearing/judgment/appeal/closed） |
+| `GET/POST /seals` · `PUT/DELETE /seals/{id}` | 用印台账 CRUD（份数 ≥1） |
+| `GET /export/contracts.xlsx` · `/export/cases.xlsx` | 导出 |
+
+### 行政人事 `/api/business/hr`
+
+| 端点 | 说明 |
+|---|---|
+| `GET /summary?month=` | 在职/试用/离职/30 天到期/当月薪资人数与实发/个税/草稿数 |
+| `GET /employees/expiring?days=30` | 试用或合同到期员工 |
+| `GET/POST /employees` · `PUT/DELETE /employees/{id}` | 员工 CRUD（工号唯一；删除级联考勤/薪资） |
+| `GET /attendance?month=` · `PUT /attendance/{emp_id}/{month}` | 月度考勤查询/upsert（同员工同月唯一） |
+| `POST /payroll/generate` | 按月份生成薪资（`month/allowance/social_rate/housing_rate`；同月重复 409） |
+| `GET /payroll?month=` | 月度薪资列表（含应发/社保/公积金/个税/实发） |
+| `POST /payroll/{id}/confirm` · `DELETE /payroll/{id}` | 确认薪资（确认后不可删/不可重复确认）；删除仅草稿 |
+| `GET /export/employees.xlsx` · `/export/payroll.xlsx?month=` | 导出 |

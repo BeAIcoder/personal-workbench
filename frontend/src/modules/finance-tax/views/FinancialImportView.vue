@@ -71,7 +71,7 @@ function onRemove() {
 }
 
 function downloadTemplate(kind = '') {
-  window.open(`/api/finance/tax/financial-import/template${kind ? '/' + kind : ''}`, '_blank')
+  window.open(`${api.defaults.baseURL}/finance/tax/financial-import/template${kind ? '/' + kind : ''}`, '_blank')
 }
 
 async function doImport() {

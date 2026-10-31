@@ -99,3 +99,17 @@ describe('finance-board 失败快照日志查看（log_tail）', () => {
     expect(src).toMatch(/catch \{[\s\S]{0,80}items\.value = \[\]/)
   })
 })
+
+// iframe 高度跟随视口：固定 1200px 会造成「页面套小窗再内部滚动」
+describe('finance-board 嵌入页 iframe 高度', () => {
+  const src = readFileSync(
+    new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
+    'utf8',
+  )
+
+  it('board-frame 不再使用固定 1200px，改为跟随视口且有最小高度', () => {
+    expect(src).not.toContain('1200px')
+    expect(src).toContain('height: calc(100vh - 240px)')
+    expect(src).toContain('min-height: 560px')
+  })
+})

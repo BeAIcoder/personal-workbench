@@ -145,7 +145,7 @@ async function doExport() {
 }
 
 function download() {
-  window.open(`/api/finance/invoice/batches/${batch.value.id}/download`, '_blank')
+  window.open(`${api.defaults.baseURL}/finance/invoice/batches/${batch.value.id}/download`, '_blank')
 }
 
 onMounted(load)

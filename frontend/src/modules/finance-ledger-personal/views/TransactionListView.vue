@@ -127,7 +127,7 @@ function exportCsv() {
   if (filters.account_id) params.set('account_id', filters.account_id)
   if (filters.category_id) params.set('category_id', filters.category_id)
   if (filters.keyword) params.set('keyword', filters.keyword)
-  window.open(`/api/finance/ledger/personal/export/csv?${params.toString()}`, '_blank')
+  window.open(`${api.defaults.baseURL}/finance/ledger/personal/export/csv?${params.toString()}`, '_blank')
 }
 
 onMounted(async () => {

@@ -41,17 +41,18 @@
         </template>
 
         <h4>列映射（规范字段 → 实际列）</h4>
-        <el-select
+        <div
           v-for="f in mappingFieldList"
           :key="f"
-          v-model="form.mapping[f]"
-          size="small"
-          clearable
-          style="width: 100%; margin-bottom: 8px"
+          style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px"
         >
-          <template #prepend>{{ fieldLabels[f] || f }}</template>
-          <el-option v-for="c in preview.columns" :key="c" :label="c" :value="c" />
-        </el-select>
+          <span style="width: 110px; flex: none; font-size: 13px; color: #606266">
+            {{ fieldLabels[f] || f }}
+          </span>
+          <el-select v-model="form.mapping[f]" size="small" clearable style="flex: 1">
+            <el-option v-for="c in preview.columns" :key="c" :label="c" :value="c" />
+          </el-select>
+        </div>
 
         <h4>预览（前 {{ preview.preview_rows.length }} 行）</h4>
         <el-table :data="preview.preview_rows" size="small" border max-height="260">

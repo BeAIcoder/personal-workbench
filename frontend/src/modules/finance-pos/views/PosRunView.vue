@@ -137,7 +137,8 @@ async function execute(row, project = '') {
   try {
     const query = project && project.trim() ? `?project=${encodeURIComponent(project.trim())}` : ''
     const { data } = await api.post(`/finance/pos/runs/${row.id}/execute${query}`, {}, { timeout: 600000 })
-    ElMessage.success(data.status === 'ok' ? `执行完成，产物 ${data.artifacts.length} 个` : `执行失败：${data.error}`)
+    if (data.status === 'ok') ElMessage.success(`执行完成，产物 ${data.artifacts.length} 个`)
+    else ElMessage.error(`执行失败：${data.error || '未知原因'}`)
     await load()
   } catch (err) {
     // 引擎无法从辅助明细账自动识别项目（错误要求 --project）时，后端支持 project 参数
@@ -167,7 +168,7 @@ async function execute(row, project = '') {
 }
 
 function downloadZip(row) {
-  window.open(`/api/finance/pos/runs/${row.id}/download`, '_blank')
+  window.open(`${api.defaults.baseURL}/finance/pos/runs/${row.id}/download`, '_blank')
 }
 
 function showLog(row) {

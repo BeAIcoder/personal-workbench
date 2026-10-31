@@ -103,7 +103,7 @@ async function submit(row) {
 }
 
 function exportFile(id, kind) {
-  window.open(`/api/finance/tax/tax-returns/${id}/export/${kind}`, '_blank')
+  window.open(`${api.defaults.baseURL}/finance/tax/tax-returns/${id}/export/${kind}`, '_blank')
 }
 
 onMounted(async () => {

@@ -92,10 +92,9 @@
 
       <template v-if="result.preferential_policies?.length">
         <h4>适用税收优惠</h4>
-        <el-tag v-for="p in result.preferential_policies" :key="p.policy_number || p.title" type="success" style="margin: 0 8px 8px 0">
-          {{ p.title || p.policy_number }}
-        </el-tag>
-      </template>
+        <el-tag v-for="p in result.preferential_policies" :key="p.name || p.policy_basis" type="success" style="margin: 0 8px 8px 0">
+          {{ p.name || p.policy_basis }}<template v-if="p.amount_wan">（减免 ¥{{ p.amount_wan }} 万）</template>
+        </el-tag>      </template>
     </el-card>
   </div>
 </template>

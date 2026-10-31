@@ -82,7 +82,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 
 const taxItems = ref([])
@@ -141,6 +141,9 @@ function download(row) {
 }
 
 async function remove(row) {
+  try {
+    await ElMessageBox.confirm(`确认删除 ${row.period} 的印花税填报记录？删除后不可恢复。`, '删除确认', { type: 'warning' })
+  } catch { return }
   try {
     await api.delete(`/finance/stamp-duty/filings/${row.id}`)
     await loadList()

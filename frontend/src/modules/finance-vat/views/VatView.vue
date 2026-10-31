@@ -55,12 +55,29 @@
           <el-form-item label="进项税额" class="mt8" style="width: 260px">
             <el-input-number v-model="form.input_vat" :min="0" :controls="false" style="width: 100%" />
           </el-form-item>
+          <el-form-item label="进项转出" style="width: 260px">
+            <el-input-number v-model="form.input_transfer_out" :min="0" :controls="false" style="width: 100%" />
+          </el-form-item>
         </template>
         <template v-else>
-          <el-form-item label="季度销售额" style="width: 280px">
+          <el-form-item label="申报周期" style="width: 280px">
+            <el-radio-group v-model="form.filing_period">
+              <el-radio value="quarter">按季（30 万）</el-radio>
+              <el-radio value="month">按月（10 万）</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item :label="form.filing_period === 'month' ? '月度销售额' : '季度销售额'" style="width: 280px">
             <el-input-number v-model="form.sales_amount" :min="0" :controls="false" style="width: 100%" />
           </el-form-item>
-          <el-alert type="info" :closable="false" title="季度 ≤30 万免征；超 30 万全额按 1%（19号公告至 2027-12-31）。" />
+          <el-form-item label="征收率" style="width: 280px">
+            <el-select v-model="form.levy_rate">
+              <el-option :value="0.01" label="1%（3% 减按 1%）" />
+              <el-option :value="0.03" label="3%" />
+              <el-option :value="0.05" label="5%" />
+            </el-select>
+          </el-form-item>
+          <el-alert type="info" :closable="false"
+            :title="form.filing_period === 'month' ? '月度 ≤10 万免征；超 10 万全额按征收率计税。' : '季度 ≤30 万免征；超 30 万全额按征收率计税。'" />
         </template>
         <div class="mt8">
           <el-button type="primary" :loading="saving" @click="submit">计算并保存</el-button>
@@ -94,12 +111,13 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 
 const form = ref({
   period: '', taxpayer_type: 'general', taxpayer_name: '',
-  output_items: [], input_vat: 0, sales_amount: 0, levy_rate: 0.01,
+  output_items: [], input_vat: 0, input_transfer_out: 0,
+  sales_amount: 0, levy_rate: 0.01, filing_period: 'quarter',
 })
 const list = ref([])
 const saving = ref(false)
@@ -121,9 +139,15 @@ async function submit() {
   try {
     const { data } = await api.post('/finance/vat/filings', form.value)
     const c = data.calc_result
-    resultTitle.value = data.taxpayer_type === 'general'
-      ? `销项 ¥${c.output_vat} − 进项 ¥${c.input_vat} = 应纳税额 ¥${c.payable}`
-      : (c.exempt ? '季度销售额未超 30 万，免征' : `应纳税额 ¥${c.payable}`)
+    if (data.taxpayer_type === 'general') {
+      resultTitle.value = `销项 ¥${c.output_vat} − 进项 ¥${c.input_vat} + 转出 ¥${c.input_transfer_out || 0} = 应纳税额 ¥${c.payable}` +
+        (c.carryforward_vat ? `（期末留抵 ¥${c.carryforward_vat}）` : '')
+    } else {
+      const label = c.filing_period === 'month' ? '月度' : '季度'
+      resultTitle.value = c.exempt
+        ? `${label}销售额未超 ${c.exempt_threshold / 10000} 万，免征`
+        : `应纳税额 ¥${c.payable}`
+    }
     await loadList()
   } catch { /* 拦截器已提示 */ } finally {
     saving.value = false
@@ -142,6 +166,9 @@ function download(row) {
 }
 
 async function remove(row) {
+  try {
+    await ElMessageBox.confirm(`确认删除 ${row.period} 的增值税填报记录？删除后不可恢复。`, '删除确认', { type: 'warning' })
+  } catch { return }
   try {
     await api.delete(`/finance/vat/filings/${row.id}`)
     await loadList()

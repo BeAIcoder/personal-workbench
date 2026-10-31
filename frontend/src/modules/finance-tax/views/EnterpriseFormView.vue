@@ -71,9 +71,14 @@ async function load() {
 }
 
 async function submit() {
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
+  // 锁前移：双击/回车连打时，校验 await 窗口内不得再发第二次 POST（BUG-RACE-001）
+  if (submitting.value) return
   submitting.value = true
+  const valid = await formRef.value.validate().catch(() => false)
+  if (!valid) {
+    submitting.value = false
+    return
+  }
   try {
     if (isEdit.value) {
       await api.put(`/finance/tax/enterprises/${route.params.id}`, form)

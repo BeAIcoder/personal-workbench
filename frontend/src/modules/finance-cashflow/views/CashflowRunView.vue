@@ -164,7 +164,8 @@ async function execute(row) {
   runningId.value = row.id
   try {
     const { data } = await api.post(`/finance/cashflow/runs/${row.id}/execute`, {}, { timeout: 600000 })
-    ElMessage.success(data.status === 'ok' ? `执行完成，产物 ${data.artifacts.length} 个` : `执行失败：${data.error}`)
+    if (data.status === 'ok') ElMessage.success(`执行完成，产物 ${data.artifacts.length} 个`)
+    else ElMessage.error(`执行失败：${data.error || '未知原因'}`)
     await load()
   } catch {
     /* 拦截器已统一提示 */
@@ -175,7 +176,7 @@ async function execute(row) {
 }
 
 function downloadZip(row) {
-  window.open(`/api/finance/cashflow/runs/${row.id}/download`, '_blank')
+  window.open(`${api.defaults.baseURL}/finance/cashflow/runs/${row.id}/download`, '_blank')
 }
 
 function showLog(row) {

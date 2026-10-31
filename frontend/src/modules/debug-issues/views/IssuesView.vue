@@ -197,6 +197,7 @@ function openDialog(row) {
 }
 
 async function save() {
+  if (saving.value) return
   if (!form.title.trim()) {
     ElMessage.warning('请填写标题')
     return

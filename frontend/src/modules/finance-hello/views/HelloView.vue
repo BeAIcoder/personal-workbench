@@ -7,7 +7,7 @@
           <el-button size="small" @click="ping">重新自检</el-button>
         </div>
       </template>
-      <el-result v-if="failed" icon="error" title="模块接口不可达" sub-title="请确认后端服务已启动（默认 http://127.0.0.1:8000）" />
+      <el-result v-if="failed" icon="error" title="模块接口不可达" :sub-title="BACKEND_HINT" />
       <template v-else-if="pong">
         <el-descriptions :column="1" border>
           <el-descriptions-item label="模块名">{{ pong.module }}</el-descriptions-item>
@@ -24,7 +24,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import api from '../../../api'
+import api, { BACKEND_HINT } from '../../../api'
 
 const loading = ref(false)
 const failed = ref(false)

@@ -27,6 +27,16 @@
               <el-input v-model="row.name" />
             </template>
           </el-table-column>
+          <el-table-column label="工号/证件号" width="140">
+            <template #default="{ row }">
+              <el-input v-model="row.employee_id" placeholder="同名员工必填" />
+            </template>
+          </el-table-column>
+          <el-table-column label="任职起始月" width="110">
+            <template #default="{ row }">
+              <el-input-number v-model="row.employment_start_month" :min="1" :max="12" :controls="false" style="width: 100%" />
+            </template>
+          </el-table-column>
           <el-table-column label="工资" width="150">
             <template #default="{ row }">
               <el-input-number v-model="row.salary" :min="0" :controls="false" style="width: 100%" />
@@ -39,7 +49,7 @@
           </el-table-column>
           <el-table-column label="专项附加" width="150">
             <template #default="{ row }">
-              <el-input-number v-model="row.special_additional" :min="0" :controls="false" style="width: 100" />
+              <el-input-number v-model="row.special_additional" :min="0" :controls="false" style="width: 100%" />
             </template>
           </el-table-column>
           <el-table-column label="操作" width="80">
@@ -54,6 +64,7 @@
         </div>
       </el-form>
       <el-alert v-if="resultTitle" :title="resultTitle" type="success" :closable="false" class="mt8" />
+      <el-alert v-for="w in warnings" :key="w" :title="w" type="warning" :closable="false" class="mt8" />
     </el-card>
 
     <el-card shadow="never" class="mt8">
@@ -79,7 +90,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 
 const form = ref({
@@ -89,9 +100,13 @@ const form = ref({
 const list = ref([])
 const saving = ref(false)
 const resultTitle = ref('')
+const warnings = ref([])
 
 function addRow() {
-  form.value.rows.push({ month: 1, name: '', salary: 0, social_insurance: 0, special_additional: 0, other_deductions: 0 })
+  form.value.rows.push({
+    month: 1, name: '', employee_id: '', employment_start_month: 1,
+    salary: 0, social_insurance: 0, special_additional: 0, other_deductions: 0,
+  })
 }
 
 async function submit() {
@@ -102,6 +117,7 @@ async function submit() {
   saving.value = true
   try {
     const { data } = await api.post('/finance/iit/filings', form.value)
+    warnings.value = data.calc_result?.warnings || []
     const t = data.calc_result?.totals?.tax_withheld ?? 0
     resultTitle.value = `合计应预扣预缴 ¥${t.toLocaleString()}（按累计预扣法逐月模拟）`
     await loadList()
@@ -129,6 +145,9 @@ function download(row) {
 }
 
 async function remove(row) {
+  try {
+    await ElMessageBox.confirm(`确认删除 ${row.year} 年度个税填报记录？删除后不可恢复。`, '删除确认', { type: 'warning' })
+  } catch { return }
   try {
     await api.delete(`/finance/iit/filings/${row.id}`)
     await loadList()

@@ -4,7 +4,7 @@
       v-if="loadFailed"
       icon="error"
       title="工作台数据加载失败"
-      sub-title="请确认后端服务已启动（默认 http://127.0.0.1:8000）"
+      :sub-title="BACKEND_HINT"
     >
       <template #extra>
         <el-button type="primary" @click="load">重试</el-button>
@@ -137,7 +137,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import BaseChart from '../components/BaseChart.vue'
-import { dashboardApi } from '../api'
+import { dashboardApi, BACKEND_HINT } from '../api'
 import { fmtDT, isOverdue, priorityLabel, priorityTag } from '../utils/format'
 
 const router = useRouter()

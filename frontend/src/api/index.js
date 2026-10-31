@@ -4,6 +4,17 @@ import { ElMessage } from 'element-plus'
 // SSE（fetch）与 axios 共用同一个 baseURL 来源
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
+// 后端未启动的统一提示文案；apiBase 为绝对地址（http 开头）时替换括号里的默认地址
+export function buildBackendHint(apiBase = API_BASE) {
+  if (typeof apiBase === 'string' && apiBase.startsWith('http')) {
+    const origin = apiBase.replace(/\/api\/?$/, '')
+    return `请确认后端服务已启动（${origin}）`
+  }
+  return '请确认后端服务已启动（默认 http://127.0.0.1:8000）'
+}
+
+export const BACKEND_HINT = buildBackendHint()
+
 const api = axios.create({
   baseURL: API_BASE,
   timeout: 10000,
@@ -18,7 +29,7 @@ function toMessage(error) {
     return `${field ? field + '：' : ''}${first.msg}`
   }
   if (error?.code === 'ECONNABORTED') return '请求超时，请确认后端服务已启动'
-  return '网络异常，请确认后端服务已启动（默认 http://127.0.0.1:8000）'
+  return `网络异常，${BACKEND_HINT}`
 }
 
 api.interceptors.response.use(

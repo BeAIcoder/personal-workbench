@@ -66,7 +66,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 
 const form = ref({
@@ -114,6 +114,9 @@ function download(row) {
 }
 
 async function remove(row) {
+  try {
+    await ElMessageBox.confirm(`确认删除 ${row.year} 年度残保金填报记录？删除后不可恢复。`, '删除确认', { type: 'warning' })
+  } catch { return }
   try {
     await api.delete(`/finance/dsf/filings/${row.id}`)
     await loadList()

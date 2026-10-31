@@ -1,5 +1,6 @@
 <template>
   <div class="page" v-loading="loading">
+    <UsageHelp page="list" />
     <el-card shadow="never">
       <template #header>
         <div class="card-head">
@@ -60,6 +61,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import { takeFile } from '../../_shared/fileInput'
 import { toTableRows } from '../tableRows'
+import UsageHelp from '../UsageHelp.vue'
 
 const router = useRouter()
 const loading = ref(false)

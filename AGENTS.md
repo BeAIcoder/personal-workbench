@@ -47,6 +47,7 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 
 - git 提交经 clean/smudge 脱敏过滤器（本机路径/公司名/昵称 → 占位符）；反向恢复钥匙 `dev/sanitize-map.local.json` 不入库，丢失无法自动还原（机制见 `dev/SANITIZE.md`）。
 - 提交信息用中文 conventional commits（`fix(assistant): …` / `docs: …` / `test: …`）。
+- 本机路径/端口等环境相关默认值统一走 `backend/.env`（字段定义见 `backend/app/config.py`，完整变量清单与说明见 `backend/.env.example`），新增此类默认值前必须先加配置字段。
 - 测试：后端 `cd backend && PYTHONIOENCODING=utf-8 venv/Scripts/python.exe -m pytest tests -q`；前端 `cd frontend && npm test` + `npm run build`。
 - **脱敏数据管线**（外部验证数据准备）：生成 `python dev/desensitize_finance_data.py {bip|pos|cash}`，校验 `python dev/verify_desensitized.py`（需 `VERIFY_ATTACH_DIR` 指向会话附件目录）。产物在 `脱敏数据/`（gitignore）。规则：保勾稽随机数（凭证借=贷、明细账余额链、余额表配平）；泛化命名**避开 BIP 表头关键词**（账簿/科目/日期/凭证号/借方/贷方/期初/期末/本期/摘要），否则污染 `_locate_header_row`。
 - **分发包制作（ZIP 脱敏分发）**：双击 `打包发布.bat`（或 `python dev/package_release.py`，`--skip-smoke` 可跳冒烟）。管线：预检（git 必须干净/node+npm/映射表/venv）→ `git archive HEAD` 导出脱敏树（**禁用 clone/bundle**：过滤器 2026-10-13 才引入，更早历史未脱敏）→ 剔内部文档（AGENTS.md、dated 报告、`20261012New/`；保留 README/使用说明/算法/拓扑/spec/API 等）→ `backend/data` 空骨架 → staging 内 `npm ci + build`（脱敏源码构建，`node_modules` 删掉不进包）→ 三重扫描（映射表 13 条真实值反查 + 密钥正则 + 结构红线，失败即中止）→ ZIP 到 `backups/releases/`（gitignore）→ 解压冒烟（仓库 venv 起 uvicorn，`/` 与 `/docs` 200、新库生成）。产物 2.9MB 左右、顶层单目录、**收件人只需 Python 3.12+**：`启动工作台.bat` 见 `frontend/dist/index.html` 存在且无 Node 时直接用预构建产物。needs-build 判定是**内容哈希 vs `dist/.build-stamp.json`**（postbuild 写入），不用 mtime——zip 解包不保留时间戳，mtime 语义会让收件人每次启动误重建。
@@ -152,3 +153,35 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **走过的不成功弯路（勿重复）**：① `_run_step` 改系统 python——无效（拦进程树不拦镜像），已回滚；② pipeline 项目 `rpt_common.save_json` 原子写+重试——与本病无关（驱动层拦截重试也过不去），已回滚；③ 用 `*uvicorn app.main:app*` 筛进程停服务时**误杀了自己**（命令行文本含同样字符串），停服务必须按监听 PID 精确 taskkill 或排除自身树。
 - **文档**：`使用说明.md` §7.7 补计划任务通道说明与「触发计划任务失败」的恢复办法（`服务-安装.bat`）。
 - **另一条待办线索（未闭环）**：本机还有第三方软件每约 30 分钟在 `%TEMP%\ot_sweep_<哈希>\sweep.vbs` 跑 VBScript 并偶发「系统找不到指定的文件」弹窗（Windows VBScript 弃用告警同频出现）；与工作台无关，已挂只读监视器抓进程链，抓到后再定位处理。
+
+## 全量缺陷诊断 + 五个经营/职能模块（2026-10-30）
+
+- **诊断产物 `BUGfix.md`**：8 个只读审计域并行精读 + 关键结论人工复核，覆盖 `backend/app` 161 文件 / `frontend/src` 97 文件 / 129 测试文件 / dev 工具链 / 6 个 bat-vbs。共登记 **215 项**（P0 5 / P1 16 / P2 75 / P3 119），每条带 `文件:行` 证据、影响与最小修复建议；第 16 章澄清「像缺陷但属设计取舍」的 9 项，第 17 章给 6 个修复批次与验收口径。**已知 5 个 P0 全部落在既有测试盲区**（其中 FIL-01 是测试反向锁定错值）。
+- **本轮已修（详见 `BUGfix.md` §0.5）**：TAX-01 落库税率改引擎口径（删 5%/10% 自造阶梯 + 接政策年度）、TAX-02 小微判定接 criteria（300 万/300 人/5000 万/限制行业）、TAX-03 第 5 行重复相加、TAX-06 进项转出符号、TAX-15/FE-01 企业档案四字段落库、FIL-01 残保金 <1% 改按 90% 缴纳（同步改 2 条固化错值的测试）、FIL-02 个税累计预扣改累计数相减、BIP-01 凭证键加期间、TL-01/TL-02 分发包剔除 `dev/`+两个 `tests/` 并按 GBK 回退扫描 + 真实名称反查（`dev/pii_terms.py` 从 `dev/pii-terms.local.txt`（gitignore）/映射表/环境变量加载，真实值不入库）。**新增测试 `backend/tests/test_bugfix_p0_20261030.py`（12 例）+ BIP 多月同号回归 1 例。**
+- **模块命名空间扩展**：`app/modules/spec.py` 允许 `/api/business/` 前缀（经营/职能模块），`/api/other/` 仍拒绝；`_template` 注释同步。**新增业务模块一律用 `/api/business/<domain>`，不要再塞进 `/api/finance/`。**
+- **五个新模块（后端 `app/modules/business_*` + 前端 `src/modules/business-*`，各自 manifest 自动挂载）**：
+  | 模块 | 前缀 | 表 | 菜单 | 核心能力 |
+  |---|---|---|---|---|
+  | `business_leasing` 招商管理 | `/api/business/leasing` | `mod_leasing_unit/lead/followup` | 经营 71 | 铺位台账/空置率、线索漏斗、跟进记录、到期跟进、铺位/线索导出 |
+  | `business_operations` 营运管理 | `/api/business/operations` | `mod_ops_contract/bill/work_order` | 经营 72 | 合同台账与到期、按期间生成账单、登记收款（累计改状态/超收拒绝）、收缴率看板、报修投诉工单 |
+  | `business_planning` 企划管理 | `/api/business/planning` | `mod_plan_campaign/vendor` | 经营 73 | 活动台账、预算明细（预算/实际/超支）、年度日历、ROI 复盘、供应商台账 |
+  | `business_legal` 法务管理 | `/api/business/legal` | `mod_legal_contract_review/case/seal` | 职能 81 | 合同审查（状态/风险/到期）、案件阶段与开庭提醒、用印台账、风险看板 |
+  | `business_hr` 行政人事 | `/api/business/hr` | `mod_hr_employee/attendance/payroll` | 职能 82 | 花名册与试用/合同到期、月度考勤、薪资核算（累计预扣个税/社保公积金参数可调）、薪资表导出 |
+- **每个模块的工程约定**：金额 `Decimal(ROUND_HALF_UP)` 两位；日期 `YYYY-MM-DD`、期间 `YYYY-MM` 严格校验；状态用 `Literal` + 服务层白名单双保险；删除有级联（合同→账单、线索→跟进、员工→考勤/薪资）；导出 xlsx 对 `= + - @` 前缀加 `'` 防公式注入；每模块 1 个只读 Agent 工具（`leasing_summary`/`ops_summary`/`planning_summary`/`legal_summary`/`hr_summary`），并**预置到对口内置专家**（`leasing`→招商专员、`operations`→运营专员、`planning`→企划策划、`legal`/`hr`→商业地产管家），启动时幂等并入专家白名单；测试全部用临时 SQLite + 合成数据，不写真实 `backend/data`。
+- **五模块后端测试 28 例全绿**（leasing 4 / operations 9 / planning 5 / legal 5 / hr 5），覆盖 CRUD 往返、重复 409、状态枚举 422、超收 400、账单重复生成 409、薪资累计预扣跨月、导出 xlsx 魔数；前端新增 `tests/business-modules.test.js`（3 例，路由/菜单/唯一性）。
+- **本轮回归**：后端全量 **1281 passed（594.72s）**；收尾改动（AGT-01 一行 + 五模块专家工具预置）另跑聚焦 **94 passed**；前端 **51 文件 820 项**全绿；`npm run build` 通过（9.76s，五个新视图已打进独立 chunk）。后端全量日志 `backend/.pytest_tmp/full-20261030-bugfix.log`。
+- **文档**：新增 `新增业务模块需求与设计.md`（岗位痛点→需求→数据模型→API→页面→财务联动→非目标→验收）；`BUGfix.md` 为诊断台账。`使用说明.md` 补「经营/职能菜单」操作入口，`README.md`/`功能模块拓扑图.md` 的模块数需在下一轮文档追平时同步（当前实现 16 个后端模块 + 5 个新业务模块）。
+
+### 第二轮：剩余 P1 + 真实申报数据对拍（2026-10-30 下午）
+
+- **真实数据源**：`D:\2022.5.24起财务工作存档\BaiduSyncdisk\11.税务申报附件`（只读）。仓库只保留数字与口径，不含公司名/税号/人名；对拍脚本不落盘真实文件。
+- **对拍结论（全部通过）**：
+  - 印花税 2026Q3：6 税目逐项一致，合计 **7,543.49**；顺带修复「买卖合同」不带括号无法命中税目表（`get_rate` 去括号归一）。
+  - 增值税 2026-09：销项 224,842.61 / 应纳 197,363.24，本系统差 **0.04 元**（申报表按发票逐张取整 vs 按税目汇总取整，测试按 ±0.10 容差锁定）；附加税 13,815.43 / 5,920.90 / 3,947.26 完全一致。
+  - 企业所得税 2025 A106000：2019 年亏损 415.06 万距 2025 已 6 年、申报表未使用；本系统修复后同样标记过期，2025 用 2020 年 101.15 万、2026 用 2021 年 257.95 万，结转明细一致。
+  - 残保金 2026 测算表：23 人 / 2,631,736.68 / 0 残疾 / 社平 87,156 → 差额 0.345→0.35、优惠前 40,048.17、30 人以下免征，逐项一致。
+- **第二轮修复（详见 `BUGfix.md` §0.6）**：FIL-03 社平 2 倍封顶、TAX-07 亏损 5/10 年期限、TAX-08 小微按弥补后所得、VAT 征收率白名单/月季门槛/留抵/免征政策、四填报分页与期间校验；POS/现金流执行互斥 + 2h 陈旧 running 自动失败；看板改读 `run.lock` 判运行中；技能包原子安装；启动迁移明文 Key；测试请求禁止跟随重定向；`ALLOW_NON_LOOPBACK` 非回环绑定守卫；备份新增整包 ZIP + `restore_backup.py`；日程/任务显式 null → 422；发票冲红金额不可解析不误配 + 批次删除接口；`requirements.txt` 补 PyYAML/python-multipart；发票上传 120s 超时。
+- **备份/恢复新口径**：`备份数据.bat` 仍调用 `backend/scripts/backup_db.py`，现在同时产出 `workbench_*.db` 与 `workbench_data_*.zip`（数据库 + uploads/finance/skills/expert-packs/debug + 根 JSON，各留 30 份）。恢复用 `python backend/scripts/restore_backup.py <zip> [--force]`，覆盖前自动留 `.before_restore_*`，并拒绝 zip-slip。
+- **新增测试**：`test_tax_real_case_regression.py`（7 例真实数字）、`test_bugfix_p1_20261030.py`（5 例：null 422、冲红、非回环、备份恢复）。**第二轮全量回归**：1290 passed / 5 failed（607.96s）；5 个失败均为本轮改动的测试接缝/文案断言（日程 null 中文文案、图片探测 patch 点），修复后复跑相关套件 87 + 41 全绿；前端 51 文件 820 passed + 构建通过。
+- **仍未做**：原报告 P2/P3（前端响应式/键盘可达、CORE-13～17 调度器细节、TAX-10～14 等）按 `BUGfix.md` 第 17 章排期；第二轮列出的 AGT-02/FIL-08/09/FE-03/04/06/10/TL-04/TL-11/12/13 已在第三轮关闭。
+- **第三轮（清空剩余清单）**：AGT-02 同会话运行锁（chat 409 / SSE error，删除会话清锁）；FIL-08 个税按 `employee_id` 分组、FIL-09 任职起始月与缺月 warning（减除费用按任职月份数，不再按提交行数）；TL-04 同步脚本 `seal/unseal`；FE-03 七处下载 URL 统一 `api.defaults.baseURL`；FE-04 列映射标签修复；FE-06 四填报删除确认；FE-10 提交锁前移；TL-11 conftest 对 client 用例统一 drop/create（含 7 个自覆写文件）；TL-12 uploads/skills/expert-packs 重定向临时目录；TL-13 `WORKBENCH_ENV_FILE=""` 禁用真实 .env；TL-01 新增 `test_release_scan.py`（剔除 dev/tests、GBK bat 扫描、PII 硬失败）。**测试**：新增 AGT-02 1 例、个税 3 例、打包扫描 3 例；**后端全量 1302 passed（723.07s）**、前端 51 文件 820 passed、构建通过（日志 `backend/.pytest_tmp/full-20261030-final.log`）。

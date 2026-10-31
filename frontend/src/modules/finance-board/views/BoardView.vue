@@ -58,7 +58,7 @@ const selected = ref(null)
 const logDialog = ref(false)
 const logContent = ref('')
 
-const htmlUrl = computed(() => (selected.value ? `/api/finance/board/snapshots/${selected.value}/html` : ''))
+const htmlUrl = computed(() => (selected.value ? `${api.defaults.baseURL}/finance/board/snapshots/${selected.value}/html` : ''))
 
 function loadHtml() { /* htmlUrl 计算属性自动刷新 iframe */ }
 
@@ -112,7 +112,9 @@ onMounted(load)
 
 .board-frame {
   width: 100%;
-  height: 1200px;
+  /* 跟随视口高度，避免页面套小窗再内部滚动 */
+  height: calc(100vh - 240px);
+  min-height: 560px;
   border: 1px solid #ebeef5;
   border-radius: 4px;
 }
