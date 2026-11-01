@@ -10,5 +10,5 @@ export default {
       meta: { title: '报表看板' },
     },
   ],
-  menu: { group: '财务', title: '报表看板', icon: 'DataBoard', path: '/finance/board', order: 70 },
+  menu: { group: '财务', subgroup: '报表分析', title: '报表看板', icon: 'DataBoard', path: '/finance/board', order: 70 },
 }

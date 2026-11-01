@@ -369,7 +369,7 @@ onMounted(() => {
 }
 
 .page-sub {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 2px;
 }
@@ -384,11 +384,11 @@ onMounted(() => {
 }
 
 .text-muted {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .form-hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.4;
 }

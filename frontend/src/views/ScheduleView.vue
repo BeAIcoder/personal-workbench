@@ -369,7 +369,7 @@ watch(currentDate, (nv, ov) => {
 
 .month-limit-hint {
   margin-top: 8px;
-  color: #e6a23c;
+  color: var(--el-color-warning);
   font-size: 12px;
   text-align: center;
 }
@@ -379,7 +379,7 @@ watch(currentDate, (nv, ov) => {
 }
 
 .cal-day.today {
-  color: #409eff;
+  color: var(--el-color-primary);
   font-weight: 700;
 }
 
@@ -399,7 +399,7 @@ watch(currentDate, (nv, ov) => {
 
 .more {
   font-size: 10px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .day-header {
@@ -436,13 +436,13 @@ watch(currentDate, (nv, ov) => {
   align-items: center;
   gap: 10px;
   padding: 10px 6px;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
   cursor: pointer;
   border-radius: 6px;
 }
 
 .event-item:hover {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
 }
 
 .event-item:last-child {
@@ -466,7 +466,7 @@ watch(currentDate, (nv, ov) => {
 }
 
 .event-meta {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 2px;
 }

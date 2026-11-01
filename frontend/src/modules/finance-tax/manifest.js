@@ -64,5 +64,5 @@ export default {
       meta: { title: '企业所得税·教材参考' },
     },
   ],
-  menu: { group: '财务', title: '企业所得税', icon: 'OfficeBuilding', path: '/finance/tax', order: 60 },
+  menu: { group: '财务', subgroup: '税务填报', title: '企业所得税', icon: 'OfficeBuilding', path: '/finance/tax', order: 60 },
 }

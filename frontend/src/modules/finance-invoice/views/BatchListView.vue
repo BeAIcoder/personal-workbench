@@ -9,6 +9,7 @@
               解析引擎不可用
             </el-tag>
             <el-button size="small" type="primary" @click="uploadDialog = true">上传发票</el-button>
+            <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
       </template>
@@ -54,11 +55,12 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
 import { takeFiles } from '../../_shared/fileInput'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -68,6 +70,8 @@ const engineStatus = ref(null)
 const uploadDialog = ref(false)
 const submitting = ref(false)
 const form = reactive({ name: '', files: [] })
+
+const aiPrompt = computed(() => '请分析发票批次列表：跨批次重复发票、冲红配对情况与金额异常')
 
 const STATUS_TEXT = { uploaded: '待解析', parsed: '已解析', exported: '已导出', failed: '失败' }
 const STATUS_TYPE = { uploaded: 'info', parsed: 'success', exported: 'primary', failed: 'danger' }
@@ -128,14 +132,8 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 </style>

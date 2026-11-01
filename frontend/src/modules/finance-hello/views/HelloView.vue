@@ -51,15 +51,9 @@ onMounted(ping)
   max-width: 720px;
 }
 
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .hint {
   margin: 16px 0 0;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 </style>

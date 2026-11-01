@@ -28,6 +28,7 @@
               @change="load"
             />
             <el-button type="primary" :loading="loading" @click="load">刷新</el-button>
+            <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
       </el-card>
@@ -98,6 +99,9 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import dayjs from 'dayjs'
 import { gmApi } from '../../../api'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+
+const aiPrompt = computed(() => `请解读 ${period.value || '当月'} 的总经理经营聚合：各域可用指标、数据缺口原因与经营提醒`)
 
 const DOMAIN_DEFINITIONS = [
   { key: 'leasing', label: '招商' },
@@ -214,7 +218,7 @@ onMounted(load)
 
 .page-head p {
   margin: 0;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
@@ -224,7 +228,7 @@ onMounted(load)
 }
 
 .period-control label {
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 14px;
 }
 
@@ -234,7 +238,7 @@ onMounted(load)
 
 .metric-item {
   padding: 12px 0;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
 .metric-item:last-child {
@@ -246,14 +250,14 @@ onMounted(load)
 }
 
 .null-value {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .metric-method,
 .gap-reason,
 .empty-metrics {
   margin-top: 6px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -265,7 +269,7 @@ onMounted(load)
 
 .gap-reason,
 .gap-list {
-  color: #b88230;
+  color: var(--el-color-warning-dark-2);
 }
 
 .gap-list {

@@ -4,10 +4,13 @@
       <template #header>
         <div class="card-head">
           <span>统计</span>
-          <el-radio-group v-model="months" size="small" @change="load">
-            <el-radio-button :value="6">近 6 月</el-radio-button>
-            <el-radio-button :value="12">近 12 月</el-radio-button>
-          </el-radio-group>
+          <div class="toolbar">
+            <el-radio-group v-model="months" size="small" @change="load">
+              <el-radio-button :value="6">近 6 月</el-radio-button>
+              <el-radio-button :value="12">近 12 月</el-radio-button>
+            </el-radio-group>
+            <AskAiButton :prompt="aiPrompt" />
+          </div>
         </div>
       </template>
 
@@ -46,6 +49,7 @@ import * as echarts from 'echarts'
 import api from '../../../api'
 import { localMonth } from '../../_shared/dates'
 import { expenseCategories, formatPercent } from '../utils'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 // 金额统一安全格式化：后端字段可能为 null/undefined（未回填、导入失败行），
 // 直接 toFixed 会抛错导致整页渲染崩溃，统一显示「—」占位
@@ -60,6 +64,8 @@ const months = ref(6)
 const stats = reactive({ month: '', income: 0, expense: 0, balance: 0, by_category: [] })
 // 支出构成表/饼图只含支出分类（后端同时返回收入分类）
 const expenseStats = computed(() => expenseCategories(stats.by_category))
+
+const aiPrompt = computed(() => '请分析个人记账统计页当前筛选的收支结构、环比变化与可优化项')
 const trendChart = ref(null)
 const pieChart = ref(null)
 let trendInst = null
@@ -115,22 +121,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .summary {
   margin-top: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .income {
-  color: #67c23a;
+  color: var(--el-color-success);
 }
 
 .expense {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 </style>

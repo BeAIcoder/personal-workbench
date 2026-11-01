@@ -52,7 +52,9 @@
       <el-col :span="6" v-for="card in cards" :key="card.label">
         <el-card shadow="hover" class="stat-card" @click="$router.push(card.to)">
           <div class="stat-inner">
-            <div class="stat-icon" :style="{ background: card.bg }">{{ card.icon }}</div>
+            <div class="stat-icon" :style="{ background: card.bg, color: card.fg }">
+              <el-icon :size="24"><component :is="card.icon" /></el-icon>
+            </div>
             <div>
               <div class="stat-num">{{ card.value }}</div>
               <div class="stat-label">{{ card.label }}</div>
@@ -87,7 +89,7 @@
         <el-card shadow="never" class="list-card">
           <template #header>
             <div class="card-head">
-              <span>⏰ 即将到期任务</span>
+              <span class="card-title"><el-icon><AlarmClock /></el-icon>即将到期任务</span>
               <el-link type="primary" :underline="false" @click="$router.push('/tasks?sort=due_asc')">查看全部</el-link>
             </div>
           </template>
@@ -111,7 +113,7 @@
         <el-card shadow="never" class="list-card">
           <template #header>
             <div class="card-head">
-              <span>📅 今日日程</span>
+              <span class="card-title"><el-icon><Calendar /></el-icon>今日日程</span>
               <el-link type="primary" :underline="false" @click="$router.push('/schedules')">查看全部</el-link>
             </div>
           </template>
@@ -136,7 +138,7 @@
         <el-card shadow="never" class="list-card">
           <template #header>
             <div class="card-head">
-              <span>📝 最近笔记</span>
+              <span class="card-title"><el-icon><Notebook /></el-icon>最近笔记</span>
               <el-link type="primary" :underline="false" @click="$router.push('/notes')">查看全部</el-link>
             </div>
           </template>
@@ -189,10 +191,10 @@ const greeting = computed(() => {
 const cards = computed(() => {
   const t = data.value || {}
   return [
-    { label: '待办任务', value: t.task?.todo ?? '-', icon: '📌', bg: '#ecf5ff', to: '/tasks?status=todo' },
-    { label: '进行中任务', value: t.task?.in_progress ?? '-', icon: '🚀', bg: '#fdf6ec', to: '/tasks?status=in_progress' },
-    { label: '已逾期任务', value: t.task?.overdue ?? '-', icon: '⚠️', bg: '#fef0f0', to: '/tasks?overdue=true' },
-    { label: '今日日程', value: t.schedule?.today_count ?? '-', icon: '📅', bg: '#f0f9eb', to: '/schedules' },
+    { label: '待办任务', value: t.task?.todo ?? '-', icon: 'Tickets', fg: 'var(--el-color-primary)', bg: 'var(--el-color-primary-light-9)', to: '/tasks?status=todo' },
+    { label: '进行中任务', value: t.task?.in_progress ?? '-', icon: 'Clock', fg: 'var(--el-color-warning)', bg: 'var(--el-color-warning-light-9)', to: '/tasks?status=in_progress' },
+    { label: '已逾期任务', value: t.task?.overdue ?? '-', icon: 'Warning', fg: 'var(--el-color-danger)', bg: 'var(--el-color-danger-light-9)', to: '/tasks?overdue=true' },
+    { label: '今日日程', value: t.schedule?.today_count ?? '-', icon: 'Calendar', fg: 'var(--el-color-success)', bg: 'var(--el-color-success-light-9)', to: '/schedules' },
   ]
 })
 
@@ -202,7 +204,7 @@ const pieOption = computed(() => {
   return {
     tooltip: { trigger: 'item' },
     legend: { bottom: 0 },
-    color: ['#909399', '#e6a23c', '#67c23a'],
+    color: ['#86909c', '#d97706', '#16a34a'],
     series: [
       {
         type: 'pie',
@@ -231,7 +233,7 @@ const barOption = computed(() => {
       {
         type: 'bar',
         barWidth: '45%',
-        itemStyle: { color: '#409eff', borderRadius: [4, 4, 0, 0] },
+        itemStyle: { color: '#3b5bdb', borderRadius: [4, 4, 0, 0] },
         data: trend.map((x) => x.count),
       },
     ],
@@ -308,7 +310,7 @@ function aiBrief() {
 
 .today-sub {
   margin: 0;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
@@ -318,8 +320,8 @@ function aiBrief() {
 
 .gm-reminder {
   padding: 8px 12px;
-  color: #b88230;
-  background: #fdf6ec;
+  color: var(--el-color-warning-dark-2);
+  background: var(--el-color-warning-light-9);
   border-radius: 4px;
   line-height: 1.5;
 }
@@ -329,7 +331,7 @@ function aiBrief() {
 }
 
 .gm-empty {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
@@ -360,7 +362,7 @@ function aiBrief() {
 }
 
 .stat-label {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
@@ -372,14 +374,14 @@ function aiBrief() {
   margin-top: 16px;
 }
 
-.card-head {
-  display: flex;
+.card-title {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
 }
 
 .rate {
-  color: #67c23a;
+  color: var(--el-color-success);
   font-size: 13px;
   font-weight: 600;
 }
@@ -393,7 +395,7 @@ function aiBrief() {
   align-items: center;
   gap: 8px;
   padding: 9px 4px;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
 }
 
 .mini-item:last-child {
@@ -405,7 +407,7 @@ function aiBrief() {
 }
 
 .mini-item.clickable:hover {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
 }
 
 .mini-title {
@@ -416,14 +418,14 @@ function aiBrief() {
 }
 
 .mini-time {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   white-space: nowrap;
 }
 
 .mini-more {
   margin-top: 8px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.5;
 }

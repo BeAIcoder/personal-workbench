@@ -7,6 +7,7 @@
           <div>
             <el-button size="small" @click="loadAll">刷新</el-button>
             <el-button size="small" @click="exportFile('employees.xlsx')">导出花名册</el-button>
+            <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
       </template>
@@ -141,9 +142,12 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+
+const aiPrompt = computed(() => '请分析人事台账：花名册与试用期/合同到期分布、考勤完整性、薪资核算口径与个税累计预扣的一致性')
 
 const loading = ref(false)
 const saving = ref(false)
@@ -330,15 +334,7 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
-.page { padding: 0; }
-.card-head { display: flex; align-items: center; justify-content: space-between; }
 .kpi { margin-bottom: 8px; }
-.kpi-box { background: #f5f7fa; border-radius: 6px; padding: 10px 12px; }
-.kpi-label { font-size: 12px; color: #909399; }
-.kpi-value { font-size: 20px; font-weight: 600; color: #303133; margin-top: 4px; }
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
-.mt8 { margin-top: 8px; }
-.mb8 { margin-bottom: 8px; }
-.muted { font-size: 12px; color: #909399; }
+.muted { font-size: 12px; color: var(--el-text-color-secondary); }
 .expire-item { margin-right: 12px; }
 </style>

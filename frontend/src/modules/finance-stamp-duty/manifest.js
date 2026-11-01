@@ -10,5 +10,5 @@ export default {
       meta: { title: '印花税填报' },
     },
   ],
-  menu: { group: '财务', title: '印花税填报', icon: 'Stamp', path: '/finance/stamp-duty', order: 81 },
+  menu: { group: '财务', subgroup: '税务填报', title: '印花税填报', icon: 'Stamp', path: '/finance/stamp-duty', order: 81 },
 }

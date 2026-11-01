@@ -265,13 +265,13 @@ onMounted(() => {
 }
 
 .stats {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
 }
 
 .hit {
   padding: 10px 12px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
 .hit-head {
@@ -283,17 +283,17 @@ onMounted(() => {
 
 .hit-title {
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   text-decoration: none;
 }
 
 .hit-title:hover {
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .hit-snippet {
   margin-top: 4px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 13px;
   line-height: 1.6;
 }

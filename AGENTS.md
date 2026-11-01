@@ -2,6 +2,21 @@
 
 > 本文件是项目级长期记忆：跨会话保持的状态、约定与待办。Hub 级记忆（脱敏钥匙等）见 Agent Hub，不在此重复。
 
+## AI 打通与数据清洗强化（2026-11-01）
+
+- **OpenCode Go 更新替换**：预设 `opencode_go` 模型目录按官方 Go 文档刷新（26 模型，区域/隐私受限模型不收录）；`dev/import_opencode_go.py` 把真实库供应商 id=2 从旧端点（`https://opencode.ai/zen/go`，anthropic）替换为现行端点（`https://opencode.ai/inference/go/openai/v1`，openai 协议，preset_key/models_url/usage_scope=plan_api_allowed），启用后目录兜底同步 31 模型并激活 **glm-5.3-flash**。**遗留：库中 Key 对新端点 401，需在 AI 助手→设置→供应商→OpenCode Go 粘贴新 Key**；在线同步会自动从 401 兜底到官方目录，不假成功。
+- **新模块 business_dq（数据质量巡检，第 23 个模块）**：`/api/business/dq/summary`（七域×五维，全字面量 SQL 只读对账、零新表；表缺失→available=false+中文 gap_reasons；score=100-Σ扣分，error 10/warning 3/info 1）。`dq_summary` 只读工具预置 realestate/cre_gm。**路由 as_of 必须用 `Query(default=None, pattern=...)`——default="" 会撞 pattern 直接 422**。
+- **财务域 AI 工具补齐**：finance_tax `tax_returns_summary` / finance_pos `pos_summary` / finance_cashflow `cashflow_summary` 三个只读工具预置 finance_specialist；`module_tool_preset.py` FINANCE_TOOL_NAMES 同步（dq_summary 属业务专家，不在该清单）。manifest 校验失败会**静默跳过模块并级联跳过 requires 依赖模块**——本轮 params 字段被噪声吃掉导致 4 个税种模块消失，靠聚焦测试抓回。
+- **前端 AI 入口全覆盖**：`utils/assistantEntry.js` + `components/assistant/AskAiButton.vue`；**15 个模块视图接线**（业务 7 + 财务 8，每视图 3 处：模板按钮/import+aiPrompt）；新视图 DqView（总分/七域卡/issues 表）。Vue 视图加代码时**不能把既有 ref 声明夹删**（PlanningView loading 曾被删，vitest 抓回）。
+- **验证**：后端聚焦 29 passed + 全量回归（见下）；前端 **59 文件 885 passed** + 构建通过（stamp `5a4a8d99af0d`）；运行态：服务重启后 dq summary 200（含缺省）、专家白名单含新工具、OpenCode Go 运行态生效。真实 `backend/data` 仅供应商配置写入（预备份 `workbench_20261101_222929.db`+ZIP）。
+
+## 财务菜单层级重组（2026-11-01）
+
+- 「财务」侧栏组由 14 项扁平改为**直挂数据仓 + 4 个二级折叠子分组**（账务处理=费用/发票/POS、记账=个人/BIP、税务填报=企所税/印花/增值/个税/残保金、报表分析=看板/现金流）。机制：manifest `menu.subgroup`（可选）+ `src/modules/index.js` 新增 `getModuleMenuGroups()`（纯聚合，`getModuleMenus` 未动）+ AppLayout 动态段嵌套 `el-sub-menu` 渲染 + `defaultOpeneds`（setup 一次性按初始 route 反查父级 index，保证深链/刷新自动展开；不做成响应式以免覆盖用户手动折叠）。
+- **模块示例（finance-hello）不进侧栏**：manifest `menu: null`（注册中心按无菜单过滤），路由保留可直达 `/#/finance/hello`，代码保留作新模块开发样板。
+- 测试：新建 `tests/menu-groups.test.js`（3 例锁分组结构）+ `modules.test.js` hello 断言反向；全量前端 **58 文件 874 passed**、构建通过（stamp `5b0a5f83fd59`）。浏览器实测（真实服务重启后）：深链 `/finance/stamp-duty` 父级自动展开且激活项高亮、菜单树完整、`/finance/hello` 直达正常、0 console errors。
+- **本轮教训（再次印证）**：长文件 Write/Edit 高频混入占位噪声（本轮自纠 6 处：`filingError'增值税填报'`、`每报表看板`、`falsiness`、`B长期`、`AIConfiguration` 等）——**写后必须立即重读该区段或跑聚焦测试**，噪声 grep（filingError|占位|manifests_源）可作快速自检。
+
 ## 2026-10-30 五部分工作轮（实测/政策/四填报/WorkBuddy/知识记忆）
 
 - **Part A 实测**：八项现有功能（数据仓/费用/发票/个人记账/BIP/企业所得税/现金流 + MCP/技能/专家团/知识记忆）以脱敏数据隔离实测 **31/31 全绿**（API+浏览器 0 console errors），现金流引擎 0.81–0.85s；发票**跨批次重复识别**与 BIP **幂等导入**为正确设计。证据 `backend/.pytest_tmp/verify-20261030-features/`。
@@ -227,3 +242,11 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
     - 前端：OperationsView 合同弹窗「关联铺位」下拉（读招商铺位，招商不可用退化为手填）+ HrView 员工表单「专项附加扣除(元/月)」。
   - **Mimosa 深度扫描（deep，首次完整完成）**：6 findings 全部定性——`package_release.py` 路径/SSRF 3 处为冒烟固定 `127.0.0.1:{free_port}` 误报；`20261012New/scripts/migrate_tax_data.py` SQL f-string 2 处为历史存档（输入是模块常量，按约定不改历史）；`desensitize_finance_data.py` 固定种子 RNG 为保勾稽设计使然（已加注释）。seal `af19d4d6…`，报告在 `~/.mimosa/security-scans/project-3640d8ab…/scan-2026-10-31T14-03-36…/`。
 - **验证（第 3 批）**：后端全量 **1462 passed（794.44s）**、前端 **57 文件 871 passed**、构建通过（stamp `7cd63a736357`）。新增测试 13 例：`test_restore_hardening_20261031.py`（5）+ `test_cross_module_reconciliation_20261031.py`（8）。
+
+## 数据收传使用说明 + 导入模板库（2026-11-01）
+
+- **交付**：根目录《数据收传使用说明.md》（总览表/通用限制/数据仓/费用/POS/现金流/发票/BIP/个人记账/五税种字段表/六业务模块字段表/看板/报错速查/模板清单）+ **`数据模板/` 10 份可直接上传的导入模板**（数据仓 csv+xlsx、个人记账 csv、费用银行明细账〔与现金流共用〕、POS 认领记录/辅助明细账/凭证列表〔文件名已含引擎关键词，填完别改名〕、BIP 凭证列表/辅助明细账/辅助余额表**三份独立文件**——BIP 预览为整文件识别单一类型，三合一会识别混乱）。
+- **格式依据**：三个并行子代理精读解析代码 + 脱敏数据样本实测表头；关键修正——费用引擎会把「日期→凭证日期」归一（引擎 expense_classification.py:250），模板沿用用友真实表头形态；POS 引擎按文件名关键词找文件，模板名即钥匙；现金流六类文件按关键词自动发现（明细账/当期模板/上月上报版必需，其余可选）。
+- **验证**：新增 `backend/tests/test_data_templates.py`（5 passed：数据仓 csv/xlsx 入仓各 2 行、BIP 三类型识别 voucher/aux/balance、个人记账导入 2 行、费用表头定位命中）。模板无 PII，随 git archive 进分发包；分发包剔除 tests 后测试有 skipif 守卫。脱敏数据/ 仍为 gitignore 样本，不入库。
+- **本轮故障模式（新变体）**：本会话 Write/Edit **中长内容**高频被注入「占位噪声」（连 Bash python -c 内联脚本也约 50% 中招），短片段+写后立即 `grep 占位噪声` + 定向 Edit 修复可行；长 Write 必须回读校验，模板生成改走「短 python -c 片段逐文件生成+回读」。
+- 《使用说明.md》目录补「十三、数据收传」并加 §7 指针。

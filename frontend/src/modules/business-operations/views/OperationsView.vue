@@ -9,6 +9,7 @@
             <el-button size="small" @click="exportFile('contracts.xlsx')">导出合同</el-button>
             <el-button size="small" @click="exportFile('bills.xlsx')">导出账单</el-button>
             <el-button size="small" @click="exportOrders">导出工单</el-button>
+            <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
       </template>
@@ -250,6 +251,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+
+const aiPrompt = computed(() => '请分析营运台账：在租合同与账龄结构、收缴率、超期工单与 SLA 风险，并指出数据质量问题')
 
 const loading = ref(false)
 const saving = ref(false)
@@ -673,20 +677,11 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
-.page { padding: 0; }
-.card-head { display: flex; align-items: center; justify-content: space-between; }
 .kpi { margin-bottom: 8px; }
-.kpi-box { background: #f5f7fa; border-radius: 6px; padding: 10px 12px; }
-.kpi-label { font-size: 12px; color: #909399; }
-.kpi-value { font-size: 20px; font-weight: 600; color: #303133; margin-top: 4px; }
-.kpi-sub { font-size: 12px; color: #909399; margin-top: 4px; }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-.mt8 { margin-top: 8px; }
-.mb8 { margin-bottom: 8px; }
-.pager { margin-top: 10px; justify-content: flex-end; }
+.kpi-sub { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 4px; }
 .expire-item { margin-right: 12px; }
 .aging-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.aging-bucket { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; background: #f5f7fa; border-radius: 6px; }
+.aging-bucket { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; background: var(--el-fill-color-light); border-radius: 6px; }
 .aging-bucket span { font-weight: 600; }
-.aging-bucket small { color: #909399; }
+.aging-bucket small { color: var(--el-text-color-secondary); }
 </style>

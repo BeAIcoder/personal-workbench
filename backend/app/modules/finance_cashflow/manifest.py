@@ -4,6 +4,7 @@
 """
 from ..spec import ModuleManifest
 from . import models  # noqa: F401  导入即把模块表注册进 Base.metadata（须先于 lifespan 的 create_all）
+from .service import cashflow_summary_tool
 
 manifest = ModuleManifest(
     name="finance_cashflow",
@@ -12,7 +13,17 @@ manifest = ModuleManifest(
     prefix="/api/finance/cashflow",
     tables=["mod_cashflow_run"],
     menu={"group": "财务", "icon": "TrendCharts", "order": 80},
-    agent_tools=[],
+    agent_tools=[
+        {
+            "name": "cashflow_summary",
+            "func": cashflow_summary_tool,
+            "description": "现金流引擎运行摘要：运行次数、成功次数、最近一次 actual_month 与状态",
+            "params": {},
+            "required": [],
+            "readonly": True,
+        }
+    ],
+    preset_experts=["finance_specialist"],  # 工具自动预置进财税专员白名单
     column_patches={},
     requires=[],
     enabled=True,

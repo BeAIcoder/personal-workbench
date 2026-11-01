@@ -1,3 +1,78 @@
+/* ============================================================
+   设计令牌层（全站唯一样式入口）
+   - :root 覆盖 Element Plus CSS 变量（靛蓝主色 + 精修灰阶），无需 sass
+   - --wb-* 为应用层令牌（页面底色/卡片/阴影/侧栏），后续换暗色只改这里
+   - 全局组件整定 + 通用工具类（.card-head/.toolbar/.pager 等）
+     —— 各视图局部同名的复制粘贴定义应删除，统一走这里
+   ============================================================ */
+
+:root {
+  /* ---- 主色（靛蓝）与功能色，含 Element Plus 的明暗梯度 ---- */
+  --el-color-primary: #3b5bdb;
+  --el-color-primary-light-3: #768ce6;
+  --el-color-primary-light-5: #9daded;
+  --el-color-primary-light-7: #c4cef4;
+  --el-color-primary-light-8: #d8def8;
+  --el-color-primary-light-9: #ebeffb;
+  --el-color-primary-dark-2: #2f49af;
+
+  --el-color-success: #16a34a;
+  --el-color-success-light-3: #5cbf80;
+  --el-color-success-light-5: #8ad1a4;
+  --el-color-success-light-7: #b9e3c9;
+  --el-color-success-light-8: #d0eddb;
+  --el-color-success-light-9: #e8f6ed;
+  --el-color-success-dark-2: #12823b;
+
+  --el-color-warning: #d97706;
+  --el-color-warning-light-3: #e4a051;
+  --el-color-warning-light-5: #ecbb82;
+  --el-color-warning-light-7: #f4d6b4;
+  --el-color-warning-light-8: #f7e4cd;
+  --el-color-warning-light-9: #fbf1e6;
+  --el-color-warning-dark-2: #ae5f05;
+
+  --el-color-danger: #dc2626;
+  --el-color-danger-light-3: #e76767;
+  --el-color-danger-light-5: #ee9393;
+  --el-color-danger-light-7: #f5bebe;
+  --el-color-danger-light-8: #f8d4d4;
+  --el-color-danger-light-9: #fce9e9;
+  --el-color-danger-dark-2: #b01e1e;
+
+  /* info 保持中性灰 */
+
+  /* ---- 文本与边框灰阶（比默认更清晰的层次） ---- */
+  --el-text-color-primary: #1f2329;
+  --el-text-color-regular: #4e5969;
+  --el-text-color-secondary: #86909c;
+  --el-text-color-placeholder: #a9b0b8;
+  --el-border-color: #e5e6eb;
+  --el-border-color-light: #edeff2;
+  --el-border-color-lighter: #f0f1f4;
+  --el-border-color-extra-light: #f7f8fa;
+  --el-fill-color-light: #f2f3f5;
+  --el-fill-color-lighter: #f7f8fa;
+
+  /* ---- 圆角 ---- */
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+
+  /* ---- 应用层令牌（--wb-） ---- */
+  --wb-bg-page: #f6f7f9;
+  --wb-radius-card: 12px;
+  --wb-radius-dialog: 14px;
+  --wb-shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --wb-shadow-card-hover: 0 4px 12px rgba(16, 24, 40, 0.1);
+  --wb-sidebar-bg: #1b2233;
+  --wb-sidebar-text: #a8b3c5;
+  --wb-card-gap: 16px;
+}
+
+/* ============================================================
+   基础
+   ============================================================ */
+
 * {
   box-sizing: border-box;
 }
@@ -11,27 +86,191 @@ body,
 }
 
 body {
-  font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', sans-serif;
-  background: #f5f7fa;
-  color: #303133;
+  font-family: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+  background: var(--wb-bg-page);
+  color: var(--el-text-color-primary);
   font-size: 14px;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* 细滚动条（Windows 默认滚动条过重） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(134, 144, 156, 0.35);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(134, 144, 156, 0.55);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ============================================================
+   Element Plus 组件整定（全局一处生效）
+   ============================================================ */
+
+/* 卡片：圆角 + 细边框 + 轻阴影 */
+.el-card {
+  --el-card-border-color: var(--el-border-color-lighter);
+  --el-card-border-radius: var(--wb-radius-card);
+  --el-card-padding: 18px 20px;
+  box-shadow: var(--wb-shadow-card);
+}
+
+.el-card__header {
+  padding: 14px 20px;
+  font-weight: 600;
+  border-bottom-color: var(--el-border-color-lighter);
+}
+
+/* 表格：浅灰表头 + 数字等宽 + 柔和悬停 */
+.el-table {
+  --el-table-header-bg-color: var(--el-fill-color-lighter);
+  --el-table-header-text-color: var(--el-text-color-secondary);
+  --el-table-row-hover-bg-color: var(--el-color-primary-light-9);
+  --el-table-border-color: var(--el-border-color-lighter);
+  font-variant-numeric: tabular-nums;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+}
+
+/* 弹层圆角 */
+.el-dialog {
+  border-radius: var(--wb-radius-dialog);
+}
+
+.el-message-box {
+  border-radius: var(--wb-radius-dialog);
+}
+
+/* 标签页选中加重 */
+.el-tabs__item {
+  font-weight: 500;
+}
+
+.el-tabs__item.is-active {
+  font-weight: 600;
+}
+
+/* 分页统一上间距 */
+.el-pagination {
+  margin-top: 12px;
+}
+
+/* 描述列表标签弱化 */
+.el-descriptions__label {
+  color: var(--el-text-color-secondary);
+}
+
+/* ============================================================
+   通用工具类（各视图不再重复定义）
+   ============================================================ */
+
+/* 页面容器 */
 .page {
   max-width: 1280px;
   margin: 0 auto;
 }
 
+/* 卡片头：标题左、操作右 */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* 工具栏 / 筛选行 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+/* 分页容器：靠右 */
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* KPI 数值卡（业务模块统一口径） */
+.kpi-box {
+  flex: 1;
+  min-width: 0;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+  padding: 12px 14px;
+}
+
+.kpi-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 6px;
+}
+
+.kpi-value {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--el-text-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 间距 / 文本 */
+.mt8 {
+  margin-top: 8px;
+}
+
+.mb8 {
+  margin-bottom: 8px;
+}
+
+.mt16 {
+  margin-top: 16px;
+}
+
+.muted {
+  color: var(--el-text-color-secondary);
+}
+
+.hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
 .text-danger {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .done-title {
   text-decoration: line-through;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
-/* 全局搜索下拉 */
+/* ============================================================
+   全局搜索下拉
+   ============================================================ */
+
 .search-row {
   display: flex;
   align-items: center;
@@ -45,7 +284,7 @@ body {
 }
 
 .search-row .search-snippet {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;

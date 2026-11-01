@@ -7,6 +7,7 @@ mod_tax_ 前缀；业务逻辑（税率计算/政策规则/表单生成）零改
 """
 from ..spec import ModuleManifest
 from . import models  # noqa: F401  导入即把模块表注册进 Base.metadata（须先于 lifespan 的 create_all）
+from .tools import tax_returns_summary_tool
 
 manifest = ModuleManifest(
     name="finance_tax",
@@ -21,7 +22,17 @@ manifest = ModuleManifest(
         "mod_tax_policy",
     ],
     menu={"group": "财务", "icon": "OfficeBuilding", "order": 60},
-    agent_tools=[],
+    agent_tools=[
+        {
+            "name": "tax_returns_summary",
+            "func": tax_returns_summary_tool,
+            "description": "企业所得税申报记录摘要：按预缴/年度与草稿/已提交计数，附最新一条申报的关键字段",
+            "params": {},
+            "required": [],
+            "readonly": True,
+        }
+    ],
+    preset_experts=["finance_specialist"],  # 工具自动预置进财税专员白名单
     column_patches={
         # 老库补列：Enterprise 后加的 4 个字段（create_all 不改已有表，宿主 _ensure_sqlite_columns 合并执行）
         "mod_tax_enterprise": {

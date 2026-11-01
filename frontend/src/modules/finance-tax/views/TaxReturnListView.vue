@@ -117,10 +117,4 @@ onMounted(async () => {
 })
 </script>
 
-<style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-</style>
+<style scoped></style>

@@ -4,7 +4,10 @@
       <template #header>
         <div class="card-head">
           <span>费用分类 · 上传执行</span>
-          <el-button size="small" @click="loadRules">刷新规则状态</el-button>
+          <div class="toolbar">
+            <el-button size="small" @click="loadRules">刷新规则状态</el-button>
+            <AskAiButton :prompt="aiPrompt" />
+          </div>
         </div>
       </template>
 
@@ -89,12 +92,15 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const router = useRouter()
+
+const aiPrompt = computed(() => '请解读费用分类引擎对上传文件的清洗与分类规则，以及上传前应准备哪些表头字段')
 
 const running = ref(false)
 const fileList = ref([])
@@ -199,12 +205,6 @@ onMounted(() => {
 
 .block {
   margin-bottom: 16px;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 
 .cat-tag {

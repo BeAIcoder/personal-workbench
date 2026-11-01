@@ -335,16 +335,10 @@ onMounted(load)
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .file-content {
   max-height: 480px;
   overflow: auto;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   padding: 12px;
   border-radius: 4px;
   font-size: 12px;

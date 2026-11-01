@@ -211,7 +211,7 @@ onMounted(loadBatches)
 
 .hint,
 .warn {
-  color: #e6a23c;
+  color: var(--el-color-warning);
   font-size: 13px;
 }
 </style>

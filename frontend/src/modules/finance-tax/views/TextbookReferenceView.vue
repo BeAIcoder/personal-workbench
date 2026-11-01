@@ -52,16 +52,10 @@ onMounted(load)
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .expand-content {
   white-space: pre-wrap;
   font-family: monospace;
   font-size: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 </style>

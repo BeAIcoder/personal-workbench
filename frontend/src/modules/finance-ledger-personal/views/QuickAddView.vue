@@ -241,18 +241,12 @@ onMounted(load)
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .income {
-  color: #67c23a;
+  color: var(--el-color-success);
 }
 
 .expense {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .manage-row {

@@ -15,9 +15,9 @@
               <el-button size="small" link @click="editProvider(p)">编辑</el-button>
               <el-button size="small" link type="danger" @click="deleteProvider(p)">删除</el-button>
             </div>
-            <div class="prov-line">🔗 {{ p.base_url || '（未填）' }}</div>
+            <div class="prov-line"><el-icon><Link /></el-icon> {{ p.base_url || '（未填）' }}</div>
             <div class="prov-line">
-              🔑
+              <el-icon><Key /></el-icon>
               <el-tag size="small" :type="providerKeyBadge(p).type" effect="plain">{{ providerKeyBadge(p).text }}</el-tag>
             </div>
             <div class="model-filter-row">
@@ -1257,7 +1257,7 @@ async function testProvider(p, kind, model) {
 }
 
 .prov-card {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 10px;
@@ -1278,7 +1278,7 @@ async function testProvider(p, kind, model) {
 }
 
 .prov-line {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 4px;
   word-break: break-all;
@@ -1294,7 +1294,7 @@ async function testProvider(p, kind, model) {
 
 .model-row {
   width: 100%;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   border-radius: 10px;
   padding: 6px 10px;
   margin-bottom: 6px;
@@ -1302,8 +1302,8 @@ async function testProvider(p, kind, model) {
 }
 
 .model-row.active {
-  border-color: #67c23a;
-  background: #f0f9eb;
+  border-color: var(--el-color-success);
+  background: var(--el-color-success-light-9);
 }
 
 .model-row.off {
@@ -1331,27 +1331,27 @@ async function testProvider(p, kind, model) {
 
 .models-count {
   font-size: 11px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .sync-summary {
   font-size: 12px;
   margin-top: 4px;
-  color: #529b2e;
+  color: var(--el-color-success-dark-2);
   word-break: break-all;
 }
 
 .sync-summary.warning {
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 
 .sync-summary.error {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .sync-warn,
 .sync-skip {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .plan-hint {
@@ -1376,17 +1376,17 @@ async function testProvider(p, kind, model) {
 }
 
 .model-name:hover {
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .badge-levels {
   font-size: 11px;
-  color: #529b2e;
+  color: var(--el-color-success-dark-2);
 }
 
 .probe-at {
   font-size: 11px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .badge-dashed {
@@ -1402,21 +1402,21 @@ async function testProvider(p, kind, model) {
 
 .ops-label {
   font-size: 11px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-right: 4px;
 }
 
 .pill-x {
   font-size: 11px;
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
 }
 
 .pill-x:hover {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .pill-x.is-loading {
-  color: #409eff;
+  color: var(--el-color-primary);
   cursor: default;
 }
 
@@ -1430,26 +1430,26 @@ async function testProvider(p, kind, model) {
 
 .sync-override-cb :deep(.el-checkbox__label) {
   font-size: 12px;
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 
 .sync-override-warn {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.5;
-  color: #e6a23c;
+  color: var(--el-color-warning);
   word-break: break-all;
 }
 
 .prov-test {
   font-size: 12px;
   margin-top: 4px;
-  color: #f56c6c;
+  color: var(--el-color-danger);
   word-break: break-all;
 }
 
 .prov-test.ok {
-  color: #529b2e;
+  color: var(--el-color-success-dark-2);
 }
 
 .add-prov {
@@ -1458,7 +1458,7 @@ async function testProvider(p, kind, model) {
 }
 
 .cfg-hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.5;
   margin-top: 2px;
@@ -1466,7 +1466,7 @@ async function testProvider(p, kind, model) {
 }
 
 .cfg-hint.ok {
-  color: #529b2e;
+  color: var(--el-color-success-dark-2);
 }
 
 .cfg-hint a {

@@ -6,6 +6,7 @@
           <span>经营财务报表监控看板</span>
           <div>
             <el-button size="small" :loading="running" @click="run">运行管线刷新</el-button>
+            <AskAiButton :prompt="aiPrompt" />
             <el-select v-model="selected" placeholder="选择快照" size="small" style="width: 200px; margin-left: 8px" @change="loadHtml">
               <el-option v-for="s in items" :key="s.id" :label="`${s.stamp}（${s.status === 'ok' ? '成功' : '失败'}）`" :value="s.id" :disabled="s.status !== 'ok'" />
             </el-select>
@@ -50,6 +51,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
 import { shouldReloadAfterRun } from '../utils'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const loading = ref(false)
 const running = ref(false)
@@ -57,6 +59,8 @@ const items = ref([])
 const selected = ref(null)
 const logDialog = ref(false)
 const logContent = ref('')
+
+const aiPrompt = computed(() => '请解读最近一次报表看板快照：核心指标变化与异常点')
 
 const htmlUrl = computed(() => (selected.value ? `${api.defaults.baseURL}/finance/board/snapshots/${selected.value}/html` : ''))
 
@@ -104,18 +108,12 @@ onMounted(load)
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .board-frame {
   width: 100%;
   /* 跟随视口高度，避免页面套小窗再内部滚动 */
   height: calc(100vh - 240px);
   min-height: 560px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 4px;
 }
 

@@ -16,5 +16,5 @@ export default {
       meta: { title: '发票批次详情' },
     },
   ],
-  menu: { group: '财务', title: '发票处理', icon: 'Tickets', path: '/finance/invoice', order: 20 },
+  menu: { group: '财务', subgroup: '账务处理', title: '发票处理', icon: 'Tickets', path: '/finance/invoice', order: 20 },
 }

@@ -1,15 +1,11 @@
 <template>
   <el-container class="layout">
     <el-aside width="220px" class="aside">
-      <div class="logo">📋 个人工作台</div>
-      <el-menu
-        :default-active="activeMenu"
-        router
-        class="menu"
-        background-color="#1f2d3d"
-        text-color="#bfc9d4"
-        active-text-color="#ffffff"
-      >
+      <div class="logo">
+        <span class="logo-icon"><el-icon><DataBoard /></el-icon></span>
+        <span>个人工作台</span>
+      </div>
+      <el-menu :default-active="activeMenu" :default-openeds="defaultOpeneds" router class="menu">
         <el-menu-item v-for="item in staticMenus" :key="item.path" :index="item.path">
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.title }}</span>
@@ -32,9 +28,19 @@
             <el-icon><component :is="group.icon" /></el-icon>
             <span>{{ group.name }}</span>
           </template>
+          <!-- 直挂项（manifest menu 无 subgroup 的模块） -->
           <el-menu-item v-for="m in group.items" :key="m.path" :index="m.path">
             <span>{{ m.title }}</span>
           </el-menu-item>
+          <!-- 二级折叠子分组（manifest menu.subgroup，如「税务填报」） -->
+          <el-sub-menu v-for="sg in group.subgroups" :key="`sg-${group.name}-${sg.name}`" :index="`subgroup-${group.name}-${sg.name}`">
+            <template #title>
+              <span>{{ sg.name }}</span>
+            </template>
+            <el-menu-item v-for="m in sg.items" :key="m.path" :index="m.path">
+              <span>{{ m.title }}</span>
+            </el-menu-item>
+          </el-sub-menu>
         </el-sub-menu>
       </el-menu>
       <div class="aside-footer">v{{ version }} · 数据本地存储</div>
@@ -94,7 +100,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import dayjs from 'dayjs'
 import api from '../api'
-import { getModuleMenus } from '../modules'
+import { getModuleMenuGroups } from '../modules'
 import GlobalSearch from './GlobalSearch.vue'
 
 const route = useRoute()
@@ -106,18 +112,29 @@ const staticMenus = STATIC_MENUS
 const staticMenuGroups = STATIC_MENU_GROUPS
 const tailMenus = TAIL_MENUS
 
-// 模块菜单按 group 分组渲染（如「财务」组）；组图标取组内首项图标
-const menuGroups = computed(() => {
-  const groups = new Map()
-  for (const m of getModuleMenus()) {
-    const name = m.group || '模块'
-    if (!groups.has(name)) {
-      groups.set(name, { name, icon: m.icon || 'Folder', items: [] })
+// 模块菜单按 group 分组渲染（如「财务」组）；组图标取组内首项图标。
+// 组内支持二级折叠子分组（manifest menu.subgroup，如「税务填报」）与直挂项。
+const menuGroups = computed(() => getModuleMenuGroups())
+
+// 深链/刷新时展开激活项所在的组与子分组（仅初始一次：default-openeds 只在挂载时生效，
+// 做成响应式会在用户手动折叠后又被强行展开）。静态「AI 配置」组同理纳入。
+const defaultOpeneds = (() => {
+  const path = route.path
+  const hit = (items) => items.some((m) => m.path === path)
+  const opened = []
+  for (const g of menuGroups.value) {
+    if (hit(g.items) || g.subgroups.some((sg) => hit(sg.items))) {
+      opened.push(`group-${g.name}`)
+      for (const sg of g.subgroups) {
+        if (hit(sg.items)) opened.push(`subgroup-${g.name}-${sg.name}`)
+      }
     }
-    groups.get(name).items.push(m)
   }
-  return [...groups.values()]
-})
+  for (const g of staticMenuGroups) {
+    if (g.items.some((m) => m.path === path)) opened.push(`group-${g.name}`)
+  }
+  return opened
+})()
 
 function onKeydown(e) {
   if (isSearchHotkey(e)) {
@@ -140,30 +157,60 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 
 .aside {
-  background: #1f2d3d;
+  background: var(--wb-sidebar-bg);
   display: flex;
   flex-direction: column;
 }
 
 .logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.logo-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--el-color-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: #fff;
   font-size: 18px;
-  font-weight: 600;
-  padding: 18px 20px;
-  letter-spacing: 1px;
 }
 
 .menu {
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: var(--wb-sidebar-text);
+  --el-menu-active-color: #fff;
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.06);
+  --el-menu-base-level-padding: 16px;
+  --el-menu-item-height: 42px;
+  --el-menu-sub-item-height: 38px;
   border-right: none;
   flex: 1;
 }
 
+.menu :deep(.el-menu-item),
+.menu :deep(.el-sub-menu__title) {
+  margin: 2px 10px;
+  border-radius: 8px;
+}
+
 .menu :deep(.el-menu-item.is-active) {
-  background: #409eff !important;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-weight: 500;
 }
 
 .aside-footer {
-  color: #6b7a8a;
+  color: rgba(255, 255, 255, 0.35);
   font-size: 12px;
   padding: 14px 20px;
 }
@@ -173,24 +220,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   align-items: center;
   gap: 16px;
   background: #fff;
-  border-bottom: 1px solid #e4e7ed;
+  border-bottom: 1px solid var(--el-border-color-light);
 }
 
 .page-title {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 600;
   flex: 1;
   white-space: nowrap;
 }
 
 .today {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
   white-space: nowrap;
 }
 
 .main {
-  background: #f5f7fa;
+  background: var(--wb-bg-page);
   overflow: auto;
   padding: 20px;
 }

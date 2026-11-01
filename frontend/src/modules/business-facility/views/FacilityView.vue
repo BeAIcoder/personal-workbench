@@ -8,6 +8,7 @@
             <el-button size="small" @click="loadAll">刷新</el-button>
             <el-button size="small" @click="exportEquipment">导出设备</el-button>
             <el-button size="small" @click="exportCompliance">导出合规台账</el-button>
+            <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
       </template>
@@ -129,9 +130,12 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+
+const aiPrompt = computed(() => '请分析工程物业台账：设备状态分布、合规事项到期与逾期、楼宇级检查安排与工单关联')
 
 const loading = ref(false)
 const saving = ref(false)
@@ -326,14 +330,7 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
-.card-head { display: flex; justify-content: space-between; align-items: center; }
 .kpi { margin-bottom: 8px; }
-.kpi-box { background: #f5f7fa; border-radius: 6px; padding: 12px; }
-.kpi-label { color: #909399; font-size: 12px; }
-.kpi-value { font-size: 21px; font-weight: 600; margin-top: 5px; }
-.kpi-value.danger { color: #f56c6c; }
-.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.mt8 { margin-top: 8px; }
-.pager { margin-top: 10px; justify-content: flex-end; }
-.overdue-days { color: #f56c6c; font-size: 12px; margin-left: 4px; }
+.kpi-value.danger { color: var(--el-color-danger); }
+.overdue-days { color: var(--el-color-danger); font-size: 12px; margin-left: 4px; }
 </style>

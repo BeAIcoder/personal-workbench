@@ -1,7 +1,12 @@
 <template>
   <div class="page">
     <el-card shadow="never">
-      <template #header><span>残保金填报（财政部公告2023年第8号）</span></template>
+      <template #header>
+        <div class="card-head">
+          <span>残保金填报（财政部公告2023年第8号）</span>
+          <el-button type="primary" size="small" :loading="saving" @click="submit">计算并保存</el-button>
+        </div>
+      </template>
       <el-form :model="form" label-width="150px" @submit.prevent>
         <el-row :gutter="16">
           <el-col :span="8">
@@ -36,9 +41,6 @@
           <el-input-number v-model="form.ratio" :min="0.01" :max="0.5" :step="0.005" :controls="false" style="width: 120px" />
           <span class="hint">默认 1.5%，各地可不同</span>
         </el-form-item>
-        <div class="mt8">
-          <el-button type="primary" :loading="saving" @click="submit">计算并保存</el-button>
-        </div>
       </el-form>
       <el-alert v-if="resultTitle" :title="resultTitle" :type="resultType" :closable="false" class="mt8" />
     </el-card>
@@ -127,7 +129,4 @@ onMounted(loadList)
 </script>
 
 <style scoped>
-.page { padding: 0; }
-.mt8 { margin-top: 8px; }
-.hint { margin-left: 8px; font-size: 12px; color: #909399; }
 </style>

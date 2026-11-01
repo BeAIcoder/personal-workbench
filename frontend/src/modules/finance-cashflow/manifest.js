@@ -10,5 +10,5 @@ export default {
       meta: { title: '现金流填报' },
     },
   ],
-  menu: { group: '财务', title: '现金流填报', icon: 'TrendCharts', path: '/finance/cashflow', order: 80 },
+  menu: { group: '财务', subgroup: '报表分析', title: '现金流填报', icon: 'TrendCharts', path: '/finance/cashflow', order: 80 },
 }

@@ -25,7 +25,7 @@
         </div>
         <div v-else class="bubble ai-bubble" :class="{ 'error-bubble': m.error }">
           <div class="ai-meta">
-            <span class="agent-chip" :style="{ background: m.color || '#909399' }">{{ m.agentLabel }}</span>
+            <span class="agent-chip" :style="{ background: m.color || 'var(--el-text-color-secondary)' }">{{ m.agentLabel }}</span>
             <span v-if="m.routedBy" class="routed-by">{{ m.routedBy }}</span>
             <span v-if="m.mode && m.mode !== 'standard'" class="mode-chip">{{ modeLabel(m.mode) }}</span>
             <span class="msg-time">{{ m.time }}</span>
@@ -43,7 +43,7 @@
           <div v-if="m.streaming" class="cursor">▍</div>
 
           <div v-if="m.toolFlow && m.toolFlow.length && m.streaming" class="tool-live">
-            <span v-for="(t, j) in m.toolFlow" :key="j" class="tool-chip">🔧 {{ t }}</span>
+            <span v-for="(t, j) in m.toolFlow" :key="j" class="tool-chip"><el-icon><Tools /></el-icon>{{ t }}</span>
           </div>
 
           <el-collapse v-if="m.trace && m.trace.length && !m.streaming" class="trace-collapse">
@@ -77,7 +77,7 @@
         </el-tooltip>
         <el-dropdown trigger="click" @command="onModelCommand">
           <span class="model-chip" :title="modelChipTitle">
-            🤖 {{ shortModel }} <el-icon><ArrowDown /></el-icon>
+            <el-icon><Cpu /></el-icon> {{ shortModel }} <el-icon><ArrowDown /></el-icon>
             <span v-if="isEnvFallback" class="env-fallback-badge">env 兜底</span>
           </span>
           <template #dropdown>
@@ -108,7 +108,7 @@
             :type="a.kind === 'csv_converted' ? 'success' : 'info'"
             @close="removeAttachment(i)"
           >
-            📄 {{ a.name }}{{ a.note ? '（' + a.note + '）' : '' }}
+            <el-icon><Document /></el-icon> {{ a.name }}{{ a.note ? '（' + a.note + '）' : '' }}
           </el-tag>
         </template>
       </div>
@@ -730,10 +730,10 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px dashed #409eff;
+  border: 2px dashed var(--el-color-primary);
   border-radius: 10px;
   background: rgba(236, 245, 255, 0.96);
-  color: #409eff;
+  color: var(--el-color-primary);
   font-size: 16px;
   pointer-events: none;
 }
@@ -782,18 +782,18 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 }
 
 .user-bubble {
-  background: #409eff;
+  background: var(--el-color-primary);
   color: #fff;
   white-space: pre-wrap;
 }
 
 .ai-bubble {
-  background: #f4f4f5;
-  color: #303133;
+  background: var(--el-color-info-light-9);
+  color: var(--el-text-color-primary);
 }
 
 .error-bubble {
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
 }
 
 .ai-meta {
@@ -811,21 +811,21 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 }
 
 .routed-by {
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   font-size: 11px;
 }
 
 .mode-chip {
-  color: #e6a23c;
+  color: var(--el-color-warning);
   font-size: 11px;
-  border: 1px solid #f3d19e;
+  border: 1px solid var(--el-color-warning-light-5);
   border-radius: 8px;
   padding: 0 6px;
 }
 
 .msg-time {
   margin-left: auto;
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   font-size: 11px;
 }
 
@@ -837,7 +837,7 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 .think-collapse :deep(.el-collapse-item__header) {
   height: 28px;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   background: transparent;
   border-bottom: none;
 }
@@ -848,7 +848,7 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 }
 
 .thinking-text {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   white-space: pre-wrap;
   max-height: 200px;
@@ -870,13 +870,13 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 .md-body :deep(th),
 .md-body :deep(td) {
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   padding: 4px 10px;
   font-size: 13px;
 }
 
 .md-body :deep(code) {
-  background: #ebeef5;
+  background: var(--el-border-color-lighter);
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 13px;
@@ -903,7 +903,7 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 .cursor {
   display: inline-block;
-  color: #409eff;
+  color: var(--el-color-primary);
   animation: blink 1s infinite;
 }
 
@@ -921,8 +921,8 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 .tool-chip {
   font-size: 12px;
-  color: #409eff;
-  border: 1px dashed #a0cfff;
+  color: var(--el-color-primary);
+  border: 1px dashed var(--el-color-primary-light-5);
   border-radius: 8px;
   padding: 0 8px;
 }
@@ -935,7 +935,7 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 .trace-collapse :deep(.el-collapse-item__header) {
   height: 30px;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   background: transparent;
 }
 
@@ -945,17 +945,17 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 .trace-item {
   font-size: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   padding: 3px 0;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
 }
 
 .trace-result {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .input-area {
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--el-border-color-lighter);
   padding-top: 8px;
 }
 
@@ -980,7 +980,7 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
   height: 48px;
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   background: #fff;
 }
 
@@ -1021,7 +1021,7 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 .reasoning-hint {
   font-size: 11px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1033,22 +1033,22 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #606266;
-  background: #f4f4f5;
+  color: var(--el-text-color-regular);
+  background: var(--el-color-info-light-9);
   border-radius: 10px;
   padding: 3px 10px;
   cursor: pointer;
 }
 
 .model-chip:hover {
-  background: #ecf5ff;
+  background: var(--el-color-primary-light-9);
 }
 
 .env-fallback-badge {
   font-size: 10px;
   line-height: 15px;
-  color: #e6a23c;
-  border: 1px solid #f3d19e;
+  color: var(--el-color-warning);
+  border: 1px solid var(--el-color-warning-light-5);
   border-radius: 8px;
   padding: 0 5px;
 }
@@ -1058,7 +1058,7 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
   max-width: 280px;
   white-space: normal;
   line-height: 1.5;
-  color: #e6a23c;
+  color: var(--el-color-warning);
   cursor: default;
 }
 

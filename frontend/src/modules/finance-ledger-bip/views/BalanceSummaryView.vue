@@ -59,12 +59,6 @@ onMounted(load)
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .filters {
   display: flex;
   gap: 8px;
@@ -73,6 +67,6 @@ onMounted(load)
 
 .total-line {
   margin-top: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 </style>

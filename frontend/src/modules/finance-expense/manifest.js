@@ -16,5 +16,5 @@ export default {
       meta: { title: '费用分类结果' },
     },
   ],
-  menu: { group: '财务', title: '费用分类', icon: 'Histogram', path: '/finance/expense', order: 10 },
+  menu: { group: '财务', subgroup: '账务处理', title: '费用分类', icon: 'Histogram', path: '/finance/expense', order: 10 },
 }

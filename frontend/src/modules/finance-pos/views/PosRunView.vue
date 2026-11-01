@@ -4,7 +4,10 @@
       <template #header>
         <div class="card-head">
           <span>建行 POS 收款对账</span>
-          <el-button size="small" type="primary" @click="dialog.visible = true">新建运行</el-button>
+          <div class="toolbar">
+            <el-button size="small" type="primary" @click="dialog.visible = true">新建运行</el-button>
+            <AskAiButton :prompt="aiPrompt" />
+          </div>
         </div>
       </template>
       <el-alert type="info" :closable="false" show-icon
@@ -56,10 +59,11 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import { takeFiles } from '../../_shared/fileInput'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const loading = ref(false)
 const items = ref([])
@@ -69,6 +73,8 @@ const creating = ref(false)
 const form = reactive({ files: [] })
 const logDialog = ref(false)
 const logContent = ref('')
+
+const aiPrompt = computed(() => '请分析最近一次 POS 对账运行：四源差异、未认领金额与下一步处理建议')
 
 const STATUS_TEXT = { uploaded: '待执行', running: '执行中', ok: '已完成', failed: '失败' }
 const STATUS_TYPE = { uploaded: 'info', running: 'warning', ok: 'success', failed: 'danger' }
@@ -187,7 +193,7 @@ onMounted(load)
 }
 
 .hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.5;
 }

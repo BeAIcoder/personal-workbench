@@ -10,6 +10,7 @@
             </el-select>
             <el-button size="small" @click="loadAll">刷新</el-button>
             <el-button size="small" @click="exportFile">导出活动</el-button>
+            <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
       </template>
@@ -188,7 +189,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
+const aiPrompt = computed(() => `请分析企划活动（${year.value} 年度）：ROI 口径与达标情况、档期冲突、预算执行与供应商评价`)
 const loading = ref(false)
 const saving = ref(false)
 const tab = ref('campaigns')
@@ -431,16 +434,9 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
-.page { padding: 0; }
-.card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kpi { margin-bottom: 8px; }
-.kpi-box { background: #f5f7fa; border-radius: 6px; padding: 10px 12px; }
-.kpi-label { font-size: 12px; color: #909399; }
-.kpi-value { font-size: 20px; font-weight: 600; color: #303133; margin-top: 4px; }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-.mt8 { margin-top: 8px; }
-.danger { color: #f56c6c; font-weight: 600; }
-.sum-line { margin-top: 8px; font-size: 13px; color: #606266; }
+.danger { color: var(--el-color-danger); font-weight: 600; }
+.sum-line { margin-top: 8px; font-size: 13px; color: var(--el-text-color-regular); }
 .cal-tag { margin: 2px 6px 2px 0; }
-.muted { color: #c0c4cc; }
+.muted { color: var(--el-text-color-placeholder); }
 </style>

@@ -318,17 +318,17 @@ watch(() => route.query, applyRoute)
 
 .note-item {
   padding: 10px 8px;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
   cursor: pointer;
   border-radius: 6px;
 }
 
 .note-item:hover {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
 }
 
 .note-item.active {
-  background: #ecf5ff;
+  background: var(--el-color-primary-light-9);
 }
 
 .note-item-title {
@@ -339,7 +339,7 @@ watch(() => route.query, applyRoute)
 }
 
 .note-item-snip {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin: 4px 0;
   overflow: hidden;
@@ -355,7 +355,7 @@ watch(() => route.query, applyRoute)
 
 .note-item-meta .time {
   margin-left: auto;
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   font-size: 11px;
 }
 
@@ -391,7 +391,7 @@ watch(() => route.query, applyRoute)
 
 .editor-meta {
   margin-top: 8px;
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   font-size: 12px;
   text-align: right;
 }

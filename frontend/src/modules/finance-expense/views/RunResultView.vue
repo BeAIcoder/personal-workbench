@@ -13,6 +13,7 @@
                 :disabled="detail.run.status !== 'success'"
                 @click="download"
               >下载结果 xlsx</el-button>
+              <AskAiButton :prompt="aiPrompt" />
             </div>
           </div>
         </template>
@@ -66,6 +67,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import api, { API_BASE } from '../../../api'
 import BaseChart from '../../../components/BaseChart.vue'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 // 金额统一安全格式化：后端字段可能为 null/undefined（未回填、导入失败行），
 // 直接 toFixed 会抛错导致整页渲染崩溃，统一显示「—」占位
@@ -77,6 +79,8 @@ function fmtMoney(v) {
 
 const route = useRoute()
 const runId = route.params.id
+
+const aiPrompt = computed(() => `请分析费用分类运行 ${runId} 的结果：分类分布、未匹配行原因与异常金额`)
 
 const loading = ref(false)
 const failed = ref(false)
@@ -153,11 +157,5 @@ onMounted(load)
 
 .block {
   margin-top: 16px;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 </style>

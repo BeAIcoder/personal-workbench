@@ -272,21 +272,15 @@ onMounted(() => {
 }
 
 .sum-none {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 14px;
   font-weight: 400;
 }
 
 .sum-label {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 4px;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 
 .head-ops {

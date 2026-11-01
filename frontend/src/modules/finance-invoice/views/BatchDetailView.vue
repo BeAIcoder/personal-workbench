@@ -151,11 +151,4 @@ function download() {
 onMounted(load)
 </script>
 
-<style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-</style>
+<style scoped></style>

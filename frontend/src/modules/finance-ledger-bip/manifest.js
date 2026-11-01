@@ -22,5 +22,5 @@ export default {
       meta: { title: '企业记账·科目汇总' },
     },
   ],
-  menu: { group: '财务', title: '企业记账（BIP）', icon: 'OfficeBuilding', path: '/finance/ledger-bip', order: 50 },
+  menu: { group: '财务', subgroup: '记账', title: '企业记账（BIP）', icon: 'OfficeBuilding', path: '/finance/ledger-bip', order: 50 },
 }

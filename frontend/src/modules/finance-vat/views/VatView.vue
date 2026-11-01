@@ -1,7 +1,12 @@
 <template>
   <div class="page">
     <el-card shadow="never">
-      <template #header><span>增值税填报（一般纳税人/小规模）</span></template>
+      <template #header>
+        <div class="card-head">
+          <span>增值税填报（一般纳税人/小规模）</span>
+          <el-button type="primary" size="small" :loading="saving" @click="submit">计算并保存</el-button>
+        </div>
+      </template>
       <el-form :model="form" label-width="110px" @submit.prevent>
         <el-row :gutter="16">
           <el-col :span="6">
@@ -79,9 +84,6 @@
           <el-alert type="info" :closable="false"
             :title="form.filing_period === 'month' ? '月度 ≤10 万免征；超 10 万全额按征收率计税。' : '季度 ≤30 万免征；超 30 万全额按征收率计税。'" />
         </template>
-        <div class="mt8">
-          <el-button type="primary" :loading="saving" @click="submit">计算并保存</el-button>
-        </div>
       </el-form>
       <el-alert v-if="resultTitle" :title="resultTitle" type="success" :closable="false" class="mt8" />
     </el-card>
@@ -179,6 +181,4 @@ onMounted(loadList)
 </script>
 
 <style scoped>
-.page { padding: 0; }
-.mt8 { margin-top: 8px; }
 </style>

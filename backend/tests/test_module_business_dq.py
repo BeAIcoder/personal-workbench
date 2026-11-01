@@ -1,0 +1,129 @@
+# -*- coding: utf-8 -*-
+"""business_dq 数据质量巡检模块测试（合成数据，临时库）。
+
+存量坏数据经 ORM 直接插入（写守卫本来就会拦住这类数据——巡检的价值恰在存量巡检）。
+日期类断言用固定 as_of=2026-11-01，可复算。
+"""
+from datetime import date
+
+from app.database import SessionLocal
+from app.modules import get_loaded_modules
+from app.modules.business_dq.service import dq_summary
+
+from app.modules.business_leasing.models import LeasingLead
+from app.modules.business_operations.models import OpsBill, OpsContract
+from app.modules.business_legal.models import LegalCase
+from app.modules.business_hr.models import HrEmployee
+from app.modules.business_planning.models import PlanCampaign
+from app.modules.business_facility.models import FacilityCompliance
+
+AS_OF = "2026-11-01"
+
+
+def _plant(model, **fields):
+    with SessionLocal() as db:
+        db.add(model(**fields))
+        db.commit()
+
+
+def test_manifest_loaded_and_tool_preset():
+    loaded = {m.name: m for m in get_loaded_modules()}
+    assert "business_dq" in loaded
+    manifest = loaded["business_dq"]
+    assert manifest.prefix == "/api/business/dq"
+    assert manifest.tables == []
+    assert manifest.preset_experts == ["realestate", "cre_gm"]
+    tool = next(item for item in manifest.agent_tools if item["name"] == "dq_summary")
+    assert tool["readonly"] is True
+    assert callable(tool["func"])
+
+
+def test_empty_db_safe_summary(client):
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["as_of"] == AS_OF
+    assert data["overall_score"] == 100
+    assert set(data["domains"]) == {"leasing", "operations", "hr", "legal", "planning", "facility", "finance"}
+    for key in ("leasing", "operations", "hr", "legal", "planning", "facility"):
+        assert data["domains"][key]["available"] is True
+        assert data["domains"][key]["score"] == 100
+    assert data["top_issues"] == []
+
+
+def test_orphan_lead_unit_and_bill_contract(client):
+    _plant(LeasingLead, company="孤儿线索", stage="negotiating", unit_id=99999)
+    _plant(OpsBill, contract_id=99999, period="2026-10", status="pending")
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    data = resp.json()
+    issues = {(i["domain"], i["check"], i["level"]): i for i in data["top_issues"]}
+    assert issues[("leasing", "孤儿引用", "warning")]["count"] == 1
+    assert issues[("operations", "孤儿引用", "error")]["count"] == 1
+    assert "铺位已不存在" in issues[("leasing", "孤儿引用", "warning")]["suggestion"]
+    lease_score = data["domains"]["leasing"]["score"]
+    ops_score = data["domains"]["operations"]["score"]
+    assert lease_score == 97 and ops_score == 90
+    assert data["overall_score"] is not None and data["overall_score"] < 100
+
+
+def test_date_inversion_and_duplicates(client):
+    _plant(OpsContract, contract_no="HT-001", tenant="甲", start_date=date(2026, 5, 10), end_date=date(2026, 5, 1), status="active")
+    _plant(LegalCase, case_no="AJ-001", title="测试案件")
+    _plant(LegalCase, case_no="AJ-001", title="测试案件2")
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    data = resp.json()
+    issues = {(i["domain"], i["check"], i["level"]): i for i in data["top_issues"]}
+    assert issues[("operations", "日期有效性", "error")]["count"] == 1
+    assert issues[("legal", "重复", "warning")]["count"] == 1
+    assert "租期" in issues[("operations", "日期有效性", "error")]["suggestion"]
+
+
+def test_hr_future_hire_and_salary(client):
+    _plant(HrEmployee, emp_no="E1", name="张三", hire_date=date(2027, 6, 1), base_salary=-500.0)
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    data = resp.json()
+    issues = {(i["domain"], i["check"], i["level"]): i for i in data["top_issues"]}
+    assert issues[("hr", "日期有效性", "warning")]["count"] == 1
+    assert issues[("hr", "金额异常", "error")]["count"] == 1
+    assert data["domains"]["hr"]["score"] == 87
+
+
+def test_planning_date_inversion(client):
+    _plant(PlanCampaign, name="周年庆", year=2026, start_date=date(2026, 6, 30), end_date=date(2026, 6, 1))
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    data = resp.json()
+    issues = {(i["domain"], i["check"], i["level"]): i for i in data["top_issues"]}
+    assert issues[("planning", "日期有效性", "warning")]["count"] == 1
+
+
+def test_facility_orphan_compliance(client):
+    _plant(FacilityCompliance, equipment_id=99999, kind="annual_inspection", title="孤儿合规事项", due_date=date(2026, 12, 1))
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    data = resp.json()
+    issues = {(i["domain"], i["check"], i["level"]): i for i in data["top_issues"]}
+    assert issues[("facility", "孤儿引用", "warning")]["count"] == 1
+
+
+def test_dq_summary_tool_compact_and_readonly(client):
+    _plant(HrEmployee, emp_no="E2", name="李四", hire_date=date(2027, 6, 1), base_salary=-500.0)
+    out = dq_summary(as_of=AS_OF)
+    assert out["overall_score"] < 100
+    hr = out["domains"]["hr"]
+    assert hr["available"] is True and hr["error"] == 1 and hr["warning"] == 1
+    assert hr["top_issues"] and hr["top_issues"][0]["level"] in ("error", "warning")
+
+
+def test_as_of_invalid_rejected(client):
+    resp = client.get("/api/business/dq/summary", params={"as_of": "2026/11/01"})
+    assert resp.status_code == 422
+    resp = client.get("/api/business/dq/summary")  # 缺省（不带 as_of）必须 200
+    assert resp.status_code == 200
+
+
+def test_score_aggregation(client):
+    for i in range(12):
+        _plant(LegalCase, case_no="DUP", title=f"重复案件{i}")
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    data = resp.json()
+    assert data["domains"]["legal"]["score"] == 97
+    assert data["overall_score"] is not None# __N10B__

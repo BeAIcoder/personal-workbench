@@ -137,22 +137,15 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .total-hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   font-weight: 400;
   margin-left: 8px;
 }
 
 .total-hint.warn {
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 
 .filters {

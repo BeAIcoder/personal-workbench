@@ -8,6 +8,7 @@
             <el-button size="small" @click="loadAll">刷新</el-button>
             <el-button size="small" @click="exportFile('contracts.xlsx')">导出合同</el-button>
             <el-button size="small" @click="exportFile('cases.xlsx')">导出案件</el-button>
+            <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
       </template>
@@ -185,9 +186,12 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+
+const aiPrompt = computed(() => '请分析法务台账：合同审查积压与风险分布、案件阶段与开庭提醒、用印合规情况')
 
 const loading = ref(false)
 const saving = ref(false)
@@ -373,12 +377,5 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
-.page { padding: 0; }
-.card-head { display: flex; align-items: center; justify-content: space-between; }
 .kpi { margin-bottom: 8px; }
-.kpi-box { background: #f5f7fa; border-radius: 6px; padding: 10px 12px; }
-.kpi-label { font-size: 12px; color: #909399; }
-.kpi-value { font-size: 20px; font-weight: 600; color: #303133; margin-top: 4px; }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-.mt8 { margin-top: 8px; }
 </style>

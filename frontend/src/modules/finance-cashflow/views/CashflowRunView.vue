@@ -4,7 +4,10 @@
       <template #header>
         <div class="card-head">
           <span>现金流滚动预测自动填报</span>
-          <el-button size="small" type="primary" @click="openDialog">新建运行</el-button>
+          <div class="toolbar">
+            <el-button size="small" type="primary" @click="openDialog">新建运行</el-button>
+            <AskAiButton :prompt="aiPrompt" />
+          </div>
         </div>
       </template>
       <el-alert type="info" :closable="false" show-icon
@@ -73,11 +76,12 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
 import { takeFiles } from '../../_shared/fileInput'
 import { currentMonth } from '../month'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const loading = ref(false)
 const items = ref([])
@@ -94,6 +98,8 @@ const creating = ref(false)
 const form = reactive({ actual_month: currentMonth(), files: [] })
 const logDialog = ref(false)
 const logContent = ref('')
+
+const aiPrompt = computed(() => '请分析最近一次现金流自动填报运行：当期 actual_month 的完成情况、可用的产物文件与数据缺口')
 
 // 每次打开新建对话框都取当前月，避免沿用上次选择/上月残留
 function openDialog() {
@@ -188,14 +194,8 @@ onMounted(load)
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.5;
 }

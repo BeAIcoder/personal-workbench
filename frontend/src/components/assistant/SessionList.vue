@@ -79,13 +79,6 @@ function exportSession(s) {
   padding-top: 6px;
 }
 
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .session-item {
   position: relative;
   padding: 8px 10px;
@@ -95,12 +88,12 @@ function exportSession(s) {
 }
 
 .session-item:hover {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
 }
 
 .session-item.active {
-  background: #ecf5ff;
-  border-color: #d9ecff;
+  background: var(--el-color-primary-light-9);
+  border-color: var(--el-color-primary-light-8);
 }
 
 .session-title {
@@ -114,7 +107,7 @@ function exportSession(s) {
 .session-meta {
   display: flex;
   gap: 8px;
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   font-size: 11px;
   margin-top: 2px;
 }
@@ -125,7 +118,7 @@ function exportSession(s) {
   top: 8px;
   display: none;
   gap: 6px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .session-item:hover .session-actions {
@@ -137,6 +130,6 @@ function exportSession(s) {
 }
 
 .session-actions .danger:hover {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 </style>

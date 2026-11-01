@@ -70,12 +70,6 @@ const llmBadge = computed(() => {
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .team-card {
   display: flex;
   flex-direction: column;
@@ -108,12 +102,12 @@ const llmBadge = computed(() => {
 }
 
 .agent-item:hover {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
 }
 
 .agent-item.active {
-  background: #ecf5ff;
-  border-color: #d9ecff;
+  background: var(--el-color-primary-light-9);
+  border-color: var(--el-color-primary-light-8);
 }
 
 .agent-emoji {
@@ -126,7 +120,7 @@ const llmBadge = computed(() => {
 }
 
 .agent-desc {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 2px;
   overflow: hidden;

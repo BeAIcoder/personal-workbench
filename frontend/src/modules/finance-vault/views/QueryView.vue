@@ -5,7 +5,10 @@
       <template #header>
         <div class="card-head">
           <span>只读 SQL 查询</span>
-          <el-button size="small" type="primary" :loading="loading" @click="run">执行</el-button>
+          <div class="toolbar">
+            <el-button size="small" type="primary" :loading="loading" @click="run">执行</el-button>
+            <AskAiButton :prompt="aiPrompt" />
+          </div>
         </div>
       </template>
       <el-input
@@ -38,6 +41,7 @@ import { ElMessage } from 'element-plus'
 import api from '../../../api'
 import { toTableRows } from '../tableRows'
 import UsageHelp from '../UsageHelp.vue'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const route = useRoute()
 const loading = ref(false)
@@ -45,6 +49,8 @@ const sql = ref('')
 const result = ref(null)
 
 const tableRows = computed(() => toTableRows(result.value?.columns, result.value?.rows))
+
+const aiPrompt = computed(() => '请基于数据仓当前数据集做质量检查：哪些表行数为0、哪些表有空值率高的列，并给出清洗建议。')
 
 async function run() {
   if (!sql.value.trim()) return
@@ -90,7 +96,7 @@ onMounted(() => {
 <style scoped>
 .hint {
   margin: 10px 0 0;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 </style>

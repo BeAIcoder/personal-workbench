@@ -10,5 +10,5 @@ export default {
       meta: { title: 'POS 对账' },
     },
   ],
-  menu: { group: '财务', title: 'POS 对账', icon: 'CreditCard', path: '/finance/pos', order: 90 },
+  menu: { group: '财务', subgroup: '账务处理', title: 'POS 对账', icon: 'CreditCard', path: '/finance/pos', order: 90 },
 }

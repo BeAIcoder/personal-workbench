@@ -12,13 +12,13 @@ describe('前端模块注册', () => {
     expect(typeof hello.component).toBe('function')
   })
 
-  it('getModuleMenus 返回「财务」分组菜单项', () => {
+  it('模块示例（finance-hello）不进侧栏菜单，路由保留可直达', () => {
+    // 开发样板不占侧栏：manifest menu 置 null，注册中心按无菜单过滤
     const menus = getModuleMenus()
-    const hello = menus.find((m) => m.path === '/finance/hello')
+    expect(menus.find((m) => m.path === '/finance/hello')).toBeUndefined()
+    const hello = getModuleRoutes().find((r) => r.path === '/finance/hello')
     expect(hello).toBeTruthy()
-    expect(hello.group).toBe('财务')
-    expect(hello.title).toBe('模块示例')
-    expect(hello.order).toBe(99)
+    expect(hello.meta.title).toBe('模块示例')
   })
 
   it('静态菜单：一级 5 项 + 「AI 配置」分组 4 项 + 定时任务（文案/图标/顺序不丢失）', () => {

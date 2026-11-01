@@ -90,12 +90,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .head-ops {
   display: flex;
   align-items: center;
@@ -104,7 +98,7 @@ onBeforeUnmount(() => {
 
 .auto-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .stack-wrap {
@@ -112,7 +106,7 @@ onBeforeUnmount(() => {
 }
 
 .stack-pre {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   padding: 8px 12px;
   border-radius: 4px;
   font-size: 12px;
@@ -124,13 +118,13 @@ onBeforeUnmount(() => {
 }
 
 .no-stack {
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   font-size: 12px;
   margin: 0;
 }
 
 .ua-line {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin: 6px 0 0;
 }

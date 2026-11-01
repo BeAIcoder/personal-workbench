@@ -1,7 +1,12 @@
 <template>
   <div class="page">
     <el-card shadow="never">
-      <template #header><span>个人所得税填报（工资薪金累计预扣法）</span></template>
+      <template #header>
+        <div class="card-head">
+          <span>个人所得税填报（工资薪金累计预扣法）</span>
+          <el-button type="primary" size="small" :loading="saving" @click="submit">计算并保存</el-button>
+        </div>
+      </template>
       <el-form :model="form" label-width="110px" @submit.prevent>
         <el-row :gutter="16">
           <el-col :span="8">
@@ -59,9 +64,6 @@
           </el-table-column>
         </el-table>
         <el-button size="small" class="mt8" @click="addRow">+ 加一行</el-button>
-        <div class="mt8">
-          <el-button type="primary" :loading="saving" @click="submit">计算并保存</el-button>
-        </div>
       </el-form>
       <el-alert v-if="resultTitle" :title="resultTitle" type="success" :closable="false" class="mt8" />
       <el-alert v-for="w in warnings" :key="w" :title="w" type="warning" :closable="false" class="mt8" />
@@ -158,6 +160,4 @@ onMounted(loadList)
 </script>
 
 <style scoped>
-.page { padding: 0; }
-.mt8 { margin-top: 8px; }
 </style>

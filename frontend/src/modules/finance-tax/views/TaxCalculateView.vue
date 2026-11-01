@@ -179,24 +179,18 @@ onMounted(loadEnterprise)
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .calc-form :deep(.el-input-number) {
   width: 100%;
 }
 
 .reason {
   margin: 12px 0 0;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 13px;
 }
 
 .step-detail .formula {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
 }
 

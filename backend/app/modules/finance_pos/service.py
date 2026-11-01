@@ -22,6 +22,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
+from ...database import SessionLocal
 from ...utils import engine_subprocess_env, find_sibling_project, repair_upload_mojibake, resolve_engine_root
 from .models import PosRun
 
@@ -384,3 +385,27 @@ def artifact_path(run: PosRun, name: str) -> Path:
     from fastapi import HTTPException
 
     raise HTTPException(status_code=404, detail=f"产物不存在：{name}")
+
+
+def pos_summary_tool() -> dict:
+    """POS 对账运行摘要（只读 Agent 工具）。"""
+    with SessionLocal() as db:
+        total = db.query(PosRun).count()
+        ok_runs = db.query(PosRun).filter(PosRun.status == "ok").count()
+        latest = db.query(PosRun).order_by(PosRun.id.desc()).first()
+        latest_view = None
+        if latest is not None:
+            latest_view = {
+                "id": latest.id,
+                "status": latest.status,
+                "elapsed_sec": latest.elapsed_sec,
+                "artifacts": len(latest.artifacts or []),
+                "created_at": latest.created_at.isoformat() if latest.created_at else None,
+            }
+        return {
+            "ok": True,
+            "module": "finance_pos",
+            "total_runs": total,
+            "ok_runs": ok_runs,
+            "latest": latest_view,
+        }

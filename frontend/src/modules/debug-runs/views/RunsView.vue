@@ -206,24 +206,18 @@ onMounted(load)
 </script>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .ok-text {
-  color: #67c23a;
+  color: var(--el-color-success);
   font-weight: 600;
 }
 
 .bad-text {
-  color: #f56c6c;
+  color: var(--el-color-danger);
   font-weight: 600;
 }
 
 .sep {
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   margin: 0 2px;
 }
 
@@ -247,14 +241,14 @@ onMounted(load)
 
 .err-lists :deep(.err-title) {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-bottom: 4px;
 }
 
 .err-lists :deep(.err-pre),
 .err-pre {
-  background: #fef0f0;
-  color: #f56c6c;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
   padding: 8px 12px;
   border-radius: 4px;
   font-size: 12px;
@@ -266,7 +260,7 @@ onMounted(load)
 }
 
 .no-err {
-  color: #67c23a;
+  color: var(--el-color-success);
   font-size: 12px;
   margin: 0;
 }
@@ -280,14 +274,14 @@ onMounted(load)
 .shot-img {
   width: 100%;
   height: 140px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 4px;
   cursor: zoom-in;
 }
 
 .shot-name {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-top: 4px;
   text-align: center;
 }

@@ -22,5 +22,5 @@ export default {
       meta: { title: '个人记账·统计' },
     },
   ],
-  menu: { group: '财务', title: '个人记账', icon: 'Notebook', path: '/finance/ledger-personal', order: 40 },
+  menu: { group: '财务', subgroup: '记账', title: '个人记账', icon: 'Notebook', path: '/finance/ledger-personal', order: 40 },
 }

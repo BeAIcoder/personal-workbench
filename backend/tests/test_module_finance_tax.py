@@ -105,6 +105,9 @@ def test_textbook_reference(client):
 
 
 def test_no_agent_tools_registered():
-    """本模块未注册 Agent 工具（税务计算入口后续按需再开）。"""
+    """只注册只读摘要工具 tax_returns_summary（2026-11-01 开放）；其他 tax_ 前缀工具仍禁止。"""
     for name in TOOL_SPECS:
-        assert not name.startswith("tax_")
+        if name == "tax_returns_summary":
+            assert TOOL_SPECS[name]["readonly"] is True
+        else:
+            assert not name.startswith("tax_")

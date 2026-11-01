@@ -10,5 +10,6 @@ export default {
       meta: { title: '模块示例' },
     },
   ],
-  menu: { group: '财务', title: '模块示例', icon: 'Coin', path: '/finance/hello', order: 99 },
+  // 模块示例仅作新模块开发样板：不进侧栏（menu 置 null，注册中心按无菜单过滤），路由保留可直达 /finance/hello
+  menu: null,
 }

@@ -10,5 +10,5 @@ export default {
       meta: { title: '增值税填报' },
     },
   ],
-  menu: { group: '财务', title: '增值税填报', icon: 'Coin', path: '/finance/vat', order: 82 },
+  menu: { group: '财务', subgroup: '税务填报', title: '增值税填报', icon: 'Coin', path: '/finance/vat', order: 82 },
 }

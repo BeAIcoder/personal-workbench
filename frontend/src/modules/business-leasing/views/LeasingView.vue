@@ -8,6 +8,7 @@
             <el-button size="small" @click="loadAll">刷新</el-button>
             <el-button size="small" @click="exportFile('units.xlsx', '招商铺位台账.xlsx')">导出铺位</el-button>
             <el-button size="small" @click="exportFile('leads.xlsx', '招商线索.xlsx')">导出线索</el-button>
+            <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
       </template>
@@ -221,9 +222,12 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+
+const aiPrompt = computed(() => '请分析招商台账：空置率与租决漏斗、在谈线索转化、到期铺位与跟进记录的质量问题')
 
 const loading = ref(false)
 const saving = ref(false)
@@ -521,15 +525,7 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
-.page { padding: 0; }
-.card-head { display: flex; align-items: center; justify-content: space-between; }
 .kpi { margin-bottom: 8px; }
-.kpi-box { background: #f5f7fa; border-radius: 6px; padding: 10px 12px; }
-.kpi-label { font-size: 12px; color: #909399; }
-.kpi-value { font-size: 20px; font-weight: 600; color: #303133; margin-top: 4px; }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-.pager { margin-top: 10px; justify-content: flex-end; }
-.mt8 { margin-top: 8px; }
-.hint { font-size: 12px; color: #909399; margin: 8px 0 0; }
+.hint { margin: 8px 0 0; }
 .follow-form { margin-bottom: 8px; }
 </style>

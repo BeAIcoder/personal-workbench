@@ -22,6 +22,10 @@ FINANCE_TOOL_NAMES: list[str] = [
     # finance_ledger_bip 企业记账
     "bip_voucher_query",
     "bip_balance_query",
+    # 2026-11-01 新增：税种/POS/现金流只读摘要
+    "tax_returns_summary",
+    "pos_summary",
+    "cashflow_summary",
 ]
 
 # 预置目标专家（与各模块 manifest.preset_experts 保持一致）

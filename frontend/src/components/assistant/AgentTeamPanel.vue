@@ -67,7 +67,7 @@
         </div>
         <div class="agent-desc">{{ a.description || '（无描述）' }}</div>
         <div class="agent-meta">
-          <span class="meta-item">🤖 {{ agentModelLabel(a, models) }}</span>
+          <span class="meta-item"><el-icon><Cpu /></el-icon>{{ agentModelLabel(a, models) }}</span>
           <span class="meta-item">排序 {{ a.sort }}</span>
         </div>
         <div v-if="a.keywords && a.keywords.length" class="agent-kws">
@@ -417,33 +417,33 @@ defineExpose({ reload: loadAgents })
 }
 
 .route-state {
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-weight: 600;
 }
 
 .route-need {
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .route-hit {
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   border-radius: 8px;
   padding: 1px 8px;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .route-hit.top {
-  border-color: #67c23a;
-  color: #529b2e;
-  background: #f0f9eb;
+  border-color: var(--el-color-success);
+  color: var(--el-color-success-dark-2);
+  background: var(--el-color-success-light-9);
 }
 
 .route-by {
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
 }
 
 .route-none {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .team-toolbar {
@@ -457,7 +457,7 @@ defineExpose({ reload: loadAgents })
 }
 
 .agent-card {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 10px;
@@ -468,8 +468,8 @@ defineExpose({ reload: loadAgents })
 }
 
 .agent-card.hit {
-  border-color: #67c23a;
-  box-shadow: 0 0 0 1px #e1f3d8;
+  border-color: var(--el-color-success);
+  box-shadow: 0 0 0 1px var(--el-color-success-light-8);
 }
 
 .agent-head {
@@ -502,12 +502,12 @@ defineExpose({ reload: loadAgents })
 }
 
 .agent-name {
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   font-size: 12px;
 }
 
 .agent-desc {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 6px;
 }
@@ -515,7 +515,7 @@ defineExpose({ reload: loadAgents })
 .agent-meta {
   display: flex;
   gap: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 4px;
 }
@@ -535,7 +535,7 @@ defineExpose({ reload: loadAgents })
 }
 
 .kw-more {
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   font-size: 12px;
 }
 
@@ -551,7 +551,7 @@ defineExpose({ reload: loadAgents })
 }
 
 .cfg-hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.5;
   margin-top: 2px;

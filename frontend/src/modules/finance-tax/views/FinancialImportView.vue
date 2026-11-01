@@ -102,11 +102,11 @@ async function doImport() {
 
 .upload-hint {
   padding: 20px;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 </style>

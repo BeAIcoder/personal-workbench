@@ -23,6 +23,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
+from ...database import SessionLocal
 from ...utils import engine_subprocess_env, find_sibling_project, repair_upload_mojibake, resolve_engine_root
 from .models import CashflowRun
 
@@ -360,3 +361,28 @@ def artifact_path(run: CashflowRun, name: str) -> Path:
     from fastapi import HTTPException
 
     raise HTTPException(status_code=404, detail=f"产物不存在：{name}")
+
+
+def cashflow_summary_tool() -> dict:
+    """现金流运行摘要（只读 Agent 工具）。"""
+    with SessionLocal() as db:
+        total = db.query(CashflowRun).count()
+        ok_runs = db.query(CashflowRun).filter(CashflowRun.status == "ok").count()
+        latest = db.query(CashflowRun).order_by(CashflowRun.id.desc()).first()
+        latest_view = None
+        if latest is not None:
+            latest_view = {
+                "id": latest.id,
+                "status": latest.status,
+                "actual_month": latest.actual_month,
+                "elapsed_sec": latest.elapsed_sec,
+                "artifacts": len(latest.artifacts or []),
+                "created_at": latest.created_at.isoformat() if latest.created_at else None,
+            }
+        return {
+            "ok": True,
+            "module": "finance_cashflow",
+            "total_runs": total,
+            "ok_runs": ok_runs,
+            "latest": latest_view,
+        }
