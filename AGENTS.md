@@ -8,7 +8,7 @@
 - **新模块 business_dq（数据质量巡检，第 23 个模块）**：`/api/business/dq/summary`（七域×五维，全字面量 SQL 只读对账、零新表；表缺失→available=false+中文 gap_reasons；score=100-Σ扣分，error 10/warning 3/info 1）。`dq_summary` 只读工具预置 realestate/cre_gm。**路由 as_of 必须用 `Query(default=None, pattern=...)`——default="" 会撞 pattern 直接 422**。
 - **财务域 AI 工具补齐**：finance_tax `tax_returns_summary` / finance_pos `pos_summary` / finance_cashflow `cashflow_summary` 三个只读工具预置 finance_specialist；`module_tool_preset.py` FINANCE_TOOL_NAMES 同步（dq_summary 属业务专家，不在该清单）。manifest 校验失败会**静默跳过模块并级联跳过 requires 依赖模块**——本轮 params 字段被噪声吃掉导致 4 个税种模块消失，靠聚焦测试抓回。
 - **前端 AI 入口全覆盖**：`utils/assistantEntry.js` + `components/assistant/AskAiButton.vue`；**15 个模块视图接线**（业务 7 + 财务 8，每视图 3 处：模板按钮/import+aiPrompt）；新视图 DqView（总分/七域卡/issues 表）。Vue 视图加代码时**不能把既有 ref 声明夹删**（PlanningView loading 曾被删，vitest 抓回）。
-- **验证**：后端聚焦 29 passed + 全量回归（见下）；前端 **59 文件 885 passed** + 构建通过（stamp `5a4a8d99af0d`）；运行态：服务重启后 dq summary 200（含缺省）、专家白名单含新工具、OpenCode Go 运行态生效。真实 `backend/data` 仅供应商配置写入（预备份 `workbench_20261101_222929.db`+ZIP）。
+- **验证**：后端聚焦 29 passed + 全量回归（见下）；前端 **59 文件 885 passed** + 构建通过（stamp `5a4a8d99af0d`）；运行态：服务重启后 dq summary 200（含缺省）、专家白名单含新工具、OpenCode Go 运行态生效。真实 `backend/data` 仅供应商配置写入（预备份 `workbench_20261101_222929.db`+ZIP）。**Mimosa 深度扫描通过**：6 findings 全为历史已知项（package_release 127.0.0.1 冒烟误报×2+路径穿越误报、20261012New 历史存档 SQL×2、保勾稽固定种子×1），本轮新文件 0 findings；seal `7a43f99b…`。
 
 ## 财务菜单层级重组（2026-11-01）
 
