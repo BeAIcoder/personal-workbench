@@ -90,7 +90,7 @@
           <template #header>
             <div class="card-head">
               <span class="card-title"><el-icon><AlarmClock /></el-icon>即将到期任务</span>
-              <el-link type="primary" :underline="false" @click="$router.push('/tasks?sort=due_asc')">查看全部</el-link>
+              <el-link type="primary" underline="never" @click="$router.push('/tasks?sort=due_asc')">查看全部</el-link>
             </div>
           </template>
           <el-empty v-if="!data?.upcoming_tasks?.length" description="暂无临近截止的任务" :image-size="60" />
@@ -114,7 +114,7 @@
           <template #header>
             <div class="card-head">
               <span class="card-title"><el-icon><Calendar /></el-icon>今日日程</span>
-              <el-link type="primary" :underline="false" @click="$router.push('/schedules')">查看全部</el-link>
+              <el-link type="primary" underline="never" @click="$router.push('/schedules')">查看全部</el-link>
             </div>
           </template>
           <el-empty v-if="!data?.today_schedules?.length" description="今天暂无日程安排" :image-size="60" />
@@ -139,7 +139,7 @@
           <template #header>
             <div class="card-head">
               <span class="card-title"><el-icon><Notebook /></el-icon>最近笔记</span>
-              <el-link type="primary" :underline="false" @click="$router.push('/notes')">查看全部</el-link>
+              <el-link type="primary" underline="never" @click="$router.push('/notes')">查看全部</el-link>
             </div>
           </template>
           <el-empty v-if="!data?.recent_notes?.length" description="还没有笔记" :image-size="60" />

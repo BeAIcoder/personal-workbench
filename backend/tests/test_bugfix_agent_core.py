@@ -387,6 +387,9 @@ def test_attachments_block_decodes_gbk_chinese(upload_dir):
 
 @pytest.fixture()
 def route_team():
+    # 路由仲裁 TTL 缓存是模块级状态（演进第二批）：同问题文本跨测试会串结果，逐测试清空
+    orchestrator._route_cache.clear()
+
     def _spec(name, label, keywords, sort):
         return AgentSpec(
             name=name,

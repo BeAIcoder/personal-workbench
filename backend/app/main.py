@@ -132,7 +132,7 @@ def _ensure_sqlite_columns() -> None:
 
     patches = {
         "chat_messages": {"thinking": "TEXT DEFAULT ''"},
-        "agent_sessions": {"archived": "INTEGER DEFAULT 0"},
+        "agent_sessions": {"archived": "INTEGER DEFAULT 0", "summary": "TEXT DEFAULT ''", "summary_until": "INTEGER"},
         "memories": {"type": "TEXT DEFAULT ''"},
         "agent_settings": {
             "active_profile_id": "INTEGER",
@@ -144,6 +144,7 @@ def _ensure_sqlite_columns() -> None:
             "plugins_dir": "TEXT DEFAULT ''",
             "reasoning_effort": "TEXT DEFAULT ''",
             "memory_inject_max": "INTEGER DEFAULT 3",
+            "routing_model_id": "INTEGER",
         },
         "scheduled_jobs": {
             "cron_expr": "TEXT DEFAULT ''",

@@ -5,6 +5,8 @@ pydantic>=2.7.0
 pydantic-settings>=2.3.0
 httpx>=0.27.0
 pytest>=8.2.0
+# 全量回归并行分片（conftest 按 PID 隔离临时库，与 xdist 多进程天然兼容；本机实测 -n 12 全绿 69.85s）
+pytest-xdist>=3.6,<4
 agentscope==2.0.7.post1
 openpyxl>=3.1
 # AI 助手 Word/PPT 正文提取；PDF 复用下方 pdfplumber

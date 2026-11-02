@@ -364,6 +364,8 @@ DEFAULTS: dict = {
     "enable_plugins": False,
     "plugins_dir": "",
     "reasoning_effort": "",
+    # 路由仲裁模型（演进第二批）：None = 跟随全局激活模型；int = provider_models.id
+    "routing_model_id": None,
 }
 
 # 模型级字段（供应商/模型两表承载）
@@ -435,6 +437,7 @@ def load() -> dict:
                 "enable_plugins": row.enable_plugins,
                 "plugins_dir": row.plugins_dir or "",
                 "reasoning_effort": row.reasoning_effort or "",
+                "routing_model_id": row.routing_model_id,
             }
         )
 
@@ -574,6 +577,15 @@ def save_globals(data: dict) -> None:
             # '' = 跟随模型；off = 旧版「关闭思考」（Task 6B 起保留兼容，语义同 none）；
             # none/minimal/low/medium/high/xhigh/max = canonical 七档（Task 6B 前端可提交）
             row.reasoning_effort = v if v in _REASONING_EFFORT_VALUES else ""
+        if "routing_model_id" in data:
+            raw = data.get("routing_model_id")
+            # None/非正数/非法值 = 跟随全局激活模型；正整数 = 指定 provider_models.id
+            # （存在性由取用方兜底，不可用时 _get_routing_model 自动回退全局激活模型并告警）
+            try:
+                rid = int(raw)
+            except (TypeError, ValueError):
+                rid = 0
+            row.routing_model_id = rid if rid > 0 else None
         row.updated_at = datetime.now()
         db.commit()
 

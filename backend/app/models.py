@@ -93,6 +93,10 @@ class AgentSession(Base):
     title: Mapped[str] = mapped_column(String(100), default="")
     # 归档：归档后不出现在默认会话列表（archived=true 过滤可见）
     archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    # 长会话滚动摘要（演进第二批）：历史超过注入窗口 2 倍时压缩更早消息；注入时置顶
+    summary: Mapped[str] = mapped_column(Text, default="")
+    # 摘要游标：已压缩覆盖到的最大 chat_messages.id（None = 尚未压缩过）
+    summary_until: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     # updated_at：会话列表 order_by(updated_at desc) 的排序列，缺索引时全表扫描 + 临时 B 树
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, index=True)
@@ -225,6 +229,8 @@ class AgentSettings(Base):
     plugins_dir: Mapped[str] = mapped_column(String(300), default="")
     # 思考深度：'' 跟随模型 / off / low / medium / high / max
     reasoning_effort: Mapped[str] = mapped_column(String(12), default="")
+    # 路由仲裁模型（演进第二批）：指定 provider_models.id 作轻量调度模型；None = 跟随全局激活模型
+    routing_model_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 

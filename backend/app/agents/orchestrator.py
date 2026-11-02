@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import re
+import time
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -153,6 +154,7 @@ def invalidate() -> None:
     _session_model_ids.clear()
     _agents.clear()
     _agent_locks.clear()
+    _route_cache.clear()
     # 只清「未持有」的运行锁：正在生成中的会话应立即完成本轮，不能因配置保存
     # 而在下一轮出现同一 session 两把锁（BUGfix AGT-02）。
     for sid in [s for s, lock in _session_run_locks.items() if not lock.locked()]:
@@ -225,6 +227,24 @@ def _get_spec_model(spec: AgentSpec, session_id: str | None = None):
             if _models[spec.model_id] is not None:
                 return _models[spec.model_id]
     return _get_model(session_id)
+
+
+def _get_routing_model():
+    """路由仲裁模型（演进第二批）：agent_settings.routing_model_id 指定的轻量模型。
+
+    None / 不可用回退全局激活模型；指定模型走共享缓存（model_id 维度，invalidate 清空），
+    不占用专家绑定模型的会话缓存维度。
+    """
+    rm_id = config_store.load().get("routing_model_id")
+    if rm_id:
+        if rm_id not in _models:
+            cfg = config_store.model_cfg_by_id(int(rm_id))
+            _models[rm_id] = build_model(cfg) if cfg else None
+            if _models[rm_id] is None:
+                logger.warning("路由模型不可用（model_id=%s），回退全局激活模型", rm_id)
+        if _models[rm_id] is not None:
+            return _models[rm_id]
+    return _get_model()
 
 
 def _resolve_mode(mode: str | None) -> str:
@@ -389,6 +409,9 @@ async def _ensure_agent(session_id: str, spec: AgentSpec, mode: str):
         except KeyError:
             agent = await _build_agent(spec, mode, session_id=session_id)
             history = _load_history_msgs(session_id)
+            summary = await _refresh_session_summary(session_id)
+            if summary:
+                history = [_summary_message(summary)] + history
             if history:
                 agent.observe(history)
             _agent_cache_put(key, agent)
@@ -424,12 +447,139 @@ def _load_history_msgs(session_id: str, limit: int | None = None) -> list:
     return msgs
 
 
+# ---------------- 长会话滚动摘要（演进第二批） ----------------
+# 历史未压缩部分超过注入窗口 2 倍时，Agent（重）构建阶段把窗口外的更早消息压缩进
+# agent_sessions.summary（游标 summary_until 防重复压缩），注入时置顶 + 最近窗口。
+# 失败只告警并沿用既有摘要，绝不阻塞聊天。
+_SUMMARY_WINDOW_FACTOR = 2
+_SUMMARY_MSG_MAX = 400
+_SUMMARY_PROMPT_MAX = 6000
+_SUMMARY_MAX_CHARS = 2000
+
+
+def _load_summary_text(session_id: str) -> str:
+    with SessionLocal() as db:
+        row = db.get(AgentSession, session_id)
+    return (row.summary or "") if row is not None else ""
+
+
+def _save_summary_text(session_id: str, text: str) -> None:
+    with SessionLocal() as db:
+        row = db.get(AgentSession, session_id)
+        if row is None:
+            row = AgentSession(session_id=session_id)
+            db.add(row)
+            db.flush()
+        row.summary = (text or "").strip()[:_SUMMARY_MAX_CHARS]
+        db.commit()
+
+
+def _summary_message(text: str):
+    from agentscope.message import Msg, TextBlock
+
+    return Msg(name="系统摘要", role="user", content=[TextBlock(type="text", text=f"【此前对话摘要】{text}")])
+
+
+def _summary_state(session_id: str) -> tuple[int, int | None]:
+    """返回 (会话最新消息 id, 摘要游标 summary_until)。无消息时 latest=0。"""
+    with SessionLocal() as db:
+        row = db.get(AgentSession, session_id)
+        cursor = row.summary_until if row is not None else None
+        latest = (
+            db.query(func.max(ChatMessage.id))
+            .filter(ChatMessage.session_id == session_id)
+            .scalar()
+            or 0
+        )
+    return int(latest), (int(cursor) if cursor else None)
+
+
+async def _refresh_session_summary(session_id: str) -> str:
+    """超阈值时把窗口外更早消息压缩进会话摘要；返回注入用摘要文本（可为空串）。"""
+    if session_id in _INTERNAL_SESSION_IDS:
+        return _load_summary_text(session_id)
+    cfg = config_store.load()
+    if not cfg.get("enable_memory", True):
+        return _load_summary_text(session_id)
+    existing = _load_summary_text(session_id)
+    window = max(int(cfg.get("history_inject", 12)), 1)
+    latest, cursor = _summary_state(session_id)
+    pending = latest - max(cursor or 0, 0) - window
+    if pending < window * _SUMMARY_WINDOW_FACTOR:
+        return existing
+    with SessionLocal() as db:
+        older = (
+            db.query(ChatMessage)
+            .filter(
+                ChatMessage.session_id == session_id,
+                ChatMessage.id > (cursor or 0),
+                ChatMessage.id <= latest - window,
+            )
+            .order_by(ChatMessage.id.asc())
+            .all()
+        )
+    lines = []
+    for row in older:
+        role = "用户" if row.role == "user" else "助手"
+        text = (row.content or "").strip()
+        if text:
+            lines.append(f"{role}：{text[:_SUMMARY_MSG_MAX]}")
+    transcript = "\n".join(lines)[-_SUMMARY_PROMPT_MAX:]
+    if not transcript:
+        return existing
+    model = _get_routing_model()
+    if model is None:
+        return existing
+    try:
+        from agentscope.agent import Agent
+        from agentscope.message import Msg, TextBlock
+
+        parts = []
+        if existing:
+            parts.append(f"此前摘要：\n{existing}")
+        parts.append(
+            "以下是更早的对话记录，请压缩成一段不超过 500 字的中文摘要，"
+            "保留关键事实、数据、决定与未尽事项，不要逐句罗列：\n" + transcript
+        )
+        summarizer = Agent(
+            name="摘要员",
+            system_prompt="你负责把长对话压缩成简洁准确的中文摘要，只输出摘要正文。",
+            model=model,
+        )
+        reply = await summarizer.reply(
+            Msg(name="用户", role="user", content=[TextBlock(type="text", text="\n\n".join(parts))])
+        )
+        text = (reply.get_text_content() or "").strip()
+        if text:
+            _save_summary_text(session_id, text)
+            with SessionLocal() as db:
+                agg_row = db.get(AgentSession, session_id)
+                if agg_row is not None:
+                    agg_row.summary_until = max((older[-1].id if older else 0), cursor or 0)
+                    db.commit()
+        return text if text else existing
+    except Exception as exc:
+        logger.warning("会话摘要压缩失败（%s），沿用既有摘要", type(exc).__name__)
+    return existing
+
+
+# LLM 仲裁结果短窗缓存（演进第二批）：键=(名册文本, 问题前 200 字)，TTL 10 分钟，上限 128 条。
+# 只缓存「成功解析出唯一专家」的仲裁；失败/None 不缓存（模型恢复后立即可用）。
+_ROUTE_CACHE_TTL = 600.0
+_ROUTE_CACHE_MAX = 128
+_route_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
+
 async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None:
     """LLM 纯文本仲裁；任何失败都返回 None（回退关键词/默认）。"""
     from agentscope.agent import Agent
     from agentscope.message import Msg, TextBlock
 
-    if _get_model() is None:
+    cache_key = (roster_text(team), (question or "").strip()[:200])
+    hit = _route_cache.get(cache_key)
+    if hit is not None and time.monotonic() - hit[0] < _ROUTE_CACHE_TTL:
+        return hit[1]
+    if _get_routing_model() is None:
         return None
     try:
         router = Agent(
@@ -438,7 +588,7 @@ async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None
                 "你是 Agent 团队的任务调度员。根据团队名册和用户消息，"
                 "选出最合适的一位专家。只做路由选择，不做具体回答；只返回一个 name。"
             ),
-            model=_get_model(),
+            model=_get_routing_model(),
         )
         reply = await router.reply(
             Msg(
@@ -447,10 +597,53 @@ async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None
                 content=[TextBlock(type="text", text=f"团队名册：\n{roster_text(team)}\n\n用户消息：{question}")],
             )
         )
-        return parse_route_reply(reply.get_text_content() or "", team)
+        name = parse_route_reply(reply.get_text_content() or "", team)
+        if name is not None:
+            _route_cache[cache_key] = (time.monotonic(), name)
+            while len(_route_cache) > _ROUTE_CACHE_MAX:
+                _route_cache.pop(next(iter(_route_cache)))
+        return name
     except Exception as exc:
         logger.warning("LLM 路由阶段失败（%s），回退关键词/默认路由", type(exc).__name__)
     return None
+
+
+# 工具轨迹落库大小治理（演进第一批）：单条 result 截到 4k 字符、整条轨迹上限 100KB，
+# 超预算时从最旧条目开始丢弃并留一条说明标记。前端按 {tool,args,result} 列表渲染
+# （ChatPanel trace-collapse），治理只做截断与计数，不改列表结构。
+_TRACE_RESULT_MAX = 4_000
+_TRACE_TOTAL_MAX = 100_000
+
+
+def _govern_trace(trace: list) -> list:
+    """限制工具轨迹的落库体积：单条 result 截断、总额超限丢弃最旧条目并留说明标记。"""
+    if not trace:
+        return trace
+    governed: list = []
+    dropped = 0
+    total = 0
+    for item in reversed(trace):
+        if not isinstance(item, dict):
+            dropped += 1
+            continue
+        result = str(item.get("result") or "")
+        if len(result) > _TRACE_RESULT_MAX:
+            result = result[:_TRACE_RESULT_MAX] + f"…（截断，原文 {len(result)} 字符）"
+        args_size = len(json.dumps(item.get("args") or {}, ensure_ascii=False, default=str))
+        size = len(result) + args_size
+        if total + size > _TRACE_TOTAL_MAX and governed:
+            dropped += 1
+            continue
+        total += size
+        governed.append({**item, "result": result})
+    governed.reverse()
+    if dropped:
+        governed.insert(0, {
+            "tool": "trace",
+            "args": {},
+            "result": f"（工具轨迹已按大小治理：省略 {dropped} 条更早条目，单条 result 上限 {_TRACE_RESULT_MAX} 字符）",
+        })
+    return governed
 
 
 def _persist(session_id: str, role: str, agent_name: str, content: str, trace: list, thinking: str = "") -> None:
@@ -461,7 +654,7 @@ def _persist(session_id: str, role: str, agent_name: str, content: str, trace: l
                 role=role,
                 agent_name=agent_name,
                 content=content,
-                trace=trace,
+                trace=_govern_trace(trace),
                 thinking=thinking,
             )
         )

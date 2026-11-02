@@ -48,6 +48,12 @@ if _is_sqlite:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA temp_store=2")
+            # busy_timeout：并发写锁冲突时等待重试而非立刻抛「database is locked」。
+            # 热备份（backup API 只读快照）与长查询窗口内的写请求不再互相卡死。
+            cursor.execute("PRAGMA busy_timeout=5000")
+            # WAL：读写不互斥，写锁仅在 WAL 文件上短暂排他；
+            # 持久化属性（写进库文件头），每连接重设是幂等兜底（新库/换机场景）。
+            cursor.execute("PRAGMA journal_mode=WAL")
         finally:
             cursor.close()
 

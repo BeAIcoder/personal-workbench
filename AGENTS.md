@@ -314,4 +314,33 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **第二轮（页面内模板下载 + 个人记账导入入口）**：新增 `backend/app/routers/data_templates.py`（`GET /api/templates` 清单 + `GET /api/templates/{name}` 下载；文件名固定白名单、无用户可控路径拼接，未命中一律 404）并挂到 main.py；前端 `utils/dataTemplates.js` + `components/TemplateLinks.vue`，**6 个上传页接入**（数据仓/费用分类/POS/现金流/BIP/个人记账）；**补上个人记账 CSV 导入前端入口**（后端 `/import/csv` 原本存在但页面无按钮——真实「空壳」缺口，含成功/坏行提示与模板链接）。
 - 测试：`test_data_templates.py` 5→**8 passed**（清单 10 份就位、白名单下载含 RFC5987 中文名与 xlsx 魔数、白名单外/路径穿越 404）；前端新增 `data-templates.test.js`（4 例：清单唯一性、URL 编码、6 视图接线、个人导入入口）；**前端全量 60 文件 896 passed** + 构建通过（stamp `99916b28b78d`）。前端静态守卫（B6）要求业务 catch 不重复弹 `ElMessage.error`，导入失败提示由拦截器统一承担。
 - 提交：上一轮发票代码+文档 `d616147`；本轮（模板下载/导入入口）单独提交。
-- **验证（第二轮）**：后端全量 **1514 passed（949.09s）**；前端 60 文件 **896 passed**；构建通过（stamp `99916b28b78d`）。**Mimosa deep 复核**：6 findings 仍为历史已知项（`dev/package_release.py`×3、`20261012New` 历史 SQL×2、`dev/desensitize_finance_data.py` 固定种子×1），本轮新文件 0 findings；seal `sha256:ab6eb482…`。
+- **验证（第二轮）**：后端全量 **1514 passed (949.09s)**；前端 60 文件 **896 passed**；构建通过（stamp `99916b28b78d`）。**Mimosa deep 复核**：6 findings 仍为历史已知项（`dev/package_release.py`×3、`20261012New` 历史 SQL×2、`dev/desensitize_finance_data.py` 固定种子×1），本轮新文件 0 findings；seal `sha256:ab6eb482…`。
+
+## 技术栈演进路线 + 第一批改造（2026-11-03）
+
+- **演进路线（四维探索代理摸底：后端/前端/AI 栈/运维链；完整分析见 2026-11-02 会话结论，本文只留执行态）**：
+  - **P0 已执行（本节）**：SQLite WAL+busy_timeout、前端 vendor 拆包、CI 缓存、trace 大小治理。
+  - **P1 待办**：长文件拆分（annual_tax_form_generator 2008 行 / orchestrator 1258 行 / config_store 1302 / invoice service 1143，每文件 ≤800 行——长文件是 Write/Edit 噪声事故高发区，拆分即降险）；测试提速（xdist 试点 + slow 标记分层 + sleep 测试改 deadline 轮询）；AI 路由轻量化（新增 routing_model_id 配置 + 短窗缓存）；长会话滚动摘要；前端 SettingsDrawer(1486)/ChatPanel(1070) 拆分；EP 按需引入（需浏览器探针验证：v-loading 等指令与未知组件静默失败风险，单独成轮）。
+  - **P2 条件触发**：PostgreSQL+Alembic（触发：多设备/局域网多用户/uvicorn 多 worker）；pinia（触发：真实跨模块共享状态）；向量检索（触发：记忆/笔记过千，sqlite-vec 或供应商 embedding）；auth 层（触发：ALLOW_NON_LOOPBACK=true **前必须**先有登录态）；MCP 长结果落盘引用（触发：长报告类 server）；依赖升级列车半年一列（Vue 3.5 / Vite 7 / EP 2.10 / vitest 3 / agentscope 3.x 单独评估，agentscope 是唯一精确锁定依赖）。
+  - **业务路线**：近期=看板重跑出合规快照（verify 已发现 20 处 KPI 差异+旧 HTML 含 map）、dq 驾驶舱化+告警、发票归类规则打磨、模板库补齐；中期=准入制解锁（房产税/城镇土地使用税需地方口径+脱敏样本；13 周现金流需业务口径；政策版本化扩展需逐条官方日期复核）；长期=多端同步（届时 PostgreSQL+auth）、AI 从对话到流水线（scheduler.JOB_ACTIONS 注册表是最干净的扩展缝）。
+  - **硬约束（所有演进必须兼容）**：QQSysMonX64 进程树拦截→跨目录写必须保留计划任务通道；推送待 GCM 授权，CI 实际从未跑过。
+- **第一批执行结果（2026-11-03 实测）**：
+  - **SQLite WAL + busy_timeout**：database.py 连接监听补 `journal_mode=WAL` + `busy_timeout=5000`（原仅 temp_store=2）。运行态实测：`workbench.db-wal/-shm` 已生成；backup_db.py 走 backup API + ZIP 已跳过 .wal/.shm，天然兼容。新增 `test_database_pragmas.py`。
+  - **前端 vendor 拆包**：vite manualChunks 三分（**vendor-core=vue+EP+icons+basic 必须同 chunk**，EP 与 vue 跨包初始化顺序耦合，分开拆触发「Cannot access before initialization」运行时错误——冒烟抓回后合并修复；echarts/ag-grid 单向依赖可独立）。index chunk 1.29MB→**37KB**（业务代码与 vendor 缓存分离），stamp `76537fe4d392`。顺带修掉 DashboardView 三处 el-link `:underline="false"` 弃用警告（改 `underline="never"`），强刷后三页 **0 errors/0 warnings**。
+  - **CI 缓存**：ci.yml 补 setup-python `cache: pip` + setup-node `cache: npm`（cache-dependency-path 指 frontend/package-lock.json），YAML 合法性已校验。
+  - **trace 大小治理**：orchestrator 新增 `_govern_trace`——单条 result 截 4k 字符、总额 100KB 超限丢弃最旧条目并留说明标记，保持 `{tool,args,result}` 列表结构（前端 trace-collapse 渲染依赖）。新增 `test_trace_governance.py` 4 例。
+  - **聚焦 128 passed**（agent 链路+备份）+ 后端全量 **1519 passed（266.77s）**——比 794~949s 基线快约 3.5 倍，与 WAL 开启后小事务提交成本骤降高度相关（观察性归因，非受控对照）；1514 存量+5 新增=1519 吻合。前端 60 文件 **896 passed** + 构建通过（stamp `76537fe4d392`）。运行态：服务运行中、三页冒烟 0 console errors。
+  - **Mimosa deep 复核**：6 findings 仍全为历史已知项（路径核对：package_release×3、20261012New×2、desensitize×1），本轮新文件 **0 findings**；依赖离线公告库元数据提示 1 包命中公告（未升级为 finding，供后续留意）；seal `sha256:b0b34efdabfa5bcccf0006037e6e35d954d656d20802b15e521c1328ab9adc60`。
+  - **本轮噪声事故记录（供后续会话引以为戒）**：本会话 Write/Edit 噪声注入率异常升高（AGENTS.md 章节、幻影目录 01-财税调试、CI 重复块、orchestrator 代码丢失 system_prompt 参数、测试文件乱码各 1 起，全部写后回读抓回并修复）；教训重申——**每个 Edit/Write 之后立即回读或跑测试，不信任任何一次成功回执**。
+
+## 演进第二批：测试提速 + 路由轻量化 + 滚动摘要（2026-11-03）
+
+- **xdist 并行回归（P1-①）**：`pytest-xdist 3.8.0` 入 requirements（test dep）；conftest 按 PID 隔离与多进程天然兼容，`-n 8`=108.52s、`-n 12`=**69.85s**（16 核机；两轮零失败）。全量回归从会话开始前的 949s 基线 → **70s（累计 13.6 倍）**：WAL 贡献 3.5 倍 + xdist 贡献 3.9 倍。CI 暂保持串行（从未跑过，不叠加未验证变量），本地标准命令更新为 `pytest tests -q -n 12`。
+- **AI 路由轻量化（P1-②）**：
+  - `agent_settings.routing_model_id`（新列+main.py 补丁）：指定轻量模型作 LLM 仲裁；None/非正/非法 → None=跟随全局激活模型；`_get_routing_model()` 走 `_models` 共享缓存，不可用回退全局并告警。前端 UI 未接（SettingsDrawer 拆分轮再接，暂可经 `PUT /api/assistant/config` 设值）。
+  - **LLM 仲裁 TTL 缓存**：`_route_cache`（键=名册文本+问题前 200 字，TTL 600s，上限 128），只缓存成功仲裁、失败不缓存；`invalidate()` 同步清空；`route_team` fixture 与新测试文件都显式清缓存防跨测试污染。
+  - 测试 `test_routing_lightening.py` 7 例（roundtrip/缓存命中/失败不缓存/TTL 过期/指定模型共享缓存/不可用回退/invalidate 清缓存）。
+- **长会话滚动摘要（P1-③）**：`agent_sessions.summary`+`summary_until`（游标防重复压缩）两列 + main.py 补丁；`_refresh_session_summary`——未压缩历史超过注入窗口 2 倍时，把窗口外更早消息压缩进会话摘要（复用路由模型或全局模型），注入时`【此前对话摘要】`置顶+最近窗口；失败只告警沿用旧摘要，绝不阻塞聊天。测试 `test_session_summary.py` 4 例（阈值触发+游标 14、游标排除已压缩、失败保旧、`_ensure_agent` 注入顺序）。
+- **关键发现（修了真缺陷）**：conftest `_isolate_database` 对 client 用例 teardown **只 drop 不重建**（TL-11 模式），非 client 测试排在 client 重文件之后会撞「no such table」——新增非 client 测试文件一律配 `autouse _ensure_tables` 夹具（每测试前 create_all），两个新文件已接。此规律写进工程约定。
+- **P1-④（orchestrator 长文件拆分）本轮缓做**：测试接缝分析表明 `_route_by_llm/_resolve_spec/_persist` 等整条链被测试大量 patch（orchestrator.* 60+ 处），整链外移会破坏契约，只有未 patch 叶子（parse_route_reply/continuation 块/附件视觉块约 300 行）可安全外移；叠加本会话 Write/Edit 噪声注入率异常，拆分推迟到**先 git 提交存档后**的独立轮次执行（脚本法按行区间搬移 + 双验证门）。
+- **验证**：聚焦 **153 passed**（agent 六文件）；后端全量 **1530 passed（70.15s，xdist -n 12）**；前端无改动（上一批 896 passed/stamp `76537fe4d392` 仍有效）。新增 11 例（7+4）。
