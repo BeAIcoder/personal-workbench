@@ -35,6 +35,7 @@
 - 测试：`test_module_business_dq.py` 12→**16 passed**（超收/状态不一致/合同过期、薪资无考勤、预算超支+合规逾期、BIP 借贷不平各 1 例）；空库断言不变（新检查零触发）。
 - 运行态：重启后 dq 200/overall 100，真实库零误报（仅已知 3 条 failed 快照）。
 - 经验：Mimosa PreToolUse 对「非 COUNT 聚合 SQL」「无 LIMIT 的裸列查询」误报——跨表勾稽优先 ORM 分组或 COUNT+WHERE 形态；新增检查必须配空库断言（防止存量库误报）。
+- **Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:d76894db…`。
 
 ## 财务菜单层级重组（2026-11-01）
 
