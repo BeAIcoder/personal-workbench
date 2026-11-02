@@ -34,6 +34,9 @@ DASHBOARD_NAME = "经营财务报表监控看板.html"
 STEP_TIMEOUT = 600
 # 计划任务通道整条管线的等待上限（秒）：m02 脱敏抽取约 80-90s，给足余量
 TASK_CHANNEL_TIMEOUT = 600
+# 失败自动重试（2026-11-02）：总尝试次数与重试间隔（秒）；进程内锁仍在整套重试期间持有
+_PIPELINE_ATTEMPTS = 2
+_RETRY_DELAY_SECONDS = 5
 # 本机计划任务名兜底默认（微信报表监控项目的 服务安装.ps1 注册）；
 # 生效值经 _task_name() 取 settings.finance_board_task_name，配置为空才回落到这里
 BOARD_TASK_NAME = "微信报表监控"
@@ -177,8 +180,12 @@ def _run_steps_via_scheduled_task() -> str:
     return "\n".join(lines)
 
 
-def _run_steps_directly(pdir: Path, stamp: str, t0: float) -> str:
-    """直接以子进程执行四步管线（无计划任务的机器/换机场景）；失败落失败快照并抛异常。"""
+def _run_steps_directly(pdir: Path, stamp: str, t0: float, save_failed: bool = True) -> str:
+    """直接以子进程执行四步管线（无计划任务的机器/换机场景）。
+
+    save_failed=False 时不在本函数落失败快照（由重试循环在最终失败时统一落盘），
+    日志挂在异常的 logs 属性上供调用方收集。
+    """
     logs: list[str] = []
     try:
         for step in PIPELINE_STEPS:
@@ -187,13 +194,48 @@ def _run_steps_directly(pdir: Path, stamp: str, t0: float) -> str:
                 raise PipelineUnavailableError(f"缺少管线脚本：{script}")
             logs.append(f"== {step} ==\n{_run_step(script)}")
     except subprocess.TimeoutExpired as exc:
-        _save_snapshot(stamp, "failed", "", "\n".join(logs) + f"\n超时：{exc}", time.perf_counter() - t0)
-        raise PipelineUnavailableError(f"管线执行超时（>{STEP_TIMEOUT}s）") from exc
+        tail = "\n".join(logs) + f"\n超时：{exc}"
+        if save_failed:
+            _save_snapshot(stamp, "failed", "", tail, time.perf_counter() - t0)
+        err = PipelineUnavailableError(f"管线执行超时（>{STEP_TIMEOUT}s）")
+        err.logs = tail
+        raise err from exc
     except subprocess.CalledProcessError as exc:
         tail = "\n".join(logs) + f"\n{exc.stderr[-2000:] if exc.stderr else ''}"
-        _save_snapshot(stamp, "failed", "", tail, time.perf_counter() - t0)
-        raise PipelineUnavailableError(f"管线步骤失败：{exc.cmd}") from exc
+        if save_failed:
+            _save_snapshot(stamp, "failed", "", tail, time.perf_counter() - t0)
+        err = PipelineUnavailableError(f"管线步骤失败：{exc.cmd}")
+        err.logs = tail
+        raise err from exc
     return "\n".join(logs)
+
+
+def _execute_attempt(pdir: Path, stamp: str, t0: float) -> str:
+    """执行一次管线（计划任务通道或直接子进程）；失败不落快照，交由重试循环处理。"""
+    if _scheduled_task_available():
+        return _run_steps_via_scheduled_task()
+    return _run_steps_directly(pdir, stamp, t0, save_failed=False)
+
+
+def _notify_failure(message: str) -> None:
+    """最终失败告警：登记到调试中心「问题记录」（同标题未关闭则去重，避免刷屏）。"""
+    try:
+        from ..debug_center import service as debug_service
+        from ..debug_center.schemas import IssueCreate
+        opened = [i for i in debug_service.load_issues()
+                  if i.get("title") == "报表看板管线运行失败" and i.get("status") not in ("done", "wontfix")]
+        if opened:
+            return
+        debug_service.create_issue(IssueCreate(
+            title="报表看板管线运行失败",
+            severity="P2",
+            status="open",
+            source="analysis",
+            page="/finance/board",
+            description=f"自动重试 {_PIPELINE_ATTEMPTS} 次后仍失败：{message[:800]}",
+        ))
+    except Exception:  # 告警失败不得影响主流程
+        logger.warning("看板失败告警登记失败", exc_info=True)
 
 
 def run_pipeline() -> dict:
@@ -215,20 +257,28 @@ def _run_pipeline_locked() -> dict:
     if not (pdir / "scripts").is_dir():
         raise PipelineUnavailableError(f"管线目录无效：{pdir}")
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = _unique_stamp()
     t0 = time.perf_counter()
-    if _scheduled_task_available():
-        # 本机（有终端安全软件进程树拦截）：走计划任务通道
+    attempt = 0
+    while True:
+        attempt += 1
         try:
-            log_text = _run_steps_via_scheduled_task()
+            log_text = _execute_attempt(pdir, stamp, t0)
+            break
         except PipelineBusyError:
             raise
         except PipelineUnavailableError as exc:
-            _save_snapshot(stamp, "failed", "", str(exc), time.perf_counter() - t0)
+            if attempt < _PIPELINE_ATTEMPTS:
+                logger.warning("看板管线第 %s/%s 次执行失败，%s 秒后重试：%s",
+                               attempt, _PIPELINE_ATTEMPTS, _RETRY_DELAY_SECONDS, exc)
+                time.sleep(_RETRY_DELAY_SECONDS)
+                continue
+            detail = getattr(exc, "logs", "") or str(exc)
+            _save_snapshot(stamp, "failed", "",
+                           f"重试 {attempt} 次后仍失败：{exc}\n{detail}"[:4000],
+                           time.perf_counter() - t0)
+            _notify_failure(str(exc))
             raise
-    else:
-        # 无计划任务的机器（换机场景）：保持原有的直接子进程执行
-        log_text = _run_steps_directly(pdir, stamp, t0)
 
     # 产物复制为自包含快照（原文件保持不动）
     src_html = pdir / "output" / DASHBOARD_NAME
@@ -242,6 +292,21 @@ def _run_pipeline_locked() -> dict:
 
     snap = _save_snapshot(stamp, "ok", str(dest_html), log_text, time.perf_counter() - t0)
     return _out(snap)
+
+
+def _unique_stamp() -> str:
+    """生成不与既有快照/目录冲突的 stamp（同一秒内连续运行追加 _2/_3 后缀）。"""
+    base = datetime.now().strftime("%Y%m%d_%H%M%S")
+    root = _snapshots_dir()
+    candidate = base
+    i = 1
+    while True:
+        with SessionLocal() as db:
+            exists = db.query(BoardSnapshot).filter(BoardSnapshot.stamp == candidate).first() is not None
+        if not exists and not (root / candidate).exists():
+            return candidate
+        i += 1
+        candidate = f"{base}_{i}"
 
 
 def _save_snapshot(stamp: str, status: str, html_path: str, log_tail: str, elapsed: float) -> BoardSnapshot:

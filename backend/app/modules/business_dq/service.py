@@ -302,6 +302,31 @@ def _dom_finance(db, as_of):
             )).scalar() or 0)
     if failed_total:
         issues.append(_issue("warning", "运行状态", failed_total, [], "存在 failed 状态的税种申报记录；建议到对应税种页面复核计算与导出"))
+    # 税务域勾稽（2026-11-02 v4）：申报表 vs 财务数据口径
+    if _exists(db, "mod_tax_return") and _exists(db, "mod_tax_financial_data"):
+        present.append("tax_returns")
+        n = int(db.execute(text(
+            "SELECT COUNT(*) FROM mod_tax_return r WHERE NOT EXISTS "
+            "(SELECT 1 FROM mod_tax_financial_data f WHERE f.enterprise_id = r.enterprise_id AND f.year = r.year)"
+        )).scalar() or 0)
+        if n:
+            issues.append(_issue("warning", "申报勾稽", n, [], "存在无同期财务数据的申报记录；建议补录财务数据或核对申报依据"))
+        n = int(db.execute(text(
+            "SELECT COUNT(*) FROM mod_tax_financial_data f WHERE NOT EXISTS "
+            "(SELECT 1 FROM mod_tax_return r WHERE r.enterprise_id = f.enterprise_id AND r.year = f.year)"
+        )).scalar() or 0)
+        if n:
+            issues.append(_issue("info", "申报勾稽", n, [], "存在财务数据但同年度无申报记录；建议确认是否已申报"))
+        n = int(db.execute(text(
+            "SELECT COUNT(*) FROM mod_tax_return WHERE tax_amount > 0.01 AND (taxable_income IS NULL OR taxable_income <= 0)"
+        )).scalar() or 0)
+        if n:
+            issues.append(_issue("error", "税额异常", n, [], "有应纳税额但应纳税所得额非正；建议核对申报表数据"))
+        n = int(db.execute(text(
+            "SELECT COUNT(*) FROM mod_tax_return WHERE taxable_income > 0 AND tax_amount > taxable_income * 0.25 + 0.01"
+        )).scalar() or 0)
+        if n:
+            issues.append(_issue("warning", "税额异常", n, [], "税额超过法定税率 25% 上限；可能含滞纳金或口径错误，建议复核"))
     if _exists(db, "mod_vault_dataset"):
         present.append("vault")
         try:
@@ -341,6 +366,14 @@ def _dom_finance(db, as_of):
                 days = 0
             if days > 7:
                 issues.append(_issue("warning", "陈旧快照", days, [str(latest)], "看板最近成功快照已超过 7 天未更新；建议运行管线刷新"))
+        # 连续失败（2026-11-02 v4）：最近两条快照均 failed → error（告警会同步登记问题记录）
+        try:
+            from ..finance_board.models import BoardSnapshot
+            latest_two = db.query(BoardSnapshot).order_by(BoardSnapshot.id.desc()).limit(2).all()
+            if len(latest_two) == 2 and all(s.status == "failed" for s in latest_two):
+                issues.append(_issue("error", "连续失败", 2, [s.stamp for s in latest_two], "看板管线连续两次运行失败；已登记问题记录，建议检查管线脚本与日志"))
+        except Exception:
+            pass
     if not present:
         return {"available": False, "gap_reasons": ["财务域表均未就绪"], "context": {}, "issues": []}
     return {"available": True, "gap_reasons": [], "context": {"sources": present}, "issues": issues}

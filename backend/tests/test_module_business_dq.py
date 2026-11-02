@@ -159,6 +159,39 @@ def test_bip_voucher_imbalance(client):
     assert ("勾稽平衡", "error", 1) in fin
 
 
+def test_tax_reconciliation(client):
+    """v4 税务域勾稽：申报表 vs 财务数据口径。"""
+    from app.modules.finance_tax.models import Enterprise, FinancialData, TaxReturn
+    with SessionLocal() as db:
+        ent = Enterprise(name="合成税务企业", tax_number="91330100MA2TAX00X")
+        db.add(ent)
+        db.commit()
+        db.refresh(ent)
+        db.add(FinancialData(enterprise_id=ent.id, year=2026, quarter=1, profit=100.0))
+        db.add(FinancialData(enterprise_id=ent.id, year=2028, quarter=1, profit=50.0))
+        db.add(TaxReturn(enterprise_id=ent.id, year=2026, quarter=1, return_type="预缴",
+                         status="draft", taxable_income=0.0, tax_amount=5000.0))
+        db.add(TaxReturn(enterprise_id=ent.id, year=2027, quarter=None, return_type="年度",
+                         status="submitted", taxable_income=100000.0, tax_amount=30000.0))
+        db.commit()
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    fin = [(i["check"], i["level"], i["count"]) for i in data["top_issues"] if i["domain"] == "finance"]
+    assert ("税额异常", "error", 1) in fin          # 有税无所得（2026）
+    assert ("申报勾稽", "warning", 1) in fin        # 2027 申报无财务数据
+    assert ("税额异常", "warning", 1) in fin        # 2027 税额超 25%
+    assert ("申报勾稽", "info", 1) in fin           # 2028 财务数据无申报
+
+
+def test_board_consecutive_failures(client):
+    """v4：最近两条快照均 failed → error。"""
+    from app.modules.finance_board.models import BoardSnapshot
+    _plant(BoardSnapshot, stamp="20261101_010101", status="failed")
+    _plant(BoardSnapshot, stamp="20261101_020202", status="failed")
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    fails = [i for i in data["top_issues"] if i["check"] == "连续失败"]
+    assert fails and fails[0]["level"] == "error" and fails[0]["count"] == 2
+
+
 def test_board_stale_snapshot(client):
     """看板陈旧快照巡检：最近 ok 快照超过 7 天 → warning。"""
     from datetime import datetime, timedelta

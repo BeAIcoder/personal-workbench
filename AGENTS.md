@@ -37,6 +37,14 @@
 - 经验：Mimosa PreToolUse 对「非 COUNT 聚合 SQL」「无 LIMIT 的裸列查询」误报——跨表勾稽优先 ORM 分组或 COUNT+WHERE 形态；新增检查必须配空库断言（防止存量库误报）。
 - **Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:d76894db…`。
 
+## 税务域勾稽 + 看板失败重试告警（2026-11-02 深夜 v4）
+
+- **税务域勾稽（dq 财务域新增 4 项）**：申报无同期财务数据（warning）、财务数据无申报（info）、有税无所得（`tax_amount>0.01 且 taxable_income<=0`，error）、税额超法定 25% 上限（warning，说明可能含滞纳金）。全部 COUNT+WHERE 只读；真实库无申报记录 → 零误报。
+- **看板管线失败自动重试与告警**：`_run_pipeline_locked` 改为重试循环（`_PIPELINE_ATTEMPTS=2`、`_RETRY_DELAY_SECONDS=5`，`_execute_attempt` 统一两条通道；`_run_steps_directly(save_failed=False)` 不再逐次落失败快照，日志挂异常 `logs` 属性由最终失败统一落盘）；最终失败调用 `_notify_failure` → **调试中心「问题记录」登记 P2**（`IssueCreate(source="analysis")`；同标题未关闭去重，关闭态是 done/wontfix 不是 closed）。
+- **同秒连跑快照防撞**：新增 `_unique_stamp()`——stamp 已存在（DB 或目录）则追加 `_2/_3` 后缀，避免 `mod_board_snapshot.stamp` 唯一约束冲突（`test_run_pipeline_retry_exhausted_alerts` 二次 /run 同秒触发）。
+- **dq 连续失败检查**：最近两条快照均 failed → error（含 stamp 样本），与告警互补（库内可见 vs 问题记录）。
+- **测试**：board 9→**11 passed**（重试成功/重试耗尽+告警去重），dq 16→**18 passed**（税务勾稽 4 断言、连续失败）；后端全量见下。运行态：dq 200/overall 100。
+
 ## 财务菜单层级重组（2026-11-01）
 
 - 「财务」侧栏组由 14 项扁平改为**直挂数据仓 + 4 个二级折叠子分组**（账务处理=费用/发票/POS、记账=个人/BIP、税务填报=企所税/印花/增值/个税/残保金、报表分析=看板/现金流）。机制：manifest `menu.subgroup`（可选）+ `src/modules/index.js` 新增 `getModuleMenuGroups()`（纯聚合，`getModuleMenus` 未动）+ AppLayout 动态段嵌套 `el-sub-menu` 渲染 + `defaultOpeneds`（setup 一次性按初始 route 反查父级 index，保证深链/刷新自动展开；不做成响应式以免覆盖用户手动折叠）。
