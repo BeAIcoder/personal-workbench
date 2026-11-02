@@ -22,7 +22,7 @@
 - **授权不通根因与修复（实测）**：用户已在界面保存新 Key，但供应商被停用、协议 anthropic 配了 openai 家族 base（拼出 `/openai/v1/messages` 错路）、激活模型指向别家。修正为 **anthropic + `https://opencode.ai/inference/go/anthropic`**（SDK 自动补 `/v1/messages`）并启用；模型目录改走 `https://opencode.ai/inference/go/v1/models` **在线同步成功（online=true、errors=[]）**；`/api/assistant/config/test` ok（2.8s）、**真实对话 HTTP 200（8.9s，CloudPaw-Master 应答）**。经验：anthropic 端点族应配 `.../go/anthropic` 而非 `.../go/openai/v1`；models_url 用 `.../go/v1/models`。
 - **跨模块勾稽扩展（工单↔合同↔设备）**：`OpsWorkOrder.contract_id`（可空，manifest column_patches + 模型）——写入校验合同存在、显式 null 解除（路由 `exclude_unset` 不含 exclude_none，可清空）；列表/导出回显 `contract_no`；前端工单表单「关联合同」下拉 + 列表「关联合同」列。dq 营运域新增 **工单→合同 / 工单→设备** 孤儿检查。
 - **数据质量 v2**：`finance_vault.vault_quality_overview()`（DuckDB 关系 API：行数/整行重复（总-去重）/高缺失列（describe count 行推算，>30% 阈值），单表失败不拖垮；生产当前 0 数据集→available=false+关系原因）；dq 财务域接入 vault 画像（空表/重复/高缺失三类 issue）+ **看板陈旧快照巡检**（最近 ok 快照 >7 天 → warning，ORM 取最新，绕开扫描器对聚合 SQL 的误报）。
-- **验证**：后端聚焦 32+23 passed（ops/modules、dq/vault）；前端 **59 文件 885 passed** + 构建通过（stamp `97d4d3913683`）；运行态：dq 200（overall 100、finance available）、`contract_id` 已迁移进真实库；全量回归见下。
+- **验证**：后端聚焦 32+23 passed（ops/modules、dq/vault）；前端 **59 文件 885 passed** + 构建通过（stamp `97d4d3913683`）；运行态：dq 200（overall 100、finance available）、`contract_id` 已迁移进真实库；**后端全量 1486 passed（816s）**。**Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:997dd63b…`。
 
 ## 财务菜单层级重组（2026-11-01）
 
