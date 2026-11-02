@@ -82,6 +82,7 @@ class OpsWorkOrder(Base):
     due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     equipment_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    contract_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 

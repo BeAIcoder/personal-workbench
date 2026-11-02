@@ -63,6 +63,24 @@ def test_ingest_dataframe_contract(vault_dir):
         svc.ingest_dataframe("t_expense", _sample_df(), mode="upsert")
 
 
+def test_vault_quality_overview(vault_dir):
+    """数据仓质量画像（2026-11-02）：整行重复计数与高缺失列。"""
+    df = pd.DataFrame({
+        "a": [1, 1, 2, 3],
+        "b": ["x", "x", "y", "z"],
+        "c": [None, None, "k", "m"],
+    })
+    svc.ingest_dataframe("t_quality", df)
+    q = svc.vault_quality_overview()
+    assert q["available"] is True
+    t = next(x for x in q["tables"] if x["table"] == "t_quality")
+    assert t["rows"] == 4
+    assert t["dup_rows"] == 1
+    heavy_cols = {h["column"] for h in t["null_heavy"]}
+    assert "c" in heavy_cols
+    assert q["summary"]["dup_tables"] >= 1
+
+
 def test_append_dedupe_semantics(vault_dir):
     base = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
     r0 = svc.ingest_dataframe("t_dedupe", base)

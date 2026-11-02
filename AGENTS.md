@@ -17,6 +17,13 @@
 - **safe_cell 六份拷贝收敛**：leasing/operations/hr/legal/planning/facility 的本地 `_cell`/内联 `cell` 全部改为 `app.utils_xlsx.safe_cell`（A 类别名导入、B 类直接调用）；finance_ledger_bip 的 `_cell` 是 JSON 序列化用途，不属公式防护，保持不动。
 - **验证**：聚焦 **136 passed**（vault 10 + 六业务模块/数据仓相关 126）；运行态重启后 provider2=anthropic/zen-go/31 模型/active=deepseek-v4.1-flash、dq summary 100。**Mimosa deep 复核**：6 findings 仍全为历史已知项（同上轮），本轮改动文件 0 findings；seal `sha256:b3489936…`。
 
+## OpenCode 授权修复 + 跨模块勾稽 + 数据质量 v2（2026-11-02 下午）
+
+- **授权不通根因与修复（实测）**：用户已在界面保存新 Key，但供应商被停用、协议 anthropic 配了 openai 家族 base（拼出 `/openai/v1/messages` 错路）、激活模型指向别家。修正为 **anthropic + `https://opencode.ai/inference/go/anthropic`**（SDK 自动补 `/v1/messages`）并启用；模型目录改走 `https://opencode.ai/inference/go/v1/models` **在线同步成功（online=true、errors=[]）**；`/api/assistant/config/test` ok（2.8s）、**真实对话 HTTP 200（8.9s，CloudPaw-Master 应答）**。经验：anthropic 端点族应配 `.../go/anthropic` 而非 `.../go/openai/v1`；models_url 用 `.../go/v1/models`。
+- **跨模块勾稽扩展（工单↔合同↔设备）**：`OpsWorkOrder.contract_id`（可空，manifest column_patches + 模型）——写入校验合同存在、显式 null 解除（路由 `exclude_unset` 不含 exclude_none，可清空）；列表/导出回显 `contract_no`；前端工单表单「关联合同」下拉 + 列表「关联合同」列。dq 营运域新增 **工单→合同 / 工单→设备** 孤儿检查。
+- **数据质量 v2**：`finance_vault.vault_quality_overview()`（DuckDB 关系 API：行数/整行重复（总-去重）/高缺失列（describe count 行推算，>30% 阈值），单表失败不拖垮；生产当前 0 数据集→available=false+关系原因）；dq 财务域接入 vault 画像（空表/重复/高缺失三类 issue）+ **看板陈旧快照巡检**（最近 ok 快照 >7 天 → warning，ORM 取最新，绕开扫描器对聚合 SQL 的误报）。
+- **验证**：后端聚焦 32+23 passed（ops/modules、dq/vault）；前端 **59 文件 885 passed** + 构建通过（stamp `97d4d3913683`）；运行态：dq 200（overall 100、finance available）、`contract_id` 已迁移进真实库；全量回归见下。
+
 ## 财务菜单层级重组（2026-11-01）
 
 - 「财务」侧栏组由 14 项扁平改为**直挂数据仓 + 4 个二级折叠子分组**（账务处理=费用/发票/POS、记账=个人/BIP、税务填报=企所税/印花/增值/个税/残保金、报表分析=看板/现金流）。机制：manifest `menu.subgroup`（可选）+ `src/modules/index.js` 新增 `getModuleMenuGroups()`（纯聚合，`getModuleMenus` 未动）+ AppLayout 动态段嵌套 `el-sub-menu` 渲染 + `defaultOpeneds`（setup 一次性按初始 route 反查父级 index，保证深链/刷新自动展开；不做成响应式以免覆盖用户手动折叠）。

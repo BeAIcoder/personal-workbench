@@ -86,6 +86,24 @@ def _dom_operations(db, as_of):
             "SELECT c.contract_no FROM mod_ops_contract c WHERE c.unit_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_leasing_unit u WHERE u.id = c.unit_id) LIMIT 5"
         )).fetchall()
         issues.append(_issue("warning", "孤儿引用", n, [r[0] for r in samp], "合同关联的铺位已不存在；建议解除关联或恢复铺位"))
+    # 孤儿引用：工单→合同（2026-11-02 跨模块勾稽扩展）
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_ops_work_order w WHERE w.contract_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_ops_contract c WHERE c.id = w.contract_id)"
+    )).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT w.code FROM mod_ops_work_order w WHERE w.contract_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_ops_contract c WHERE c.id = w.contract_id) LIMIT 5"
+        )).fetchall()
+        issues.append(_issue("warning", "孤儿引用", n, [r[0] for r in samp], "工单关联的合同已不存在；建议解除关联或恢复合同"))
+    # 孤儿引用：工单→设备（facility 存在时）
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_ops_work_order w WHERE w.equipment_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_fac_equipment e WHERE e.id = w.equipment_id)"
+    )).scalar() or 0) if _exists(db, "mod_fac_equipment") else 0
+    if n:
+        samp = db.execute(text(
+            "SELECT w.code FROM mod_ops_work_order w WHERE w.equipment_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_fac_equipment e WHERE e.id = w.equipment_id) LIMIT 5"
+        )).fetchall()
+        issues.append(_issue("warning", "孤儿引用", n, [r[0] for r in samp], "工单关联的设备已不存在；建议解除关联或恢复设备"))
     return {"available": True, "gap_reasons": [], "context": context, "issues": issues}
 
 
@@ -215,14 +233,43 @@ def _dom_finance(db, as_of):
         issues.append(_issue("warning", "运行状态", failed_total, [], "存在 failed 状态的税种申报记录；建议到对应税种页面复核计算与导出"))
     if _exists(db, "mod_vault_dataset"):
         present.append("vault")
-        n = int(db.execute(text("SELECT COUNT(*) FROM mod_vault_dataset WHERE rows = 0")).scalar() or 0)
-        if n:
-            issues.append(_issue("info", "覆盖", n, [], "数据仓存在 0 行数据集；建议重新上传或清理登记"))
+        try:
+            from ..finance_vault import service as vault_service  # 惰性导入：模块可独立缺失
+            vq = vault_service.vault_quality_overview()
+        except Exception:  # 画像失败不拖垮总览
+            vq = None
+        if isinstance(vq, dict) and vq.get("available"):
+            s = vq["summary"]
+            if s["empty_tables"]:
+                issues.append(_issue("info", "覆盖", s["empty_tables"], [], "数据仓存在 0 行数据集；建议重新上传或清理登记"))
+            if s["dup_tables"]:
+                samples = [t["table"] for t in vq["tables"] if t["dup_rows"] > 0][:5]
+                issues.append(_issue("warning", "重复", s["dup_tables"], samples, "数据仓存在整行重复的数据集；建议按 replace 重新入仓或在源头去重"))
+            if s["null_heavy_tables"]:
+                samples = [f'{t["table"]}.{t["null_heavy"][0]["column"]}' for t in vq["tables"] if t["null_heavy"]][:5]
+                issues.append(_issue("warning", "空值画像", s["null_heavy_tables"], samples, "存在高缺失列（缺失率>30%）；建议核对来源或补全字段"))
+        else:
+            n = int(db.execute(text("SELECT COUNT(*) FROM mod_vault_dataset WHERE rows = 0")).scalar() or 0)
+            if n:
+                issues.append(_issue("info", "覆盖", n, [], "数据仓存在 0 行数据集；建议重新上传或清理登记"))
     if _exists(db, "mod_board_snapshot"):
         present.append("board")
         n = int(db.execute(text("SELECT COUNT(*) FROM mod_board_snapshot WHERE status = 'failed'")).scalar() or 0)
         if n:
             issues.append(_issue("warning", "运行状态", n, [], "存在 failed 状态的报表快照；建议到报表看板复核管线日志"))
+        try:
+            from ..finance_board.models import BoardSnapshot
+            row = db.query(BoardSnapshot).filter(BoardSnapshot.status == "ok").order_by(BoardSnapshot.created_at.desc()).first()
+            latest = row.created_at if row else None
+        except Exception:
+            latest = None
+        if latest is not None:
+            try:
+                days = (datetime.now() - latest).days
+            except TypeError:
+                days = 0
+            if days > 7:
+                issues.append(_issue("warning", "陈旧快照", days, [str(latest)], "看板最近成功快照已超过 7 天未更新；建议运行管线刷新"))
     if not present:
         return {"available": False, "gap_reasons": ["财务域表均未就绪"], "context": {}, "issues": []}
     return {"available": True, "gap_reasons": [], "context": {"sources": present}, "issues": issues}

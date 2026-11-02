@@ -125,6 +125,32 @@ def test_work_order_lifecycle(client):
     assert client.delete(f"{P}/work-orders/{w['id']}").status_code == 200
 
 
+def test_work_order_link_contract(client):
+    """工单↔合同勾稽（2026-11-02）：关联合同校验、列表回显合同号、解除关联。"""
+    c = _contract(client, no="HT-WO-001")
+    assert c.status_code == 201, c.text
+    contract_id = c.json()["id"]
+    r = client.post(f"{P}/work-orders", json={
+        "type": "repair", "location": "C栋3F", "description": "玻璃破损",
+        "contract_id": contract_id,
+    })
+    assert r.status_code == 201, r.text
+    w = r.json()
+    assert w["contract_id"] == contract_id
+    assert w["contract_no"] == "HT-WO-001"
+    # 列表回显
+    listed = client.get(f"{P}/work-orders", params={"page": 1, "page_size": 10}).json()
+    hit = next(i for i in listed["items"] if i["id"] == w["id"])
+    assert hit["contract_no"] == "HT-WO-001"
+    # 不存在的合同拒绝
+    bad = client.post(f"{P}/work-orders", json={"description": "x", "contract_id": 99999})
+    assert bad.status_code == 400, bad.text
+    # 显式 null 解除关联
+    cleared = client.put(f"{P}/work-orders/{w['id']}", json={"contract_id": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["contract_id"] is None and cleared.json()["contract_no"] == ""
+
+
 def test_work_order_edit_done_preserves_closed_at(client):
     r = client.post(f"{P}/work-orders", json={
         "type": "repair", "location": "B栋2F", "description": "电梯异响",

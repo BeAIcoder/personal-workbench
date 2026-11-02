@@ -137,6 +137,7 @@
             <el-table-column prop="assignee" label="责任人" width="90" />
             <el-table-column prop="parent_code" label="父工单" width="105" />
             <el-table-column prop="equipment_code" label="设备编号" width="110" />
+            <el-table-column prop="contract_no" label="关联合同" width="120" />
             <el-table-column prop="created_at" label="创建时间" width="155" />
             <el-table-column label="要求完成 / SLA" width="175">
               <template #default="{ row }">{{ row.due_at || '—' }} <el-tag v-if="row.overdue" size="small" type="danger">超期</el-tag></template>
@@ -215,6 +216,7 @@
           <el-col :span="12"><el-form-item label="要求完成"><el-date-picker v-model="orderForm.due_at" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="父工单"><el-select v-model="orderForm.parent_id" clearable filterable style="width: 100%"><el-option v-for="item in orderOptions.filter(o => o.id !== orderForm.id)" :key="item.id" :label="`${item.code} · ${item.description}`" :value="item.id" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="关联设备"><el-select v-model="orderForm.equipment_id" clearable filterable placeholder="可选" style="width: 100%"><el-option v-for="item in equipmentOptions" :key="item.id" :label="`${item.code} · ${item.name}`" :value="item.id" /></el-select></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="关联合同"><el-select v-model="orderForm.contract_id" clearable filterable placeholder="可选" style="width: 100%"><el-option v-for="item in contracts" :key="item.id" :label="`${item.contract_no} · ${item.tenant}`" :value="item.id" /></el-select></el-form-item></el-col>
         </el-row>
         <el-form-item label="描述" required><el-input v-model="orderForm.description" type="textarea" :rows="3" /></el-form-item>
       </el-form>
@@ -317,7 +319,7 @@ const orderDialog = ref(false)
 const orderForm = reactive({
   id: null, type: 'repair', priority: 'medium', status: 'open', location: '',
   tenant: '', assignee: '', description: '', due_at: null, parent_id: null,
-  equipment_id: null,
+  equipment_id: null, contract_id: null,
 })
 const followupDialog = ref(false)
 const followupOrder = reactive({ id: null, code: '' })
@@ -582,11 +584,11 @@ function openOrder(row) {
     id: row.id, type: row.type, priority: row.priority, status: row.status,
     location: row.location, tenant: row.tenant, assignee: row.assignee, description: row.description,
     due_at: row.due_at || null, parent_id: row.parent_id ?? null,
-    equipment_id: row.equipment_id ?? null,
+    equipment_id: row.equipment_id ?? null, contract_id: row.contract_id ?? null,
   } : {
     id: null, type: 'repair', priority: 'medium', status: 'open', location: '',
     tenant: '', assignee: '', description: '', due_at: null, parent_id: null,
-    equipment_id: null,
+    equipment_id: null, contract_id: null,
   })
   orderDialog.value = true
 }

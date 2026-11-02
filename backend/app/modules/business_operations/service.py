@@ -412,8 +412,15 @@ def _equipment_code(db: Session, equipment_id: int | None) -> str:
     return row.code if row else ""
 
 
+def _contract_no(db: Session, contract_id: int | None) -> str:
+    if contract_id is None:
+        return ""
+    row = db.get(OpsContract, contract_id)
+    return row.contract_no if row else ""
+
+
 def _work_order_dict(w: OpsWorkOrder, parent_code: str = "", now: datetime | None = None,
-                     equipment_code: str = "") -> dict:
+                     equipment_code: str = "", contract_no: str = "") -> dict:
     now = now or datetime.now()
     overdue = bool(w.due_at and w.status in ("open", "processing") and w.due_at < now)
     return {
@@ -431,6 +438,8 @@ def _work_order_dict(w: OpsWorkOrder, parent_code: str = "", now: datetime | Non
         "parent_code": parent_code,
         "equipment_id": w.equipment_id,
         "equipment_code": equipment_code,
+        "contract_id": w.contract_id,
+        "contract_no": contract_no,
         "closed_at": str(w.closed_at) if w.closed_at else None,
     }
 
@@ -463,7 +472,8 @@ def work_order_list(db: Session, status: str = "", type_: str = "", keyword: str
     parents = _parent_codes(db, rows)
     return {"total": total, "items": [
         _work_order_dict(w, parents.get(w.parent_id, ""),
-                         equipment_code=_equipment_code(db, w.equipment_id)) for w in rows
+                         equipment_code=_equipment_code(db, w.equipment_id),
+                         contract_no=_contract_no(db, w.contract_id)) for w in rows
     ], "page": page, "page_size": page_size}
 
 
@@ -503,6 +513,12 @@ def work_order_save(db: Session, data: dict, order_id: int | None = None) -> dic
             if db.get(FacilityEquipment, int(equipment_id)) is None:
                 raise ValueError("关联设备不存在")
         w.equipment_id = int(equipment_id) if equipment_id is not None else None
+    if "contract_id" in data:
+        contract_id = data["contract_id"]
+        if contract_id is not None:
+            if db.get(OpsContract, int(contract_id)) is None:
+                raise ValueError("关联合同不存在")
+        w.contract_id = int(contract_id) if contract_id is not None else None
     if "status" in data and data["status"] is not None:
         new_status = data["status"]
         if new_status not in WORK_ORDER_STATUSES:
@@ -528,7 +544,8 @@ def work_order_save(db: Session, data: dict, order_id: int | None = None) -> dic
     db.refresh(w)
     parent = db.get(OpsWorkOrder, w.parent_id) if w.parent_id else None
     return _work_order_dict(w, parent.code if parent else "",
-                            equipment_code=_equipment_code(db, w.equipment_id))
+                            equipment_code=_equipment_code(db, w.equipment_id),
+                            contract_no=_contract_no(db, w.contract_id))
 
 
 def work_order_delete(db: Session, order_id: int) -> None:
@@ -662,16 +679,18 @@ def ops_work_orders_export(db: Session, status: str = "", type_: str = "",
     rows = []
     for order in work_orders:
         item = _work_order_dict(order, parents.get(order.parent_id, ""),
-                                equipment_code=_equipment_code(db, order.equipment_id))
+                                equipment_code=_equipment_code(db, order.equipment_id),
+                                contract_no=_contract_no(db, order.contract_id))
         rows.append([
             item["code"], item["type_label"], item["location"], item["tenant"],
             item["description"], item["priority_label"], item["status_label"],
             item["assignee"], item["created_at"], item["due_at"] or "",
             "是" if item["overdue"] else "否", item["closed_at"] or "",
-            item["parent_code"], item["equipment_code"],
+            item["parent_code"], item["equipment_code"], item["contract_no"],
         ])
     headers = ["工单号", "类型", "位置", "租户", "描述", "优先级", "状态", "责任人",
-               "创建时间", "要求完成时间", "是否超期", "首次完成时间", "父工单号", "设备编号"]
+               "创建时间", "要求完成时间", "是否超期", "首次完成时间", "父工单号", "设备编号",
+               "关联合同"]
     return _xlsx("工单台账", headers, rows)
 
 

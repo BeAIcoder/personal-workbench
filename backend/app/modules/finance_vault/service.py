@@ -210,6 +210,58 @@ def list_datasets() -> list[dict]:
         return [_dataset_out(r) for r in rows]
 
 
+def vault_quality_overview(max_tables: int = 30, null_threshold: float = 0.3) -> dict:
+    """数据仓质量画像（只读，2026-11-02 数据质量 v2）。
+
+    对每个已登记数据集做三件事：整行重复计数（总行数 - DISTINCT 行数）、
+    高缺失列（describe 的 null_percentage 超阈值）、空表标记。
+    全部走 DuckDB 关系 API 与常量 SQL，不拼接任何列名/数据值；单表失败不影响其他表。
+    """
+    datasets = list_datasets()[:max_tables]
+    if not datasets:
+        return {"available": False, "gap_reasons": ["数据仓暂无登记数据集"], "tables": [],
+                "summary": {"datasets": 0, "empty_tables": 0, "dup_tables": 0, "null_heavy_tables": 0}}
+    out = []
+    empty = dup_tables = null_heavy = 0
+    with _write_lock:
+        con = _connect()
+        try:
+            for ds in datasets:
+                item = {"table": ds["table"], "rows": ds.get("rows") or 0,
+                        "dup_rows": 0, "null_heavy": [], "error": ""}
+                try:
+                    rel = con.table(ds["table"])
+                    total = int(rel.aggregate("count(*)").fetchone()[0])
+                    distinct_rows = int(rel.distinct().aggregate("count(*)").fetchone()[0])
+                    item["rows"] = total
+                    item["dup_rows"] = max(0, total - distinct_rows)
+                    desc = rel.describe().df()
+                    if "aggr" in desc.columns:
+                        cnt_row = desc[desc["aggr"] == "count"]
+                        if not cnt_row.empty:
+                            for col in [c for c in desc.columns if c != "aggr"]:
+                                non_null = cnt_row.iloc[0][col]
+                                if non_null is None:
+                                    continue
+                                null_pct = max(0.0, (1 - float(non_null) / total) * 100) if total else 0.0
+                                if null_pct > null_threshold * 100:
+                                    item["null_heavy"].append({"column": str(col), "null_pct": round(null_pct, 1)})
+                except Exception as exc:  # 单表失败不拖垮整体画像
+                    item["error"] = type(exc).__name__
+                if item["rows"] == 0:
+                    empty += 1
+                if item["dup_rows"] > 0:
+                    dup_tables += 1
+                if item["null_heavy"]:
+                    null_heavy += 1
+                out.append(item)
+        finally:
+            con.close()
+    return {"available": True, "gap_reasons": [], "tables": out,
+            "summary": {"datasets": len(out), "empty_tables": empty,
+                        "dup_tables": dup_tables, "null_heavy_tables": null_heavy}}
+
+
 # ---------- 入仓 ----------
 
 

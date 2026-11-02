@@ -11,7 +11,7 @@ from app.modules import get_loaded_modules
 from app.modules.business_dq.service import dq_summary
 
 from app.modules.business_leasing.models import LeasingLead
-from app.modules.business_operations.models import OpsBill, OpsContract
+from app.modules.business_operations.models import OpsBill, OpsContract, OpsWorkOrder
 from app.modules.business_legal.models import LegalCase
 from app.modules.business_hr.models import HrEmployee
 from app.modules.business_planning.models import PlanCampaign
@@ -102,6 +102,30 @@ def test_facility_orphan_compliance(client):
     data = resp.json()
     issues = {(i["domain"], i["check"], i["level"]): i for i in data["top_issues"]}
     assert issues[("facility", "孤儿引用", "warning")]["count"] == 1
+
+
+def test_work_order_orphan_contract_and_equipment(client):
+    """跨模块勾稽（2026-11-02）：工单→合同 / 工单→设备的孤儿引用。"""
+    _plant(OpsWorkOrder, code="WOX1", contract_id=99999)
+    _plant(OpsWorkOrder, code="WOX2", equipment_id=88888)
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    data = resp.json()
+    ops_issues = [i for i in data["top_issues"] if i["domain"] == "operations" and i["check"] == "孤儿引用"]
+    assert len(ops_issues) == 2, ops_issues
+    samples = {s for i in ops_issues for s in (i.get("sample") or [])}
+    assert {"WOX1", "WOX2"} <= samples
+
+
+def test_board_stale_snapshot(client):
+    """看板陈旧快照巡检：最近 ok 快照超过 7 天 → warning。"""
+    from datetime import datetime, timedelta
+    from app.modules.finance_board.models import BoardSnapshot
+    _plant(BoardSnapshot, stamp="20261020_120000", status="ok",
+           created_at=datetime.now() - timedelta(days=10))
+    resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
+    data = resp.json()
+    stale = [i for i in data["top_issues"] if i["check"] == "陈旧快照"]
+    assert stale and stale[0]["level"] == "warning" and stale[0]["count"] >= 10
 
 
 def test_dq_summary_tool_compact_and_readonly(client):

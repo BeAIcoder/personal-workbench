@@ -77,6 +77,7 @@ class WorkOrderIn(BaseModel):
     due_at: datetime | None = None
     parent_id: int | None = Field(default=None, ge=1)
     equipment_id: int | None = Field(default=None, ge=1)
+    contract_id: int | None = Field(default=None, ge=1)
 
 
 class WorkOrderUpdate(BaseModel):
@@ -90,6 +91,7 @@ class WorkOrderUpdate(BaseModel):
     due_at: datetime | None = None
     parent_id: int | None = Field(default=None, ge=1)
     equipment_id: int | None = Field(default=None, ge=1)
+    contract_id: int | None = Field(default=None, ge=1)
 
 
 class WorkOrderFollowupIn(BaseModel):
