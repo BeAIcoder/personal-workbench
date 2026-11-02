@@ -50,7 +50,7 @@
 - **产物内容级巡检** `GET /api/finance/board/verify`（`service.verify_snapshot`）：提取 HTML 内嵌 `const R = {...}`（m04 的 `__DATA__` 替换点，行锚定正则以避开 ]};\n 误截断）与管线 `data/report_data.json` 对照——① 文件规模；② 内嵌 JSON 可解析；③ **敏感键剔除**（HTML 不得含脱敏映射 `map`）；④ 顶层键一致（**meta 不参与**：生成时间/文件计数每次运行天然不同）；⑤ 递归数值比对（容差 0.01，差异限 20 条）；⑥ 关键 KPI 齐全。结果按（快照 id、HTML 大小、数据 mtime）缓存，dq 复用。
 - **真实巡检首跑结论（生产）**：最新 ok 快照是 2026-10-30，而管线数据已是 11-02 → kpi 周报期间/出租率/应收等 20 处差异 + 旧快照 HTML 含 `map`（现行 m04 已 pop）。重跑一次管线即可生成合规新快照。
 - **dq 财务域**新增「产物一致性」warning（校验失败列失败项名）；**定时任务** `finance_board.run` 消息带尝试次数（成功含「尝试 N 次」，失败含「重试 N 次后仍失败」）；`run_pipeline` 成功返回 `attempts`。
-- **测试**：board 12→**13 passed**（巡检一致/差异检测/map 检出/动作消息），dq 18→**19 passed**（产物不一致集成）；后端全量见下。
+- **测试**：board 12→**13 passed**（巡检一致/差异检测/map 检出/动作消息），dq 18→**19 passed**（产物不一致集成）；**后端全量 1499 passed（847s）**；**Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:014041ea…`。
 
 ## 财务菜单层级重组（2026-11-01）
 
