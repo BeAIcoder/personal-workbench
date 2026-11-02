@@ -9,6 +9,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
+from ...utils_xlsx import safe_cell
 from .models import PlanCampaign, PlanVendor
 
 CATEGORIES = ("festival", "promo", "brand", "community")
@@ -408,11 +409,6 @@ def campaigns_export(db: Session, year: int | None = None) -> bytes:
         q = q.filter(PlanCampaign.year == year)
     rows = q.order_by(PlanCampaign.start_date.desc()).all()
 
-    def cell(v):
-        if isinstance(v, str) and v[:1] in ("=", "+", "-", "@"):
-            return "'" + v
-        return v
-
     wb = Workbook()
     ws = wb.active
     ws.title = "企划活动"
@@ -424,7 +420,7 @@ def campaigns_export(db: Session, year: int | None = None) -> bytes:
     for c in rows:
         details = _roi_details(c)
         target_met = details["target_met"]
-        ws.append([cell(v) for v in [
+        ws.append([safe_cell(v) for v in [
             c.year, c.name, CATEGORY_LABELS.get(c.category, c.category),
             c.start_date.isoformat() if c.start_date else "",
             c.end_date.isoformat() if c.end_date else "",

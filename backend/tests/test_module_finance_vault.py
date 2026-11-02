@@ -42,12 +42,17 @@ def vault_dir(monkeypatch, tmp_path, client):
 def test_ingest_dataframe_contract(vault_dir):
     r = svc.ingest_dataframe("t_expense", _sample_df())
     assert r["table"] == "t_expense" and r["rows"] == 3
+    assert r["skipped_duplicates"] == 0
     tables = {t["table"] for t in svc.list_datasets()}
     assert "t_expense" in tables
 
-    # append：按列名追加
-    svc.ingest_dataframe("t_expense", _sample_df().head(1), mode="append")
-    assert svc.ingest_dataframe.__name__  # 契约函数存在
+    # append：整行重复的数据跳过（2026-11-02 清洗强化），返回 skipped_duplicates
+    r_dup = svc.ingest_dataframe("t_expense", _sample_df().head(1), mode="append")
+    assert r_dup["rows"] == 3 and r_dup["skipped_duplicates"] == 1
+    # append：新行正常追加
+    new_row = pd.DataFrame({"月份": ["2026-11"], "分类": ["办公费"], "金额": [300.0]})
+    r_new = svc.ingest_dataframe("t_expense", new_row, mode="append")
+    assert r_new["rows"] == 4 and r_new["skipped_duplicates"] == 0
     r2 = svc.run_query("SELECT count(*) AS n FROM t_expense")
     assert r2["rows"][0][0] == 4
 
@@ -56,6 +61,23 @@ def test_ingest_dataframe_contract(vault_dir):
         svc.ingest_dataframe("Bad-Table", _sample_df())
     with pytest.raises(ValueError):
         svc.ingest_dataframe("t_expense", _sample_df(), mode="upsert")
+
+
+def test_append_dedupe_semantics(vault_dir):
+    base = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
+    r0 = svc.ingest_dataframe("t_dedupe", base)
+    assert r0["rows"] == 2
+    # 批内重复保留：只与库中已有行比较
+    intra = pd.DataFrame({"a": [3, 3], "b": ["z", "z"]})
+    r1 = svc.ingest_dataframe("t_dedupe", intra, mode="append")
+    assert r1["rows"] == 4 and r1["skipped_duplicates"] == 0
+    # 部分重叠：只补新行
+    part = pd.DataFrame({"a": [1, 2, 5], "b": ["x", "y", "w"]})
+    r2 = svc.ingest_dataframe("t_dedupe", part, mode="append")
+    assert r2["rows"] == 5 and r2["skipped_duplicates"] == 2
+    # 全重复：一行不增
+    r3 = svc.ingest_dataframe("t_dedupe", base, mode="append")
+    assert r3["rows"] == 5 and r3["skipped_duplicates"] == 2
 
 
 def test_ingest_uploaded_file(vault_dir, tmp_path):

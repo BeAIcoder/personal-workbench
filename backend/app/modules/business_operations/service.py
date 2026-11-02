@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
+from ...utils_xlsx import safe_cell
 from .models import OpsBill, OpsContract, OpsWorkOrder, OpsWorkOrderFollowup
 
 PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -689,17 +690,12 @@ def ops_contracts_export(db: Session) -> bytes:
 def _xlsx(title: str, headers: list[str], rows: list[list]) -> bytes:
     from openpyxl import Workbook
 
-    def cell(v):
-        if isinstance(v, str) and v[:1] in ("=", "+", "-", "@"):
-            return "'" + v
-        return v
-
     wb = Workbook()
     ws = wb.active
     ws.title = title[:31]
     ws.append(headers)
     for row in rows:
-        ws.append([cell(v) for v in row])
+        ws.append([safe_cell(v) for v in row])
     ws.freeze_panes = "A2"
     buf = io.BytesIO()
     wb.save(buf)

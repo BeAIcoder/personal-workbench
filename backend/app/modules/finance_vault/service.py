@@ -257,9 +257,10 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
             con.register("staging_df", df)
             latest = _latest_physical(con, table)
             if mode == "append" and latest:
-                # append：按列名追加进最新物理修订表（表名作 API 参数，不拼 SQL 文本）
-                con.append(latest, df, by_name=True)
+                # append：按列名追加；整行相同的已在库行跳过（2026-11-02 数据清洗强化）
+                skipped = _append_deduped(con, latest, df)
             else:
+                skipped = 0
                 # 物理“修订表”版本化 + 用户名固定为视图：数据落到新物理修订表（表名作
                 # API 参数），用户名经 to_view(replace=True) 原子换装——全程零 DDL 文本
                 # 拼接。修订号自目录枚举推算；旧修订暂不回收（嵌入式单文件库，量级可忽略）。
@@ -279,7 +280,36 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
         finally:
             con.close()
     _register_dataset(table, source=source or "dataframe", rows=rows, columns=cols)
-    return {"table": table, "rows": rows}
+    return {"table": table, "rows": rows, "skipped_duplicates": skipped}
+
+
+def _quote_ident(name: str) -> str:
+    """SQL 标识符安全引用：双引号包裹，内嵌双引号转义为两个。"""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _append_deduped(con, physical: str, df) -> int:
+    """按列名追加并跳过整行重复数据；返回跳过行数。
+
+    列集合与库中不一致时退回 by_name 直追（历史兼容），不去重。
+    去重用 DuckDB 关系 API 的抗连接（anti join），条件里的列名一律经
+    _quote_ident 转义，不拼接任何数据值。
+    """
+    stg = con.sql("SELECT * FROM staging_df")
+    cur = con.table(physical)
+    cols = list(stg.columns)
+    if set(cols) != set(cur.columns):
+        con.append(physical, df, by_name=True)
+        return 0
+    cond = " AND ".join(f'"__stg".{_quote_ident(c)} = "__cur".{_quote_ident(c)}' for c in cols)
+    left = stg.set_alias("__stg")
+    right = cur.set_alias("__cur")
+    diff = left.join(right, cond, how="anti")
+    add_rows = int(diff.aggregate("count(*)").fetchone()[0])
+    skipped = max(0, len(df) - add_rows)
+    if add_rows:
+        con.append(physical, diff.df(), by_name=True)
+    return skipped
 
 
 def _physical_rev(phys: str | None) -> int:

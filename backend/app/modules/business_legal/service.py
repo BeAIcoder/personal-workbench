@@ -9,6 +9,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
+from ...utils_xlsx import safe_cell
 from .models import LegalCase, LegalContractReview, LegalSeal
 
 REVIEW_STATUSES = ("pending", "reviewing", "approved", "rejected", "archived")
@@ -320,17 +321,12 @@ def legal_summary(db: Session) -> dict:
 def _xlsx(title: str, headers: list[str], rows: list[list]) -> bytes:
     from openpyxl import Workbook
 
-    def cell(v):
-        if isinstance(v, str) and v[:1] in ("=", "+", "-", "@"):
-            return "'" + v
-        return v
-
     wb = Workbook()
     ws = wb.active
     ws.title = title[:31]
     ws.append(headers)
     for row in rows:
-        ws.append([cell(v) for v in row])
+        ws.append([safe_cell(v) for v in row])
     ws.freeze_panes = "A2"
     buf = io.BytesIO()
     wb.save(buf)

@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
+from ...utils_xlsx import safe_cell as _cell
 from .models import LeasingFollowup, LeasingLead, LeasingUnit
 
 UNIT_STATUS_LABELS = {
@@ -444,13 +445,6 @@ def leads_due(db: Session, today: date | None = None) -> list[dict]:
 
 
 # ---------------- 导出 ----------------
-
-def _cell(value):
-    """防 Excel 公式注入：用户文本以 = + - @ 开头时加前导单引号。"""
-    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
-        return "'" + value
-    return value
-
 
 def _xlsx(title: str, headers: list[str], rows: list[list]) -> bytes:
     from openpyxl import Workbook

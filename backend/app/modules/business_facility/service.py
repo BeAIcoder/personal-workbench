@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
+from ...utils_xlsx import safe_cell as _cell
 from .models import FacilityCompliance, FacilityEquipment
 
 CATEGORIES = ("A", "B", "C")
@@ -233,12 +234,6 @@ def facility_summary(db: Session, as_of: date | None = None) -> dict:
         "overdue": sum(1 for item in items if item["status"] == "overdue"),
         "building_level": sum(1 for item in items if item["equipment_id"] is None),
     }
-
-
-def _cell(value):
-    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
-        return "'" + value
-    return value
 
 
 def _xlsx(title: str, headers: list[str], rows: list[list]) -> bytes:
