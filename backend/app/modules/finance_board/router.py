@@ -1,7 +1,7 @@
 """finance_board 模块接口：/api/finance/board（前缀由注册器按 manifest.prefix 挂载）。"""
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,11 @@ def run_pipeline():
     except service.PipelineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {**snap, "message": "管线运行完成，快照已归档"}
+
+
+@router.get("/verify", summary="看板产物内容级巡检（HTML 内嵌数据 vs 管线数据源）")
+def verify_snapshot(snapshot_id: int | None = Query(default=None, ge=1)):
+    return service.verify_snapshot(snapshot_id)
 
 
 @router.get("/latest", response_model=SnapshotOut, summary="最新成功快照（无则 404）")

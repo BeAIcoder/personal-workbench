@@ -45,6 +45,13 @@
 - **dq 连续失败检查**：最近两条快照均 failed → error（含 stamp 样本），与告警互补（库内可见 vs 问题记录）。
 - **测试**：board 9→**11 passed**（重试成功/重试耗尽+告警去重），dq 16→**18 passed**（税务勾稽 4 断言、连续失败）；**后端全量 1494 passed（867s）**。运行态：dq 200/overall 100。**Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:104f919f…`。
 
+## 看板产物内容级巡检 + 定时任务接入重试结果（2026-11-02 深夜 v5）
+
+- **产物内容级巡检** `GET /api/finance/board/verify`（`service.verify_snapshot`）：提取 HTML 内嵌 `const R = {...}`（m04 的 `__DATA__` 替换点，行锚定正则以避开 ]};\n 误截断）与管线 `data/report_data.json` 对照——① 文件规模；② 内嵌 JSON 可解析；③ **敏感键剔除**（HTML 不得含脱敏映射 `map`）；④ 顶层键一致（**meta 不参与**：生成时间/文件计数每次运行天然不同）；⑤ 递归数值比对（容差 0.01，差异限 20 条）；⑥ 关键 KPI 齐全。结果按（快照 id、HTML 大小、数据 mtime）缓存，dq 复用。
+- **真实巡检首跑结论（生产）**：最新 ok 快照是 2026-10-30，而管线数据已是 11-02 → kpi 周报期间/出租率/应收等 20 处差异 + 旧快照 HTML 含 `map`（现行 m04 已 pop）。重跑一次管线即可生成合规新快照。
+- **dq 财务域**新增「产物一致性」warning（校验失败列失败项名）；**定时任务** `finance_board.run` 消息带尝试次数（成功含「尝试 N 次」，失败含「重试 N 次后仍失败」）；`run_pipeline` 成功返回 `attempts`。
+- **测试**：board 12→**13 passed**（巡检一致/差异检测/map 检出/动作消息），dq 18→**19 passed**（产物不一致集成）；后端全量见下。
+
 ## 财务菜单层级重组（2026-11-01）
 
 - 「财务」侧栏组由 14 项扁平改为**直挂数据仓 + 4 个二级折叠子分组**（账务处理=费用/发票/POS、记账=个人/BIP、税务填报=企所税/印花/增值/个税/残保金、报表分析=看板/现金流）。机制：manifest `menu.subgroup`（可选）+ `src/modules/index.js` 新增 `getModuleMenuGroups()`（纯聚合，`getModuleMenus` 未动）+ AppLayout 动态段嵌套 `el-sub-menu` 渲染 + `defaultOpeneds`（setup 一次性按初始 route 反查父级 index，保证深链/刷新自动展开；不做成响应式以免覆盖用户手动折叠）。

@@ -6,6 +6,7 @@
 - 验证模块注册与菜单。
 不写入真实数据目录，不触发真实管线。
 """
+import json
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,74 @@ def test_run_pipeline_retry_exhausted_alerts(client, monkeypatch, tmp_path):
     client.post(f"{P}/run")
     titles = [i["title"] for i in dbg.load_issues()]
     assert titles.count("报表看板管线运行失败") == 1
+
+
+def _verify_env(monkeypatch, tmp_path, payload, html_payload=None):
+    """造「快照 HTML + 管线 report_data.json」环境；返回 (html 路径, 数据文件)。"""
+    base = tmp_path / "board_data"
+    monkeypatch.setattr(svc, "get_finance_data_dir", lambda: base)
+    monkeypatch.setattr(svc, "_MIN_HTML_BYTES", 0)
+    pdir = tmp_path / "pipe"
+    (pdir / "data").mkdir(parents=True)
+    data = dict(payload)
+    (pdir / "data" / "report_data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    html_body = html_payload if html_payload is not None else {k: v for k, v in data.items() if k != "map"}
+    snap_dir = base / "finance_board" / "snapshots" / "20261102_120000"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    html = snap_dir / svc.DASHBOARD_NAME
+    html.write_text(
+        "<html><script>\nconst R = " + json.dumps(html_body, ensure_ascii=False) + ";\n</script></html>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(svc, "pipeline_dir", lambda: pdir)
+    svc._save_snapshot("20261102_120000", "ok", str(html), "fake", 1.0)
+    return html, pdir / "data" / "report_data.json"
+
+
+def test_verify_snapshot_ok(client, monkeypatch, tmp_path):
+    """v5：HTML 内嵌数据与 report_data.json 一致（meta 不参与比对）→ 全部检查通过。"""
+    kpi = {"出租率": 0.95, "开业率": 0.9, "收缴率": 0.98, "空铺数": 3}
+    payload = {"kpi": kpi, "op": {"years": [2025, 2026]},
+               "meta": {"generated": "2026-10-01"}, "map": {"a": "b"}}
+    html_payload = {"kpi": kpi, "op": {"years": [2025, 2026]}, "meta": {"generated": "2026-11-02"}}
+    _verify_env(monkeypatch, tmp_path, payload, html_payload=html_payload)
+    result = svc.verify_snapshot()
+    assert result["available"] is True
+    assert result["summary"]["fail"] == 0, result["checks"]
+    assert result["mismatches"] == []
+    resp = client.get(f"{P}/verify")
+    assert resp.status_code == 200 and resp.json()["summary"]["fail"] == 0
+
+
+def test_verify_snapshot_flags_map_in_html(client, monkeypatch, tmp_path):
+    """v5：旧产物内嵌脱敏映射 map → 敏感键剔除失败。"""
+    kpi = {"出租率": 0.95, "开业率": 0.9, "收缴率": 0.98, "空铺数": 3}
+    _verify_env(monkeypatch, tmp_path, {"kpi": kpi}, html_payload={"kpi": kpi, "map": {"a": "b"}})
+    result = svc.verify_snapshot()
+    names = {c["name"] for c in result["checks"] if not c["ok"]}
+    assert "敏感键剔除" in names
+    assert "数值一致性" not in names
+
+
+def test_verify_snapshot_detects_mismatch(client, monkeypatch, tmp_path):
+    """v5：数据源被改动/渲染不一致 → 数值一致性失败且列出差异路径。"""
+    payload = {"kpi": {"出租率": 0.95, "开业率": 0.9, "收缴率": 0.98, "空铺数": 3}}
+    html_payload = {"kpi": {"出租率": 0.88, "开业率": 0.9, "收缴率": 0.98, "空铺数": 3}}
+    _verify_env(monkeypatch, tmp_path, payload, html_payload=html_payload)
+    result = svc.verify_snapshot()
+    assert result["available"] is True
+    assert result["summary"]["fail"] >= 1
+    names = {c["name"] for c in result["checks"] if not c["ok"]}
+    assert "数值一致性" in names
+    assert any("出租率" in m["path"] for m in result["mismatches"])
+
+
+def test_board_action_message_includes_attempts(monkeypatch):
+    """v5：定时任务动作消息带重试次数。"""
+    from app.modules.finance_board import _run_board_action
+    monkeypatch.setattr(svc, "run_pipeline", lambda: {"stamp": "S1", "elapsed_sec": 1.5, "attempts": 2})
+    out = _run_board_action()
+    assert out["status"] == "ok" and "尝试 2 次" in out["message"]
 
 
 def test_snapshots_list_and_html(client, board_dir, monkeypatch):

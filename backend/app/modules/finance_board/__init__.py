@@ -16,7 +16,9 @@ def _run_board_action() -> dict:
     """调度器动作入口：跑一次管线并归档快照；失败时返回 error 状态（不抛出，避免调度循环异常）。"""
     try:
         snap = _service.run_pipeline()
-        return {"status": "ok", "message": f"看板已刷新（快照 {snap['stamp']}，{snap['elapsed_sec']}s）"}
+        attempts = snap.get("attempts", 1)
+        suffix = f"，尝试 {attempts} 次" if attempts > 1 else ""
+        return {"status": "ok", "message": f"看板已刷新（快照 {snap['stamp']}，{snap['elapsed_sec']}s{suffix}）"}
     except Exception as exc:  # noqa: BLE001  动作失败转为状态记录，不影响其他任务
         return {"status": "error", "message": f"看板刷新失败：{exc}"}
 

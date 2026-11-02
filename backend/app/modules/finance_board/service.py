@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -274,11 +275,12 @@ def _run_pipeline_locked() -> dict:
                 time.sleep(_RETRY_DELAY_SECONDS)
                 continue
             detail = getattr(exc, "logs", "") or str(exc)
-            _save_snapshot(stamp, "failed", "",
-                           f"重试 {attempt} 次后仍失败：{exc}\n{detail}"[:4000],
-                           time.perf_counter() - t0)
+            msg = f"重试 {attempt} 次后仍失败：{exc}"
+            _save_snapshot(stamp, "failed", "", f"{msg}\n{detail}"[:4000], time.perf_counter() - t0)
             _notify_failure(str(exc))
-            raise
+            err = PipelineUnavailableError(msg)
+            err.logs = detail
+            raise err from exc
 
     # 产物复制为自包含快照（原文件保持不动）
     src_html = pdir / "output" / DASHBOARD_NAME
@@ -291,7 +293,9 @@ def _run_pipeline_locked() -> dict:
     shutil.copy2(src_html, dest_html)
 
     snap = _save_snapshot(stamp, "ok", str(dest_html), log_text, time.perf_counter() - t0)
-    return _out(snap)
+    out = _out(snap)
+    out["attempts"] = attempt  # 定时任务/前端可据此展示重试结果（2026-11-02 v5）
+    return out
 
 
 def _unique_stamp() -> str:
@@ -355,3 +359,123 @@ def latest_snapshot(db: Session) -> BoardSnapshot | None:
         .order_by(BoardSnapshot.id.desc())
         .first()
     )
+
+
+# ---------------- 产物内容级巡检（2026-11-02 v5） ----------------
+# HTML 内嵌数据块由 m04 以 `const R = __DATA__;` 形式写入（report_data.json 去掉 map）
+_DATA_MARKER_RE = re.compile(r"^const R = (\{.*\});\s*$", re.M)
+# 产物规模下限（正常看板内嵌 echarts，≥1MB；测试可 patch）
+_MIN_HTML_BYTES = 100_000
+# 巡检结果缓存：key = (快照 id, HTML 大小, 数据文件 mtime)；避免 dq 每次全量重解析
+_VERIFY_CACHE: dict[str, dict] = {}
+_VERIFY_CACHE_MAX = 8
+
+
+def _walk_diff(expected, actual, path: str, out: list, limit: int = 20) -> None:
+    """递归比对 JSON（数值容差 0.01），差异最多收集 limit 条。"""
+    if len(out) >= limit:
+        return
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        for k in expected:
+            if len(out) >= limit:
+                return
+            if k not in actual:
+                out.append({"path": f"{path}.{k}", "expected": expected[k], "actual": "<缺失>"})
+            else:
+                _walk_diff(expected[k], actual[k], f"{path}.{k}", out, limit)
+        return
+    if isinstance(expected, list) and isinstance(actual, list):
+        if len(expected) != len(actual):
+            out.append({"path": path, "expected": f"len={len(expected)}", "actual": f"len={len(actual)}"})
+        for i, (x, y) in enumerate(zip(expected, actual)):
+            if len(out) >= limit:
+                return
+            _walk_diff(x, y, f"{path}[{i}]", out, limit)
+        return
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        if expected != actual:
+            out.append({"path": path, "expected": expected, "actual": actual})
+        return
+    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        if abs(float(expected) - float(actual)) > 0.01:
+            out.append({"path": path, "expected": expected, "actual": actual})
+        return
+    if expected != actual:
+        out.append({"path": path, "expected": expected, "actual": actual})
+
+
+def verify_snapshot(snapshot_id: int | None = None) -> dict:
+    """看板产物内容级巡检：HTML 内嵌数据 vs 管线 data/report_data.json（只读）。
+
+    校验项：① HTML 文件规模；② 内嵌 `const R` 数据块可解析；③ 顶层键集合一致；
+    ④ 递归数值比对（容差 0.01，最多 20 处差异）；⑤ 关键 KPI（出租率/开业率/收缴率/空铺数）齐全。
+    结果按（快照 id、HTML 大小、数据文件 mtime）缓存，dq 巡检可复用。
+    """
+    with SessionLocal() as db:
+        snap = (db.get(BoardSnapshot, snapshot_id) if snapshot_id
+                else db.query(BoardSnapshot).filter(BoardSnapshot.status == "ok")
+                .order_by(BoardSnapshot.id.desc()).first())
+        if snap is None:
+            return {"available": False, "gap_reasons": ["暂无可巡检的快照"], "checks": [], "mismatches": []}
+        snap_view = {"id": snap.id, "stamp": snap.stamp, "status": snap.status}
+        html_path = Path(snap.html_path or "")
+    if not snap.html_path or not html_path.is_file():
+        return {"available": False, "gap_reasons": ["快照 HTML 文件不存在"], "snapshot": snap_view, "checks": [], "mismatches": []}
+    try:
+        data_path = pipeline_dir() / "data" / "report_data.json"
+        src_mtime = data_path.stat().st_mtime if data_path.is_file() else 0
+        size = html_path.stat().st_size
+    except (OSError, PipelineUnavailableError) as exc:
+        return {"available": False, "gap_reasons": [f"管线数据不可用：{exc}"], "snapshot": snap_view, "checks": [], "mismatches": []}
+    cache_key = f"{snap.id}:{size}:{src_mtime}"
+    if cache_key in _VERIFY_CACHE:
+        return _VERIFY_CACHE[cache_key]
+    checks: list[dict] = []
+    mismatches: list[dict] = []
+    try:
+        html = html_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"available": False, "gap_reasons": [f"读取快照失败：{exc}"], "snapshot": snap_view, "checks": [], "mismatches": []}
+    checks.append({"name": "文件规模", "ok": size > _MIN_HTML_BYTES, "detail": f"{size / 1e6:.2f} MB"})
+    m = _DATA_MARKER_RE.search(html)
+    embedded = None
+    if m:
+        try:
+            embedded = json.loads(m.group(1))
+            checks.append({"name": "内嵌数据", "ok": True, "detail": f"可解析（顶层键 {len(embedded)} 个）"})
+        except json.JSONDecodeError as exc:
+            checks.append({"name": "内嵌数据", "ok": False, "detail": f"JSON 解析失败：{exc}"})
+    else:
+        checks.append({"name": "内嵌数据", "ok": False, "detail": "未找到 const R = {...} 数据块"})
+    if embedded is not None:
+        # 脱敏映射（码→真名）绝不进 HTML；旧版 m04 产物会带 map，属高风险遗留
+        checks.append({"name": "敏感键剔除", "ok": "map" not in embedded,
+                       "detail": "未包含 map" if "map" not in embedded else "产物包含脱敏映射 map，请重新运行管线生成新快照"})
+        try:
+            src = json.loads(data_path.read_text(encoding="utf-8"))
+            src.pop("map", None)
+        except (OSError, json.JSONDecodeError) as exc:
+            src = None
+            checks.append({"name": "数据源对照", "ok": False, "detail": f"读取 report_data.json 失败：{exc}"})
+        if src is not None:
+            # meta 是运行元数据（生成时间/文件计数），不同次运行天然不同 → 不参与比对
+            expected_view = {k: v for k, v in src.items() if k != "meta"}
+            actual_view = {k: v for k, v in embedded.items() if k not in ("meta", "map")}
+            missing = sorted(set(expected_view) - set(actual_view))
+            extra = sorted(set(actual_view) - set(expected_view))
+            checks.append({"name": "顶层键一致", "ok": not missing and not extra,
+                           "detail": f"缺 {missing} 多 {extra}" if (missing or extra) else "一致"})
+            _walk_diff(expected_view, actual_view, "", mismatches, limit=20)
+            checks.append({"name": "数值一致性", "ok": not mismatches, "detail": f"差异 {len(mismatches)} 处"})
+        kpi = embedded.get("kpi") or {}
+        required = ["出租率", "开业率", "收缴率", "空铺数"]
+        missing_kpi = [k for k in required if k not in kpi]
+        checks.append({"name": "关键 KPI", "ok": not missing_kpi,
+                       "detail": "缺失：" + "、".join(missing_kpi) if missing_kpi else "齐全"})
+    fail = sum(1 for c in checks if not c["ok"])
+    result = {"available": True, "snapshot": snap_view, "checks": checks, "mismatches": mismatches,
+              "summary": {"ok": len(checks) - fail, "fail": fail}}
+    if len(_VERIFY_CACHE) >= _VERIFY_CACHE_MAX:
+        _VERIFY_CACHE.clear()
+    _VERIFY_CACHE[cache_key] = result
+    return result

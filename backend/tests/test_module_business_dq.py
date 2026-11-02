@@ -192,6 +192,20 @@ def test_board_consecutive_failures(client):
     assert fails and fails[0]["level"] == "error" and fails[0]["count"] == 2
 
 
+def test_dq_board_artifact_mismatch(client, monkeypatch, tmp_path):
+    """v5：产物内容巡检失败（HTML 无内嵌数据块）→ dq 财务域 warning。"""
+    from app.modules.finance_board import service as board_svc
+    from app.modules.finance_board.models import BoardSnapshot
+    html = tmp_path / "board.html"
+    html.write_text("<html>no data marker</html>", encoding="utf-8")
+    _plant(BoardSnapshot, stamp="20261102_130000", status="ok", html_path=str(html))
+    monkeypatch.setattr(board_svc, "_MIN_HTML_BYTES", 0)
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    hit = [i for i in data["top_issues"] if i["check"] == "产物一致性"]
+    assert hit and hit[0]["level"] == "warning"
+    assert "内嵌数据" in (hit[0].get("sample") or [])
+
+
 def test_board_stale_snapshot(client):
     """看板陈旧快照巡检：最近 ok 快照超过 7 天 → warning。"""
     from datetime import datetime, timedelta

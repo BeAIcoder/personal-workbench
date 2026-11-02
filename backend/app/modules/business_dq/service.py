@@ -374,6 +374,16 @@ def _dom_finance(db, as_of):
                 issues.append(_issue("error", "连续失败", 2, [s.stamp for s in latest_two], "看板管线连续两次运行失败；已登记问题记录，建议检查管线脚本与日志"))
         except Exception:
             pass
+        # 产物内容一致性（2026-11-02 v5）：HTML 内嵌数据 vs 管线 report_data.json（带缓存）
+        try:
+            from ..finance_board import service as board_service
+            vr = board_service.verify_snapshot()
+            if vr.get("available") and (vr.get("summary") or {}).get("fail"):
+                failed_names = [c["name"] for c in vr.get("checks", []) if not c.get("ok")]
+                issues.append(_issue("warning", "产物一致性", len(failed_names), failed_names,
+                                     "看板 HTML 与管线数据不一致或产物缺失；建议重新运行管线"))
+        except Exception:  # 巡检失败不拖垮财务域
+            pass
     if not present:
         return {"available": False, "gap_reasons": ["财务域表均未就绪"], "context": {}, "issues": []}
     return {"available": True, "gap_reasons": [], "context": {"sources": present}, "issues": issues}
