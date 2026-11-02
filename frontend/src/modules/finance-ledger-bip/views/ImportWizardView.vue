@@ -14,7 +14,8 @@
 
       <div v-if="step === 0" class="step-body">
         <input type="file" accept=".xlsx,.xls" @change="onFile" />
-        <p class="hint">支持三类用友 BIP 导出：凭证列表 / 辅助明细账 / 科目余额表（xlsx/xls，上限 10MB）。</p>
+        <p class="hint">支持三类用友 BIP 导出：凭证列表 / 辅助明细账 / 科目余额表（xlsx/xls，上限 10MB）。一次一个文件、一个文件一种类型。</p>
+        <div class="tpl-row"><TemplateLinks type="bip" /></div>
       </div>
 
       <div v-else-if="step === 1 && preview" class="step-body">
@@ -96,6 +97,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../../api'
+import TemplateLinks from '../../../components/TemplateLinks.vue'
 import { takeFile } from '../../_shared/fileInput'
 import { canConfirmImport, mappingFields } from '../importForm'
 

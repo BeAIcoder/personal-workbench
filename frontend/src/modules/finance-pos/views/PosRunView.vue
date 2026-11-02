@@ -44,6 +44,7 @@
         <el-form-item label="输入文件">
           <input type="file" multiple accept=".xlsx,.xls,.zip" @change="onFiles" />
           <div class="hint">SHOP 日对账单（zip/xlsx）+ 认领记录 + 辅助明细账 + 凭证列表；可打 ZIP。单个文件不超过 50MB、全部文件合计不超过 100MB，超限文件会在上传前自动跳过。</div>
+          <div class="tpl-row"><TemplateLinks type="pos" /></div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -62,6 +63,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import TemplateLinks from '../../../components/TemplateLinks.vue'
 import { takeFiles } from '../../_shared/fileInput'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 

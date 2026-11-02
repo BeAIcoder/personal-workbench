@@ -311,3 +311,7 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **验证**：新增 `backend/tests/test_data_templates.py`（5 passed：数据仓 csv/xlsx 入仓各 2 行、BIP 三类型识别 voucher/aux/balance、个人记账导入 2 行、费用表头定位命中）。模板无 PII，随 git archive 进分发包；分发包剔除 tests 后测试有 skipif 守卫。脱敏数据/ 仍为 gitignore 样本，不入库。
 - **本轮故障模式（新变体）**：本会话 Write/Edit **中长内容**高频被注入「占位噪声」（连 Bash python -c 内联脚本也约 50% 中招），短片段+写后立即 `grep 占位噪声` + 定向 Edit 修复可行；长 Write 必须回读校验，模板生成改走「短 python -c 片段逐文件生成+回读」。
 - 《使用说明.md》目录补「十三、数据收传」并加 §7 指针。
+- **第二轮（页面内模板下载 + 个人记账导入入口）**：新增 `backend/app/routers/data_templates.py`（`GET /api/templates` 清单 + `GET /api/templates/{name}` 下载；文件名固定白名单、无用户可控路径拼接，未命中一律 404）并挂到 main.py；前端 `utils/dataTemplates.js` + `components/TemplateLinks.vue`，**6 个上传页接入**（数据仓/费用分类/POS/现金流/BIP/个人记账）；**补上个人记账 CSV 导入前端入口**（后端 `/import/csv` 原本存在但页面无按钮——真实「空壳」缺口，含成功/坏行提示与模板链接）。
+- 测试：`test_data_templates.py` 5→**8 passed**（清单 10 份就位、白名单下载含 RFC5987 中文名与 xlsx 魔数、白名单外/路径穿越 404）；前端新增 `data-templates.test.js`（4 例：清单唯一性、URL 编码、6 视图接线、个人导入入口）；**前端全量 60 文件 896 passed** + 构建通过（stamp `99916b28b78d`）。前端静态守卫（B6）要求业务 catch 不重复弹 `ElMessage.error`，导入失败提示由拦截器统一承担。
+- 提交：上一轮发票代码+文档 `d616147`；本轮（模板下载/导入入口）单独提交。
+- **验证（第二轮）**：后端全量 **1514 passed（949.09s）**；前端 60 文件 **896 passed**；构建通过（stamp `99916b28b78d`）。**Mimosa deep 复核**：6 findings 仍为历史已知项（`dev/package_release.py`×3、`20261012New` 历史 SQL×2、`dev/desensitize_finance_data.py` 固定种子×1），本轮新文件 0 findings；seal `sha256:ab6eb482…`。

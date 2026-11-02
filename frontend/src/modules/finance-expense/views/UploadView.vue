@@ -46,6 +46,7 @@
           <div class="el-upload__tip">仅支持 .xlsx/.xls，大小不超过 20MB；点击「执行分类」后立即处理</div>
         </template>
       </el-upload>
+      <div class="tpl-row"><TemplateLinks type="expense" /></div>
 
       <el-button type="primary" :disabled="!selectedFile || running || !!engineError" @click="runClassify">
         {{ running ? '分类执行中...' : '执行分类' }}
@@ -96,6 +97,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import TemplateLinks from '../../../components/TemplateLinks.vue'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const router = useRouter()

@@ -61,6 +61,7 @@
         <el-form-item label="输入文件">
           <input type="file" multiple accept=".xlsx,.xls,.csv,.zip" @change="onFiles" />
           <div class="hint">银行辅助明细账 + 预测模板（必填）；上月上报版 / 凭证列表 / M03 按需；可打 ZIP</div>
+          <div class="tpl-row"><TemplateLinks type="cashflow" /></div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -79,6 +80,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
+import TemplateLinks from '../../../components/TemplateLinks.vue'
 import { takeFiles } from '../../_shared/fileInput'
 import { currentMonth } from '../month'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'

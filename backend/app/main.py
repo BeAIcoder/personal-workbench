@@ -25,6 +25,7 @@ from .modules import collect_column_patches, load_modules
 from .routers import (
     assistant,
     dashboard,
+    data_templates,
     experts,
     jobs,
     knowledge,
@@ -467,6 +468,7 @@ app.include_router(schedules.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(data_templates.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(mcp.router, prefix="/api")

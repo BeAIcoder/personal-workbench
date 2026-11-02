@@ -57,3 +57,29 @@ def test_expense_header_row_located_on_template():
     """费用分类模板：后端表头定位函数在前 25 行内命中（行号 0 起算）。"""
     row = expense_service._locate_bank_header_row(TPL / "费用分类-银行存款辅助明细账-模板.xlsx")
     assert row is not None
+
+
+def test_template_list_endpoint(client):
+    """模板清单端点：10 份模板全部就位（与前端「下载模板」清单同源）。"""
+    r = client.get("/api/templates")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 10
+    assert all(item["available"] for item in data["items"]), data["items"]
+
+
+def test_template_download_whitelisted(client):
+    """白名单模板可下载，且带中文文件名（RFC5987）与 xlsx 魔数。"""
+    name = "数据仓-入仓模板.xlsx"
+    r = client.get(f"/api/templates/{name}")
+    assert r.status_code == 200
+    assert r.content[:2] == b"PK"
+    disposition = r.headers.get("content-disposition", "")
+    assert "attachment" in disposition.lower()
+    assert "filename*=utf-8''" in disposition.lower()
+
+
+def test_template_download_rejects_unknown_name(client):
+    """白名单外的名字一律 404（含路径穿越尝试），不做任何路径归一。"""
+    assert client.get("/api/templates/不存在.xlsx").status_code == 404
+    assert client.get("/api/templates/..%2FREADME.md").status_code == 404

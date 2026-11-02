@@ -19,7 +19,10 @@
             </el-select>
             <el-input v-model="filters.keyword" placeholder="备注关键词" size="small" clearable style="width: 150px" @keyup.enter="reload(1)" />
             <el-button size="small" type="primary" @click="reload(1)">筛选</el-button>
+            <el-button size="small" type="primary" plain :loading="importing" @click="pickCsv">导入 CSV</el-button>
+            <input ref="csvInput" type="file" accept=".csv" class="hidden-file" @change="onCsvPicked" />
             <el-button size="small" @click="exportCsv">导出 CSV</el-button>
+            <TemplateLinks type="personal" />
           </div>
         </div>
       </template>
@@ -44,7 +47,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { AgGridVue } from 'ag-grid-vue3'
 import { LocaleModule, PaginationModule } from 'ag-grid-community'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import TemplateLinks from '../../../components/TemplateLinks.vue'
 import { buildMonthOptions } from '../../_shared/dates'
 
 // 金额统一安全格式化：后端字段可能为 null/undefined（未回填、导入失败行），
@@ -130,6 +135,37 @@ function exportCsv() {
   window.open(`${api.defaults.baseURL}/finance/ledger/personal/export/csv?${params.toString()}`, '_blank')
 }
 
+// CSV 导入（后端 /finance/ledger/personal/import/csv，上限 5MB）：
+// 坏行由后端逐行跳过并返回 errors，好行照常入库
+const importing = ref(false)
+const csvInput = ref(null)
+
+function pickCsv() {
+  csvInput.value?.click()
+}
+
+async function onCsvPicked(e) {
+  const file = e.target.files?.[0]
+  e.target.value = '' // 允许重复选择同一文件
+  if (!file) return
+  importing.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const { data } = await api.post('/finance/ledger/personal/import/csv', fd, { timeout: 120000 })
+    const errors = data.errors || []
+    ElMessage.success(`导入完成：新增 ${data.imported ?? 0} 行` + (errors.length ? `，${errors.length} 行未导入` : ''))
+    if (errors.length) {
+      ElMessageBox.alert(errors.slice(0, 10).join('\n'), '部分行未导入（最多显示 10 条）', { confirmButtonText: '知道了' })
+    }
+    await reload(1)
+  } catch {
+    /* 拦截器已统一提示（B6：业务 catch 不重复弹） */
+  } finally {
+    importing.value = false
+  }
+}
+
 onMounted(async () => {
   await load()
   await reload()
@@ -146,6 +182,11 @@ onMounted(async () => {
 
 .total-hint.warn {
   color: var(--el-color-warning);
+}
+
+/* CSV 导入的隐藏文件选择器：由「导入 CSV」按钮代理点击 */
+.hidden-file {
+  display: none;
 }
 
 .filters {

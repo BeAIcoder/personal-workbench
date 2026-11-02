@@ -5,7 +5,10 @@
       <template #header>
         <div class="card-head">
           <span>数据集清单</span>
-          <el-button size="small" type="primary" @click="uploadDialog = true">上传入仓</el-button>
+          <span class="head-actions">
+            <TemplateLinks type="vault" />
+            <el-button size="small" type="primary" @click="uploadDialog = true">上传入仓</el-button>
+          </span>
         </div>
       </template>
       <el-table :data="items" size="small" empty-text="暂无数据集，点右上角上传 xlsx/csv">
@@ -59,6 +62,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import TemplateLinks from '../../../components/TemplateLinks.vue'
 import { takeFile } from '../../_shared/fileInput'
 import { toTableRows } from '../tableRows'
 import UsageHelp from '../UsageHelp.vue'

@@ -480,6 +480,7 @@ name 重复或必填缺失返回 400。
 
 | 模块 | 前缀 | 主要接口 |
 |------|------|---------|
+| 数据模板（通用） | `/api/templates` | `GET /`（10 份导入模板清单：名称/模块/大小/是否就位）、`GET /{name}`（白名单模板下载，中文文件名 RFC5987；不在白名单一律 404） |
 | finance_expense 费用分类 | `/api/finance/expense` | `POST /classify`（上传 xlsx 分类）、`GET /runs`、`GET /runs/{id}`、`GET /runs/{id}/download`、`GET /rules/summary`、`POST /rules/reload` |
 | finance_invoice 发票处理 | `/api/finance/invoice` | `GET /engine/status`、`POST /batches`（上传 PDF/ZIP）、`GET /batches`、`GET /batches/{id}`、`PATCH /items/{id}`、`POST /batches/{id}/reclassify`（按项目规则重新归类）、`GET /batches/{id}/projects`（项目汇总）、`POST /batches/{id}/export`（重命名 + 清单 + 整批/分项目 ZIP）、`GET /batches/{id}/projects/download?project=`（单项目 ZIP）、`GET /batches/{id}/download`（整批 ZIP） |
 | finance_vault 数据仓 | `/api/finance/vault` | `GET /tables`、`POST /ingest/file`、`POST /query`（只读 SQL）、`GET /tables/{name}/preview` |
