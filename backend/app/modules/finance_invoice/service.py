@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from ...config import get_finance_data_dir
 from ...database import SessionLocal
 from . import engine as engine_mod
+from . import projects as project_rules
 from .models import InvoiceBatch, InvoiceItem
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class ParsedInvoice:
     brand_name: str = ""
     remark: str = ""
     extraction_success: bool = True
+    raw_text: str = ""  # 清洁后全文（仅内存内用于项目归类，不落库）
 
 
 # ---------------- 数据目录 ----------------
@@ -131,17 +133,48 @@ def sanitize_filename(name: str) -> str:
     return name or "未命名"
 
 
-def parse_date_to_year_month(date_str: str) -> str:
-    """开票日期 → 「yy年M月」（同引擎 parse_date_to_year_month，用于导出目录命名）。"""
+def _date_parts(date_str: str) -> Optional[tuple[int, int]]:
+    """开票日期 → (年, 月)；无法解析返回 None。"""
     if not date_str:
-        return ""
+        return None
     for pattern in _YM_PATTERNS:
         match = pattern.search(date_str)
         if match:
-            year, month = match.group(1), match.group(2)
-            short_year = year[-2:] if len(year) == 4 else year
-            return f"{short_year}年{int(month)}月"
-    return ""
+            try:
+                return int(match.group(1)), int(match.group(2))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def parse_date_to_year_month(date_str: str) -> str:
+    """开票日期 → 「yy年M月」（同引擎 parse_date_to_year_month，用于导出目录命名）。"""
+    parts = _date_parts(date_str)
+    if parts is None:
+        return ""
+    year, month = parts
+    return f"{year % 100}年{month}月"
+
+
+def parse_date_to_year_month_long(date_str: str) -> str:
+    """开票日期 → 「yyyy年M月」（下载文件名用，避免跨世纪歧义）。"""
+    parts = _date_parts(date_str)
+    if parts is None:
+        return ""
+    year, month = parts
+    return f"{year}年{month}月"
+
+
+def _months_suffix(months: list[tuple[int, int]]) -> str:
+    """月份集合 → 文件名后缀：单月「2026年10月」，同/跨年多个月「2026年10-11月」「2026年12月-2027年1月」。"""
+    if not months:
+        return ""
+    first, last = months[0], months[-1]
+    if len(months) == 1:
+        return f"{first[0]}年{first[1]}月"
+    if first[0] == last[0]:
+        return f"{first[0]}年{first[1]}-{last[1]}月"
+    return f"{first[0]}年{first[1]}月-{last[0]}年{last[1]}月"
 
 
 def extract_seller_name(text: str) -> str:
@@ -209,6 +242,7 @@ def parse_invoice_text(processor, text: str) -> ParsedInvoice:
         brand_name=(info.brand_name or "")[:50],
         remark=(info.remarks or "")[:500],
         extraction_success=bool(info.extraction_success),
+        raw_text=cleaned,
     )
 
 
@@ -247,7 +281,180 @@ def _parse_pdf_with_engine(pdf_path: Path) -> Optional[ParsedInvoice]:
         brand_name=(info.brand_name or "")[:50],
         remark=(info.remarks or "")[:500],
         extraction_success=bool(info.extraction_success),
+        raw_text=cleaned,
     )
+
+
+# ---------------- 项目归类（规则见 projects.py） ----------------
+
+def _pdf_text(item: InvoiceItem) -> str:
+    """重新归类时按需补取 PDF 全文（仅在项目名/备注都不足以判断时调用）。"""
+    path = Path(item.stored_path or "")
+    if not path.is_file():
+        return ""
+    try:
+        handle = engine_mod.get_engine()
+        processor = handle.processor_cls(handle.config)
+        return processor._clean_text(processor._extract_text_once(str(path))) or ""
+    except Exception as exc:  # 引擎异常/PDF 损坏都不影响归类主流程
+        logger.warning("补取发票全文失败 %s：%s", path.name, exc)
+        return ""
+
+
+def classify_items(
+    entries: list[tuple[InvoiceItem, str]],
+    rules: list[project_rules.ProjectRule],
+    text_loader=None,
+    seed_peers: Optional[dict[str, set[str]]] = None,
+) -> dict[InvoiceItem, tuple[str, str]]:
+    """两遍归类：先按项目名/备注/全文判定，再用同批同购方（唯一项目）补齐。
+
+    entries: [(明细, 全文)]，全文可为空（为空时经 text_loader 懒加载）；
+    seed_peers: 预先已知的购方→项目集合（人工修正过的发票，作为继承证据）；
+    返回 {明细对象: (项目名, 依据)}。rules 为空时全部返回「不变」。
+    """
+    peers: dict[str, set[str]] = {buyer: set(projects) for buyer, projects in (seed_peers or {}).items()}
+    resolved: dict[InvoiceItem, tuple[str, str]] = {}
+    pending: list[InvoiceItem] = []
+    for item, text in entries:
+        project, source = project_rules.resolve_project(
+            rules=rules, project_name=item.project_name, remark=item.remark, text=text
+        )
+        if source == project_rules.SOURCE_UNCLASSIFIED and not text and text_loader is not None:
+            extra = text_loader(item) or ""
+            if extra:
+                project, source = project_rules.resolve_project(
+                    rules=rules, project_name=item.project_name, remark=item.remark, text=extra
+                )
+        if source == project_rules.SOURCE_UNCLASSIFIED:
+            pending.append(item)
+            continue
+        resolved[item] = (project, source)
+        if project:
+            peers.setdefault(item.buyer_name, set()).add(project)
+
+    for item in pending:
+        project, source = project_rules.resolve_project(
+            rules=rules, peer_projects=peers.get(item.buyer_name, set())
+        )
+        resolved[item] = (project, source)
+    return resolved
+
+
+def reclassify_batch(db: Session, batch: InvoiceBatch) -> dict:
+    """按当前规则重算批次内项目归类；人工修正（corrected）的明细永不覆盖。
+
+    已导出批次会回落 parsed 并清空 export_file：旧 ZIP 与旧归类不一致，须重新导出。
+    规则不可用（引擎/配置缺失）抛 ValueError，不改动任何数据。
+    """
+    rules = project_rules.load_project_rules()
+    if not rules:
+        raise ValueError("项目归类规则不可用：请确认发票解析引擎及其配置可读取")
+    items = (
+        db.query(InvoiceItem)
+        .filter(InvoiceItem.batch_id == batch.id, InvoiceItem.status.in_(_ACTIVE_ITEM_STATUS))
+        .order_by(InvoiceItem.id.asc())
+        .all()
+    )
+    manual = [item for item in items if item.corrected]
+    targets = [item for item in items if not item.corrected]
+    seed: dict[str, set[str]] = {}
+    for item in manual:
+        if item.project_name:
+            seed.setdefault(item.buyer_name, set()).add(item.project_name)
+
+    resolved = classify_items([(item, "") for item in targets], rules, text_loader=_pdf_text, seed_peers=seed)
+
+    changed = 0
+    sources: dict[str, int] = {}
+    for item in targets:
+        project, source = resolved[item]
+        sources[source] = sources.get(source, 0) + 1
+        if (item.project_name or "") != project:
+            item.project_name = project[:100]
+            changed += 1
+    if batch.status == InvoiceBatch.STATUS_EXPORTED:
+        batch.status = InvoiceBatch.STATUS_PARSED
+        batch.export_file = ""
+    db.commit()
+    db.refresh(batch)
+    summary = project_summary(db, batch)
+    unclassified = sum(
+        1 for item in items if (item.project_name or "").strip() in ("", project_rules.UNCLASSIFIED)
+    )
+    return {
+        "ok": True,
+        "batch_id": batch.id,
+        "status": batch.status,
+        "changed": changed,
+        "unchanged": len(targets) - changed,
+        "manual_kept": len(manual),
+        "unclassified": unclassified,
+        "sources": sources,
+        "projects": summary,
+    }
+
+
+def _project_zips_dir(batch_id: int) -> Path:
+    return _ensure_dirs()["outbox"] / f"batch_{batch_id}_projects"
+
+
+def _project_manifest_path(batch_id: int) -> Path:
+    return _ensure_dirs()["outbox"] / f"batch_{batch_id}_projects.json"
+
+
+def _read_project_manifest(batch_id: int) -> dict[str, str]:
+    """读导出时写下的 项目名 → 单项目 ZIP 文件名 映射；缺失/损坏返回空字典。"""
+    path = _project_manifest_path(batch_id)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("批次 %s 项目 ZIP 清单读取失败", batch_id)
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def project_summary(db: Session, batch: InvoiceBatch) -> list[dict]:
+    """按项目汇总批次明细（张数 / 净额 / 人工修正数 / 单项目 ZIP 是否就绪）。"""
+    items = (
+        db.query(InvoiceItem)
+        .filter(InvoiceItem.batch_id == batch.id, InvoiceItem.status.in_(_ACTIVE_ITEM_STATUS))
+        .order_by(InvoiceItem.id.asc())
+        .all()
+    )
+    agg: dict[str, dict] = {}
+    for item in items:
+        project = (item.project_name or "").strip() or project_rules.UNCLASSIFIED
+        row = agg.setdefault(project, {"project": project, "count": 0, "amount": 0.0, "manual": 0})
+        row["count"] += 1
+        row["amount"] = round(row["amount"] + parse_amount(item.amount), 2)
+        if item.corrected:
+            row["manual"] += 1
+    manifest = _read_project_manifest(batch.id)
+    zips_dir = _project_zips_dir(batch.id)
+    exported = batch.status == InvoiceBatch.STATUS_EXPORTED
+    rows: list[dict] = []
+    for project, row in sorted(agg.items(), key=lambda kv: (-kv[1]["count"], kv[0])):
+        zip_file = manifest.get(project, "")
+        ready = bool(exported and zip_file and (zips_dir / zip_file).is_file())
+        rows.append({**row, "zip_file": zip_file, "zip_ready": ready})
+    return rows
+
+
+def project_zip_path(batch: InvoiceBatch, project: str) -> Optional[Path]:
+    """单项目 ZIP 的服务端路径（限制在 outbox 内，防路径穿越）；未导出/缺失返回 None。"""
+    if batch.status != InvoiceBatch.STATUS_EXPORTED:
+        return None
+    zip_file = _read_project_manifest(batch.id).get(project, "")
+    if not zip_file:
+        return None
+    outbox = _ensure_dirs()["outbox"].resolve()
+    path = (_project_zips_dir(batch.id) / Path(zip_file).name).resolve()
+    if outbox not in path.parents or not path.is_file():
+        return None
+    return path
 
 
 # ---------------- 去重与冲红配对 ----------------
@@ -433,6 +640,7 @@ def create_batch(db: Session, uploads: list[tuple[str, bytes]], name: str = "") 
         batch.file_count = len(stored)
 
         items: list[InvoiceItem] = []
+        texts: dict[InvoiceItem, str] = {}
         for source_name, pdf_path in stored:
             parsed = _parse_pdf_with_engine(pdf_path)
             if parsed is None:
@@ -464,11 +672,24 @@ def create_batch(db: Session, uploads: list[tuple[str, bytes]], name: str = "") 
                     extraction_success=parsed.extraction_success,
                     status=InvoiceItem.STATUS_PARSED if parsed.extraction_success else InvoiceItem.STATUS_INCOMPLETE,
                 )
+                texts[item] = parsed.raw_text
             db.add(item)
             items.append(item)
         db.commit()
         for item in items:
             db.refresh(item)
+
+        # 入库即按项目归类规则归口（规则不可用时 resolve 返回 unchanged，保留引擎结果）
+        rules = project_rules.load_project_rules()
+        if rules:
+            resolved = classify_items(
+                [(item, texts.get(item, "")) for item in items if item.status in _ACTIVE_ITEM_STATUS],
+                rules,
+                text_loader=_pdf_text,
+            )
+            for item, (project, _source) in resolved.items():
+                if project and item.project_name != project:
+                    item.project_name = project[:100]
 
         duplicate_count = mark_duplicates(items, existing_dedup_keys(db, exclude_batch_id=batch.id))
         red_matched, red_unmatched = pair_red_invoices(items)
@@ -514,6 +735,9 @@ def delete_batch(db: Session, batch_id: int) -> None:
     db.commit()
     dirs = _ensure_dirs()
     shutil.rmtree(dirs["inbox"] / f"batch_{batch_id}", ignore_errors=True)
+    shutil.rmtree(dirs["outbox"] / f"batch_{batch_id}", ignore_errors=True)
+    shutil.rmtree(_project_zips_dir(batch_id), ignore_errors=True)
+    _project_manifest_path(batch_id).unlink(missing_ok=True)
     if export_file:
         try:
             (dirs["outbox"] / Path(export_file).name).unlink(missing_ok=True)
@@ -556,7 +780,7 @@ def _write_project_list(project_dir: Path, project: str, entries: list[dict]) ->
     """生成单项目「发票清单.xlsx」（格式镜像引擎 ExcelGenerator.generate_invoice_list）。"""
     wb = Workbook()
     ws = wb.active
-    ws.title = project[:31] or "项目清单"
+    ws.title = _NON_WORD_CHARS.sub("", sanitize_filename(project or ""))[:31] or "项目清单"
     headers = ["序号", "票号", "购方名称", "发票金额", "发票类型", "备注"]
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=header)
@@ -664,17 +888,29 @@ def export_batch(db: Session, batch: InvoiceBatch) -> dict:
         shutil.rmtree(batch_dir)  # 仅清理本模块生成的本批次导出目录
     batch_dir.mkdir(parents=True, exist_ok=True)
 
-    # 按项目分组成 {项目: [{item, dest}]}
+    # 按项目分组（键为未清洗的项目名，目录/文件名另做清洗，保证项目汇总可精确对应）
     groups: dict[str, list[dict]] = {}
     for item in items:
-        project = _NON_WORD_CHARS.sub("", sanitize_filename(item.project_name.strip() or "未知项目"))[:30] or "未知项目"
+        project = (item.project_name or "").strip() or project_rules.UNCLASSIFIED
         groups.setdefault(project, []).append({"item": item, "dest": None})
+    # 清洗后可能重名（非法字符被剔除/超长截断）：目录与 ZIP 名逐项目去重，避免互相覆盖
+    safe_names: dict[str, str] = {}
+    used_names: set[str] = set()
+    for project in groups:
+        base = _project_safe_name(project)
+        name = base
+        counter = 1
+        while name in used_names:
+            counter += 1
+            name = f"{base}_{counter}"
+        used_names.add(name)
+        safe_names[project] = name
 
     for project, entries in groups.items():
         for entry in entries:
             item: InvoiceItem = entry["item"]
             ym = parse_date_to_year_month(item.invoice_date)
-            dir_name = f"{ym}{project}" if ym else project
+            dir_name = f"{ym}{safe_names[project]}" if ym else safe_names[project]
             project_dir = batch_dir / dir_name
             project_dir.mkdir(parents=True, exist_ok=True)
             src = Path(item.stored_path)
@@ -700,6 +936,9 @@ def export_batch(db: Session, batch: InvoiceBatch) -> dict:
             if file.is_file():
                 zf.write(file, file.relative_to(batch_dir).as_posix())
 
+    # 按项目拆分打包：每个项目一个 ZIP（内含 {年月}{项目}/ 目录的重命名 PDF + 该项目发票清单）
+    project_zips = _write_project_zips(batch.id, batch_dir, groups, safe_names)
+
     batch.export_file = zip_path.name
     batch.status = InvoiceBatch.STATUS_EXPORTED
     db.commit()
@@ -711,7 +950,65 @@ def export_batch(db: Session, batch: InvoiceBatch) -> dict:
         "export_file": batch.export_file,
         "zip_size": zip_path.stat().st_size,
         "projects": len(groups),
+        "project_zips": project_zips,
     }
+
+
+def _project_safe_name(project: str) -> str:
+    """项目名 → 目录/文件名安全形式（同引擎清洗口径：保留中英文数字连字符下划线，截断 30）。"""
+    return _NON_WORD_CHARS.sub("", sanitize_filename(project or ""))[:30] or project_rules.UNCLASSIFIED
+
+
+def _write_project_zips(
+    batch_id: int,
+    batch_dir: Path,
+    groups: dict[str, list[dict]],
+    safe_names: dict[str, str],
+) -> dict[str, str]:
+    """按项目生成独立 ZIP（项目名 → 「项目+月份.zip」），并写清单供下载端点定位。"""
+    zips_dir = _project_zips_dir(batch_id)
+    if zips_dir.exists():
+        shutil.rmtree(zips_dir)  # 仅清理本模块生成的本批次项目 ZIP 目录
+    zips_dir.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, str] = {}
+    used: set[str] = set()
+    for project, entries in groups.items():
+        files = sorted({e["dest"] for e in entries if e["dest"] is not None})
+        if not files:
+            continue  # 该项目的 PDF 全部缺失：不生成空包
+        extra_lists = {f.parent / "发票清单.xlsx" for f in files}
+        files = sorted(set(files) | {f for f in extra_lists if f.is_file()})
+        base = safe_names.get(project) or _project_safe_name(project)
+        # 下载文件名 = 项目 + 月份（单月「项目2026年10月.zip」，跨月「项目2026年10-11月.zip」）
+        months = sorted({p for p in (_date_parts(e["item"].invoice_date) for e in entries) if p})
+        zip_file = f"{base}{_months_suffix(months)}.zip"
+        counter = 1
+        while zip_file in used or (zips_dir / zip_file).exists():
+            counter += 1
+            zip_file = f"{base}{_months_suffix(months)}_{counter}.zip"
+        used.add(zip_file)
+        with zipfile.ZipFile(zips_dir / zip_file, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file in files:
+                zf.write(file, file.relative_to(batch_dir).as_posix())
+        manifest[project] = zip_file
+    _project_manifest_path(batch_id).write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return manifest
+
+
+def batch_download_name(items: list[InvoiceItem]) -> str:
+    """整批 ZIP 的下载文件名：「发票汇总2026年10月.zip」（跨月用月份区间）。"""
+    months = sorted({p for p in (_date_parts(item.invoice_date) for item in items) if p})
+    return f"发票汇总{_months_suffix(months) or '全部'}.zip"
+
+
+def batch_download_name_for(db: Session, batch: InvoiceBatch) -> str:
+    """按批次有效明细计算整批下载文件名（下载端点用）。"""
+    items = (
+        db.query(InvoiceItem)
+        .filter(InvoiceItem.batch_id == batch.id, InvoiceItem.status.in_(_ACTIVE_ITEM_STATUS))
+        .all()
+    )
+    return batch_download_name(items)
 
 
 def export_zip_path(batch: InvoiceBatch) -> Optional[Path]:
@@ -794,6 +1091,8 @@ def batch_detail_dict(db: Session, batch: InvoiceBatch) -> dict:
         }
     data = batch_to_dict(batch)
     data["items"] = [item_to_dict(i, partners.get(i.paired_item_id)) for i in items]
+    # 整批下载文件名（项目+月份口径）：仅详情需要，列表页不查明细
+    data["download_name"] = batch_download_name([i for i in items if i.status in _ACTIVE_ITEM_STATUS])
     return data
 
 

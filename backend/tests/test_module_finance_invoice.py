@@ -12,6 +12,7 @@
 import asyncio
 import io
 import sys
+import types
 import zipfile
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import engine
 from app.modules.finance_invoice import engine as engine_mod
+from app.modules.finance_invoice import projects as project_rules
 from app.modules.finance_invoice import router as invoice_router
 from app.modules.finance_invoice import service
 from app.modules.finance_invoice.models import InvoiceBatch, InvoiceItem
@@ -397,3 +399,211 @@ def test_invoice_batch_stats_tool(client, finance_dir, mock_engine):
     assert result["module"] == "finance_invoice"
     assert result["batches"] >= 1 and result["items"] >= 1
     assert result["net_amount"] == 100.0
+
+
+# ---------------- 项目归类与拆分打包 ----------------
+
+_ORIGINAL_LOAD_RULES = project_rules.load_project_rules
+
+
+class _FakeConfig:
+    """引擎 ConfigManager 的最小替身：只实现 get('a.b', default)。"""
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def get(self, key: str, default=None):
+        current = self._data
+        for part in key.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return default
+            current = current[part]
+        return current
+
+
+@pytest.fixture(autouse=True)
+def _isolate_project_rules(monkeypatch):
+    """默认不读本机真实引擎配置（随机器变化），需要规则的用例自行打桩。"""
+    monkeypatch.setattr(project_rules, "load_project_rules", lambda: [])
+
+
+def pin_rules(monkeypatch, keywords: list[str], mapping: dict | None = None) -> None:
+    """按合成关键词/映射打桩引擎配置，并恢复真实的规则读取实现。"""
+    handle = types.SimpleNamespace(
+        config=_FakeConfig(
+            {"extraction": {"address_keywords": keywords, "address_force_mapping": mapping or {}}}
+        )
+    )
+    monkeypatch.setattr(engine_mod, "get_engine", lambda: handle)
+    monkeypatch.setattr(project_rules, "load_project_rules", _ORIGINAL_LOAD_RULES)
+
+
+def test_load_project_rules_longest_first_and_force_mapping(monkeypatch):
+    pin_rules(monkeypatch, ["示例路", "示例北路", "融城"], {"示例北路": "园城项目"})
+    rules = project_rules.load_project_rules()
+    assert [rule.keyword for rule in rules] == ["示例北路", "示例路", "融城"]  # 长词优先
+    assert rules[0].project == "园城项目"
+    assert rules[1].project == "示例路"  # 无映射 → 关键词即项目名
+
+
+def test_resolve_project_priority_chain():
+    rules = [
+        project_rules.ProjectRule("示例北路", "园城项目"),
+        project_rules.ProjectRule("示例路", "示例路"),
+    ]
+    # 1) 引擎项目名命中关键词
+    assert project_rules.resolve_project(rules=rules, project_name="示例北路") == (
+        "园城项目",
+        project_rules.SOURCE_PROJECT_NAME,
+    )
+    # 2) 项目名不可用（类别/购方兜底）→ 备注命中
+    assert project_rules.resolve_project(
+        rules=rules, project_name="场地服务费", remark="示例北路项目场地服务"
+    ) == ("园城项目", project_rules.SOURCE_REMARK)
+    # 3) 前两步不命中 → 全文命中
+    assert project_rules.resolve_project(
+        rules=rules, project_name="某租户", text="地址：示例北路600号"
+    ) == ("园城项目", project_rules.SOURCE_TEXT)
+    # 4) 同批同购方唯一项目 → 继承
+    assert project_rules.resolve_project(rules=rules, project_name="某租户", peer_projects={"园城项目"}) == (
+        "园城项目",
+        project_rules.SOURCE_PEER,
+    )
+    # 5) 无任何证据 → 未归类
+    assert project_rules.resolve_project(rules=rules, project_name="某租户") == (
+        project_rules.UNCLASSIFIED,
+        project_rules.SOURCE_UNCLASSIFIED,
+    )
+    # 6) 规则不可用 → 原样保留，绝不改写
+    assert project_rules.resolve_project(rules=[], project_name="示例项目") == (
+        "示例项目",
+        project_rules.SOURCE_UNCHANGED,
+    )
+
+
+def test_parse_applies_project_rules(client, finance_dir, mock_engine, monkeypatch):
+    """上传即归类：地址关键词映射、类别备注改写、同购方继承。"""
+    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "园城项目"})
+    mock_engine["a.pdf"] = make_fields(invoice_number="7001", project_name="示例北路", buyer_name="示例购方")
+    mock_engine["b.pdf"] = make_fields(
+        invoice_number="7002", project_name="场地服务费", remark="示例北路项目场地服务", buyer_name="另一购方"
+    )
+    mock_engine["c.pdf"] = make_fields(invoice_number="7003", project_name="无地址租户", buyer_name="示例购方")
+    resp = upload(client, [("a.pdf", FAKE_PDF), ("b.pdf", FAKE_PDF), ("c.pdf", FAKE_PDF)])
+    assert resp.status_code == 201
+    body = resp.json()
+    projects = {item["project_name"] for item in body["items"]}
+    assert projects == {"园城项目"}  # c 经同购方继承
+
+    summary = client.get(f"/api/finance/invoice/batches/{body['id']}/projects").json()
+    assert summary == [
+        {"project": "园城项目", "count": 3, "amount": 300.0, "manual": 0, "zip_file": "", "zip_ready": False}
+    ]
+
+
+def test_reclassify_keeps_manual_and_marks_unclassified(client, finance_dir, mock_engine, monkeypatch):
+    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "园城项目"})
+    mock_engine["a.pdf"] = make_fields(invoice_number="7101", project_name="示例北路", buyer_name="购方甲")
+    mock_engine["b.pdf"] = make_fields(invoice_number="7102", project_name="无地址租户", buyer_name="购方乙")
+    body = upload(client, [("a.pdf", FAKE_PDF), ("b.pdf", FAKE_PDF)]).json()
+    by_src = {item["source_file"]: item for item in body["items"]}
+    assert by_src["b.pdf"]["project_name"] == "未归类"
+
+    # 人工把 a 改成自有项目 → 重新归类不得覆盖
+    patched = client.patch(
+        f"/api/finance/invoice/items/{by_src['a.pdf']['id']}", json={"project_name": "人工项目"}
+    )
+    assert patched.status_code == 200
+    resp = client.post(f"/api/finance/invoice/batches/{body['id']}/reclassify")
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["manual_kept"] == 1 and result["unclassified"] == 1
+    detail = client.get(f"/api/finance/invoice/batches/{body['id']}").json()
+    projects = {item["source_file"]: item["project_name"] for item in detail["items"]}
+    assert projects == {"a.pdf": "人工项目", "b.pdf": "未归类"}
+
+
+def test_reclassify_requires_rules(client, finance_dir, mock_engine):
+    mock_engine["a.pdf"] = make_fields()
+    body = upload(client, [("a.pdf", FAKE_PDF)]).json()
+    resp = client.post(f"/api/finance/invoice/batches/{body['id']}/reclassify")
+    assert resp.status_code == 400
+    assert "规则不可用" in resp.json()["detail"]
+
+
+def test_export_splits_project_zips_and_download(client, finance_dir, mock_engine, monkeypatch):
+    pin_rules(monkeypatch, ["示例北路", "示例南路"], {"示例北路": "园城项目", "示例南路": "金阶项目"})
+    mock_engine["a.pdf"] = make_fields(invoice_number="7201", project_name="示例北路", amount="100.00")
+    mock_engine["b.pdf"] = make_fields(invoice_number="7202", project_name="示例南路", amount="50.00")
+    body = upload(client, [("a.pdf", FAKE_PDF), ("b.pdf", FAKE_PDF)]).json()
+
+    before = client.get(f"/api/finance/invoice/batches/{body['id']}/projects/download?project=园城项目")
+    assert before.status_code == 409  # 未导出
+
+    result = client.post(f"/api/finance/invoice/batches/{body['id']}/export").json()
+    assert set(result["project_zips"]) == {"园城项目", "金阶项目"}
+    # 下载文件名 = 项目 + 月份
+    assert result["project_zips"]["园城项目"] == "园城项目2026年10月.zip"
+
+    summary = client.get(f"/api/finance/invoice/batches/{body['id']}/projects").json()
+    rows = {row["project"]: row for row in summary}
+    assert rows["园城项目"]["zip_ready"] is True and rows["园城项目"]["count"] == 1
+    assert rows["金阶项目"]["amount"] == 50.0
+    assert rows["园城项目"]["zip_file"] == "园城项目2026年10月.zip"
+
+    detail = client.get(f"/api/finance/invoice/batches/{body['id']}").json()
+    assert detail["download_name"] == "发票汇总2026年10月.zip"
+
+    resp = client.get(f"/api/finance/invoice/batches/{body['id']}/projects/download?project=园城项目")
+    assert resp.status_code == 200 and resp.content[:2] == b"PK"
+    # 中文名同时给 filename*（UTF-8）与 ASCII 兜底，避免浏览器丢名成 UUID
+    disposition = resp.headers["content-disposition"]
+    assert "filename*=utf-8''" in disposition and "project_invoices.zip" in disposition
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        names = zf.namelist()
+    assert any(name.startswith("26年10月园城项目/") for name in names)
+    assert any(name.endswith("发票清单.xlsx") for name in names)
+    assert not any("金阶项目" in name for name in names)  # 拆分后互不混装
+
+    assert client.get(
+        f"/api/finance/invoice/batches/{body['id']}/projects/download?project=不存在项目"
+    ).status_code == 404
+
+
+def test_project_zip_name_uses_project_and_month(client, finance_dir, mock_engine, monkeypatch):
+    """跨月批次：项目 ZIP 名与整批名都带月份区间（文件名口径 项目+月份）。"""
+    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "园城项目"})
+    mock_engine["a.pdf"] = make_fields(invoice_number="7301", project_name="示例北路", invoice_date="2026年10月01日")
+    mock_engine["b.pdf"] = make_fields(invoice_number="7302", project_name="示例北路", invoice_date="2026年11月02日")
+    body = upload(client, [("a.pdf", FAKE_PDF), ("b.pdf", FAKE_PDF)]).json()
+    result = client.post(f"/api/finance/invoice/batches/{body['id']}/export").json()
+    assert result["project_zips"]["园城项目"] == "园城项目2026年10-11月.zip"
+    detail = client.get(f"/api/finance/invoice/batches/{body['id']}").json()
+    assert detail["download_name"] == "发票汇总2026年10-11月.zip"
+    # 整批下载响应同样带中文名
+    resp = client.get(f"/api/finance/invoice/batches/{body['id']}/download")
+    assert resp.status_code == 200
+    assert "invoice_batch_" in resp.headers["content-disposition"]
+    assert "filename*=utf-8''" in resp.headers["content-disposition"]
+
+
+def test_months_suffix_variants():
+    assert service._months_suffix([]) == ""
+    assert service._months_suffix([(2026, 10)]) == "2026年10月"
+    assert service._months_suffix([(2026, 10), (2026, 11)]) == "2026年10-11月"
+    assert service._months_suffix([(2026, 12), (2027, 1)]) == "2026年12月-2027年1月"
+
+
+def test_reclassify_invalidates_export(client, finance_dir, mock_engine, monkeypatch):
+    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "园城项目"})
+    mock_engine["a.pdf"] = make_fields(project_name="示例北路")
+    body = upload(client, [("a.pdf", FAKE_PDF)]).json()
+    assert client.post(f"/api/finance/invoice/batches/{body['id']}/export").status_code == 200
+    resp = client.post(f"/api/finance/invoice/batches/{body['id']}/reclassify")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "parsed"  # 旧导出作废，需重新导出
+    detail = client.get(f"/api/finance/invoice/batches/{body['id']}").json()
+    assert detail["status"] == "parsed" and detail["export_file"] == ""
+    assert client.get(
+        f"/api/finance/invoice/batches/{body['id']}/projects/download?project=园城项目"
+    ).status_code == 409

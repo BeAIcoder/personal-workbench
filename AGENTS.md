@@ -60,6 +60,17 @@
 - **定时任务落库锁定**：`test_jobs.py::test_board_action_message_records_attempts` 验证「尝试 N 次」写入 recent_runs（不只消息）。
 - **测试**：dq 19→**21 passed**（差异 warning/一致 info 两例），jobs 全绿，board 13 passed；**后端全量 1502 passed（884s）**；**Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:f7ec9756…`。
 
+## 发票按项目归类 + 拆分打包（2026-11-02 下午）
+
+- **归类单一来源**：新增 `backend/app/modules/finance_invoice/projects.py`，运行时只读引擎 `config.local.yaml` 的 `extraction.address_keywords` + `address_force_mapping`（长词优先）生成「关键词→项目」规则；判定顺序 **引擎项目名 → 备注 → PDF 全文（懒加载）→ 同批同购方唯一项目继承 → 未归类**。规则为空一律返回 unchanged（引擎缺失/换机不把发票清成未归类）。**真实项目名不进仓库**（按引擎 config.local 的既有约定）。
+- **引擎配置补映射（本机，gitignore 文件）**：`invoice_processor/config.local.yaml` 增加 `脱敏街区/脱敏单位 → 脱敏单位项目`（`脱敏单位 → 脱敏单位` 原有）。此前「脱敏街区」自成一项目、备注规则把「场地服务费」当项目、无地址红票落成购方名。
+- **入库即归类 + 可重算**：`create_batch` 解析后即按规则归口；新增 `POST /batches/{id}/reclassify`（`asyncio.to_thread`，未归类才补取 PDF 全文）；**人工修正（corrected）永不覆盖**；已导出批次重新归类会回落 parsed 并清 `export_file`（旧包作废，下载 409）。
+- **拆分打包**：`export` 除整批 ZIP 外，按项目各生成 `{项目}.zip`（`outbox/batch_{id}_projects/`，清单 `batch_{id}_projects.json` 供下载定位；内含 `{年月}{项目}/` 重命名 PDF + 该项目「发票清单.xlsx」）；新增 `GET /batches/{id}/projects`（张数/净额/人工数/zip_ready）与 `GET /batches/{id}/projects/download?project=`。目录与 ZIP 名清洗后重名自动 `_2` 去重。
+- **前端**：批次详情新增「重新归类」按钮（已导出先二次确认会作废旧包）+「项目拆分」卡片（未归类高亮、逐项目下载）；导出提示含拆分 ZIP 数量。
+- **下载文件名修复（同日追加）**：用户实测下载记录出现无扩展名的随机 UUID 名。根因是浏览器/代理链路对中文 `Content-Disposition` 的解析不可靠（只给 `filename*=utf-8''…`）。修复两层：① 下载响应同时给 ASCII 兜底 `filename="…"` 与 `filename*=utf-8''…`（`router._attachment`）；② 前端改为 axios `responseType:'blob'` + `a.download` 显式落名（`saveZip`），不再依赖响应头。**命名口径按要求改为「项目+月份.zip」**：单项目 `脱敏街区2026年10月.zip`、跨月 `脱敏单位2026年10-11月.zip`（跨年 `2026年12月-2027年1月`）、整批 `发票汇总2026年10月.zip`（批次详情返回 `download_name`）；文件夹内仍是 `26年10月{项目}/` 目录（引擎口径未变）。
+- **真实数据验证（批次 1，120 张）**：重新归类 changed=8（6 张脱敏街区 + 1 张场地服务费→脱敏单位 + 1 张红票继承），结果 **脱敏街区 103 张/693,007.05、脱敏单位 10 张/434,460.68、脱敏单位项目 7 张/109,289.14、未归类 0**，合计 1,236,756.87 不变；导出后三个项目 ZIP 分别 103/10/7 张 PDF + 各 1 份清单，浏览器逐项目下载实测 200、0 console errors。备份：`backups/workbench_20261102_152532.db` + `workbench_data_*.zip`。
+- **测试**：`test_module_finance_invoice.py` 25→**34 passed**（规则长词/映射、判定链、入库归类、人工保留、规则缺失 400、拆分 ZIP 与下载 409/404、重新归类作废导出、项目+月份命名/跨月区间/双 Content-Disposition）；前端 `finance-invoice.test.js` 3→**6 passed**；前端全量 **59 文件 888 passed** + 构建通过（stamp `0b6d151baa09`）；**后端全量 1511 passed（963s）**。**Mimosa deep 复核**：6 findings 仍全为历史已知项（`dev/package_release.py` 冒烟路径/SSRF×3、`20261012New` 历史 SQL×2、`dev/desensitize_finance_data.py` 固定种子×1），本轮文件 0 findings；seal `sha256:7acd6701…`。
+
 ## 财务菜单层级重组（2026-11-01）
 
 - 「财务」侧栏组由 14 项扁平改为**直挂数据仓 + 4 个二级折叠子分组**（账务处理=费用/发票/POS、记账=个人/BIP、税务填报=企所税/印花/增值/个税/残保金、报表分析=看板/现金流）。机制：manifest `menu.subgroup`（可选）+ `src/modules/index.js` 新增 `getModuleMenuGroups()`（纯聚合，`getModuleMenus` 未动）+ AppLayout 动态段嵌套 `el-sub-menu` 渲染 + `defaultOpeneds`（setup 一次性按初始 route 反查父级 index，保证深链/刷新自动展开；不做成响应式以免覆盖用户手动折叠）。

@@ -481,7 +481,7 @@ name 重复或必填缺失返回 400。
 | 模块 | 前缀 | 主要接口 |
 |------|------|---------|
 | finance_expense 费用分类 | `/api/finance/expense` | `POST /classify`（上传 xlsx 分类）、`GET /runs`、`GET /runs/{id}`、`GET /runs/{id}/download`、`GET /rules/summary`、`POST /rules/reload` |
-| finance_invoice 发票处理 | `/api/finance/invoice` | `GET /engine/status`、`POST /batches`（上传 PDF/ZIP）、`GET /batches`、`GET /batches/{id}`、`PATCH /items/{id}`、`POST /batches/{id}/export`、`GET /batches/{id}/download` |
+| finance_invoice 发票处理 | `/api/finance/invoice` | `GET /engine/status`、`POST /batches`（上传 PDF/ZIP）、`GET /batches`、`GET /batches/{id}`、`PATCH /items/{id}`、`POST /batches/{id}/reclassify`（按项目规则重新归类）、`GET /batches/{id}/projects`（项目汇总）、`POST /batches/{id}/export`（重命名 + 清单 + 整批/分项目 ZIP）、`GET /batches/{id}/projects/download?project=`（单项目 ZIP）、`GET /batches/{id}/download`（整批 ZIP） |
 | finance_vault 数据仓 | `/api/finance/vault` | `GET /tables`、`POST /ingest/file`、`POST /query`（只读 SQL）、`GET /tables/{name}/preview` |
 | finance_ledger_personal 个人记账 | `/api/finance/ledger/personal` | 账户/分类/交易 CRUD、`GET /stats/monthly`、`GET /stats/trend`、`GET/PUT /budgets`、`POST /import/csv`、`GET /export/csv` |
 | finance_ledger_bip 企业记账 | `/api/finance/ledger/bip` | `POST /imports/preview`、`POST /imports/confirm`、`GET /imports`、`GET /vouchers`、`GET /vouchers/{id}`、`GET /entries`、`GET /balances/summary`、`POST /vouchers/export-to-vault` |

@@ -63,6 +63,7 @@ class InvoiceBatchDetail(InvoiceBatchOut):
     """批次详情：含全部明细。"""
 
     items: list[InvoiceItemOut] = []
+    download_name: str = ""  # 整批 ZIP 建议文件名（「发票汇总2026年10月.zip」）
 
 
 class ExportResult(BaseModel):
@@ -72,3 +73,30 @@ class ExportResult(BaseModel):
     export_file: str
     zip_size: int
     projects: int
+    project_zips: dict[str, str] = {}  # 项目名 → 单项目 ZIP 文件名（拆分打包）
+
+
+class ProjectSummary(BaseModel):
+    """项目汇总（批次详情「项目拆分」卡片）。"""
+
+    project: str
+    count: int
+    amount: float  # 项目净额（冲红为负）
+    manual: int = 0  # 其中人工修正过的张数
+    zip_file: str = ""  # 单项目 ZIP 文件名（未导出为空）
+    zip_ready: bool = False
+
+
+class ReclassifyResult(BaseModel):
+    """重新归类结果。"""
+
+    ok: bool
+    batch_id: int
+    status: str
+    changed: int
+    unchanged: int
+    manual_kept: int
+    unclassified: int
+    sources: dict[str, int] = {}
+    projects: list[ProjectSummary] = []
+

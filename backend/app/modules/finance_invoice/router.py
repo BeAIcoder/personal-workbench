@@ -1,6 +1,8 @@
 """finance_invoice 模块接口：/api/finance/invoice（前缀由注册器按 manifest.prefix 挂载）。"""
 import asyncio
 import logging
+from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
@@ -9,7 +11,15 @@ from sqlalchemy.orm import Session
 from ...database import get_db
 from . import service
 from .engine import EngineUnavailableError, engine_status
-from .schemas import ExportResult, InvoiceBatchDetail, InvoiceBatchOut, InvoiceItemOut, InvoiceItemPatch
+from .schemas import (
+    ExportResult,
+    InvoiceBatchDetail,
+    InvoiceBatchOut,
+    InvoiceItemOut,
+    InvoiceItemPatch,
+    ProjectSummary,
+    ReclassifyResult,
+)
 
 try:
     # 统一上传防护由 core 任务提供（app/upload.py）：分块限额读取替代全量 file.read()；
@@ -129,6 +139,61 @@ def export_batch(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/batches/{batch_id}/reclassify", response_model=ReclassifyResult, summary="按项目归类规则重新归类（人工修正不覆盖）")
+async def reclassify_batch(batch_id: int, db: Session = Depends(get_db)):
+    batch = service.get_batch(db, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    try:
+        # 未归类明细需补取 PDF 全文：丢线程池，避免阻塞事件循环
+        return await asyncio.to_thread(service.reclassify_batch, db, batch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _attachment(path: Path, filename: str, ascii_fallback: str) -> FileResponse:
+    """下载响应：同时给出 ASCII filename 与 UTF-8 filename*，避免浏览器/代理丢中文名。
+
+    只给 filename* 时部分环境会把中文名丢成随机串（用户实测下载记录里出现 UUID 文件名）；
+    两者并存时现代浏览器优先取 filename*（真实中文名），老环境退回 ASCII 兜底名。
+    """
+    disposition = (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=utf-8''{quote(filename)}"
+    )
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        headers={"Content-Disposition": disposition},
+    )
+
+
+@router.get("/batches/{batch_id}/projects", response_model=list[ProjectSummary], summary="项目汇总（张数/净额/单项目 ZIP）")
+def list_projects(batch_id: int, db: Session = Depends(get_db)):
+    batch = service.get_batch(db, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    return service.project_summary(db, batch)
+
+
+@router.get("/batches/{batch_id}/projects/download", summary="下载单个项目 ZIP（未导出 409、项目无包 404）")
+def download_project_zip(
+    batch_id: int,
+    project: str = Query(..., min_length=1, max_length=100, description="项目名（见项目汇总）"),
+    db: Session = Depends(get_db),
+):
+    batch = service.get_batch(db, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    path = service.project_zip_path(batch, project)
+    if path is None:
+        if batch.status != service.InvoiceBatch.STATUS_EXPORTED:
+            raise HTTPException(status_code=409, detail="批次尚未导出，请先导出后再下载项目 ZIP")
+        raise HTTPException(status_code=404, detail="该项目没有可下载的 ZIP（可能无可导出文件）")
+    # 文件名即「项目+月份.zip」（由导出时生成，清单里保存）
+    return _attachment(path, path.name, "project_invoices.zip")
+
+
 @router.get("/batches/{batch_id}/download", summary="下载批次导出 ZIP（未导出返回 409）")
 def download_batch(batch_id: int, db: Session = Depends(get_db)):
     batch = service.get_batch(db, batch_id)
@@ -137,4 +202,4 @@ def download_batch(batch_id: int, db: Session = Depends(get_db)):
     path = service.export_zip_path(batch)
     if path is None:
         raise HTTPException(status_code=409, detail="批次尚未导出或导出文件缺失")
-    return FileResponse(path, media_type="application/zip", filename=path.name)
+    return _attachment(path, service.batch_download_name_for(db, batch), f"invoice_batch_{batch_id}.zip")

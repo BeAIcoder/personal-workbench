@@ -1,6 +1,37 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { getModuleMenus, getModuleRoutes } from '../src/modules'
 import manifest from '../src/modules/finance-invoice/manifest'
+
+const detailSource = readFileSync(
+  new URL('../src/modules/finance-invoice/views/BatchDetailView.vue', import.meta.url),
+  'utf8',
+)
+
+describe('finance-invoice 项目拆分与重新归类（静态契约）', () => {
+  it('详情页提供重新归类、项目汇总与按项目下载', () => {
+    expect(detailSource).toContain('/reclassify')
+    expect(detailSource).toContain('/projects')
+    expect(detailSource).toContain('/projects/download?project=')
+    expect(detailSource).toContain('重新归类')
+    expect(detailSource).toContain('项目拆分')
+    expect(detailSource).toContain('未归类')
+  })
+
+  it('重新归类有二次确认（作废旧导出包），长耗时请求放宽超时', () => {
+    expect(detailSource).toContain('ElMessageBox.confirm')
+    expect(detailSource).toContain('timeout: 180000')
+    expect(detailSource).toContain('encodeURIComponent(project)')
+  })
+
+  it('下载走 Blob + a.download 显式落名（不依赖 Content-Disposition）', () => {
+    expect(detailSource).toContain("responseType: 'blob'")
+    expect(detailSource).toContain('URL.createObjectURL')
+    expect(detailSource).toContain('link.download = filename')
+    expect(detailSource).toContain('download_name')
+    expect(detailSource).toContain('zip_file')
+  })
+})
 
 describe('finance-invoice 模块注册', () => {
   it('manifest 基本字段（name/title/menu）', () => {
