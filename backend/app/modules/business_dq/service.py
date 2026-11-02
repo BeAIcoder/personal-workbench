@@ -104,6 +104,37 @@ def _dom_operations(db, as_of):
             "SELECT w.code FROM mod_ops_work_order w WHERE w.equipment_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_fac_equipment e WHERE e.id = w.equipment_id) LIMIT 5"
         )).fetchall()
         issues.append(_issue("warning", "孤儿引用", n, [r[0] for r in samp], "工单关联的设备已不存在；建议解除关联或恢复设备"))
+    # 金额异常：超收存量（paid > total，容差 0.005）
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_ops_bill WHERE paid_amount > total_amount + 0.005"
+    )).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT period FROM mod_ops_bill WHERE paid_amount > total_amount + 0.005 LIMIT 5"
+        )).fetchall()
+        issues.append(_issue("error", "金额异常", n, [r[0] for r in samp], "账单实收超过应收；建议核对收款记录并冲正"))
+    # 状态与金额不一致：paid 但欠费 / unpaid 却有收款 / partial 但金额边界异常
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_ops_bill WHERE (status = 'paid' AND paid_amount + 0.005 < total_amount) "
+        "OR (status = 'unpaid' AND paid_amount > 0.005) "
+        "OR (status = 'partial' AND (paid_amount <= 0.005 OR paid_amount >= total_amount - 0.005))"
+    )).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT period FROM mod_ops_bill WHERE (status = 'paid' AND paid_amount + 0.005 < total_amount) "
+            "OR (status = 'unpaid' AND paid_amount > 0.005) "
+            "OR (status = 'partial' AND (paid_amount <= 0.005 OR paid_amount >= total_amount - 0.005)) LIMIT 5"
+        )).fetchall()
+        issues.append(_issue("warning", "状态一致性", n, [r[0] for r in samp], "账单状态与收款金额不一致；建议按实收重算状态"))
+    # 状态一致性：active 合同已过期
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_ops_contract WHERE status = 'active' AND end_date IS NOT NULL AND date(end_date) < date(:as_of)"
+    ), {"as_of": as_of}).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT contract_no FROM mod_ops_contract WHERE status = 'active' AND end_date IS NOT NULL AND date(end_date) < date(:as_of) LIMIT 5"
+        ), {"as_of": as_of}).fetchall()
+        issues.append(_issue("warning", "状态一致性", n, [r[0] for r in samp], "履约中合同已过租期；建议办理续签或终止"))
     return {"available": True, "gap_reasons": [], "context": context, "issues": issues}
 
 
@@ -131,6 +162,17 @@ def _dom_hr(db, as_of):
             "SELECT emp_no FROM mod_hr_employee WHERE base_salary IS NOT NULL AND base_salary < 0 LIMIT 5"
         )).fetchall()
         issues.append(_issue("error", "金额异常", n, [r[0] for r in samp], "存在负数底薪；建议核对薪资档案并修正"))
+    # 跨表勾稽：有薪资但同月无考勤（2026-11-02 v3）
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_hr_payroll p WHERE NOT EXISTS "
+        "(SELECT 1 FROM mod_hr_attendance a WHERE a.emp_id = p.emp_id AND a.month = p.month)"
+    )).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT p.month FROM mod_hr_payroll p WHERE NOT EXISTS "
+            "(SELECT 1 FROM mod_hr_attendance a WHERE a.emp_id = p.emp_id AND a.month = p.month) LIMIT 5"
+        )).fetchall()
+        issues.append(_issue("warning", "跨表勾稽", n, [r[0] for r in samp], "存在无考勤记录的薪资单；建议补录考勤或说明出勤依据"))
     return {"available": True, "gap_reasons": [], "context": context, "issues": issues}
 
 
@@ -186,6 +228,15 @@ def _dom_planning(db, as_of):
             "SELECT name FROM mod_plan_campaign WHERE budget_total IS NOT NULL AND budget_total < 0 LIMIT 5"
         )).fetchall()
         issues.append(_issue("error", "金额异常", n, [r[0] for r in samp], "存在负数活动预算；建议核对预算录入"))
+    # 预算执行：实际支出超预算 20%（info，供复核）
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_plan_campaign WHERE budget_total > 0 AND actual_total > budget_total * 1.2"
+    )).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT name FROM mod_plan_campaign WHERE budget_total > 0 AND actual_total > budget_total * 1.2 LIMIT 5"
+        )).fetchall()
+        issues.append(_issue("info", "预算执行", n, [r[0] for r in samp], "活动实际支出超预算 20%+；建议复核超支原因与审批"))
     return {"available": True, "gap_reasons": [], "context": context, "issues": issues}
 
 
@@ -204,6 +255,15 @@ def _dom_facility(db, as_of):
             "SELECT m.id FROM mod_fac_compliance m WHERE m.equipment_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_fac_equipment e WHERE e.id = m.equipment_id) LIMIT 5"
         )).fetchall()
         issues.append(_issue("warning", "孤儿引用", n, [r[0] for r in samp], "合规事项关联的设备已不存在；建议改为楼宇级或恢复设备"))
+    # 过期未完成：合规事项已然到期且无完成日期（2026-11-02 v3）
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_fac_compliance WHERE due_date IS NOT NULL AND done_date IS NULL AND date(due_date) < date(:as_of)"
+    ), {"as_of": as_of}).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT title FROM mod_fac_compliance WHERE due_date IS NOT NULL AND done_date IS NULL AND date(due_date) < date(:as_of) LIMIT 5"
+        ), {"as_of": as_of}).fetchall()
+        issues.append(_issue("warning", "过期未完成", n, [r[0] for r in samp], "合规事项已到期但未登记完成；建议安排年检/消防/维保并回填"))
     return {"available": True, "gap_reasons": [], "context": context, "issues": issues}
 
 
@@ -215,6 +275,17 @@ def _dom_finance(db, as_of):
         n = int(db.execute(text("SELECT COUNT(*) FROM mod_bip_entry WHERE debit IS NULL OR credit IS NULL")).scalar() or 0)
         if n:
             issues.append(_issue("warning", "完整性", n, [], "存在借贷方向缺失的分录；建议核对导入批次"))
+        # 勾稽平衡：按凭证借贷不平（容差 0.01，2026-11-02 v3）
+        try:
+            from sqlalchemy import func as sa_func
+            from ..finance_ledger_bip.models import BipEntry
+            rows = (db.query(BipEntry.voucher_id, sa_func.sum(BipEntry.debit), sa_func.sum(BipEntry.credit))
+                    .group_by(BipEntry.voucher_id).all())
+            bad = [r for r in rows if abs(float(r[1] or 0) - float(r[2] or 0)) > 0.01]
+            if bad:
+                issues.append(_issue("error", "勾稽平衡", len(bad), [r[0] for r in bad[:5]], "存在借贷不平的凭证；建议核对导入完整性或红字冲销记录"))
+        except Exception:  # 单检查失败不拖垮财务域
+            pass
     if _exists(db, "mod_pl_transaction"):
         present.append("pl")
         n = int(db.execute(text(

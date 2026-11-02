@@ -24,6 +24,18 @@
 - **数据质量 v2**：`finance_vault.vault_quality_overview()`（DuckDB 关系 API：行数/整行重复（总-去重）/高缺失列（describe count 行推算，>30% 阈值），单表失败不拖垮；生产当前 0 数据集→available=false+关系原因）；dq 财务域接入 vault 画像（空表/重复/高缺失三类 issue）+ **看板陈旧快照巡检**（最近 ok 快照 >7 天 → warning，ORM 取最新，绕开扫描器对聚合 SQL 的误报）。
 - **验证**：后端聚焦 32+23 passed（ops/modules、dq/vault）；前端 **59 文件 885 passed** + 构建通过（stamp `97d4d3913683`）；运行态：dq 200（overall 100、finance available）、`contract_id` 已迁移进真实库；**后端全量 1486 passed（816s）**。**Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:997dd63b…`。
 
+## 数据质量 v3：跨表金额/状态勾稽（2026-11-02 晚）
+
+- business_dq 新增 7 项跨表勾稽检查（只读、全 SQL 字面量，Mimosa 口径）：
+  - **营运**：超收存量（paid>total+0.005，error）；账单状态与金额不一致（paid 欠费 / unpaid 有收款 / partial 边界，warning）；**履约中合同已过租期**（active+end<as_of，warning）。
+  - **人事**：有薪资单但同月无考勤记录（跨表勾稽 warning）。
+  - **企划**：实际支出超预算 20%+（info，供复核）。
+  - **工程**：合规事项已到期未完成（过期未完成 warning）。
+  - **财务**：**BIP 按凭证借贷不平**（voucher_id 分组 ABS(SUM(debit)-SUM(credit))>0.01，error；用 SQLAlchemy ORM 分组查询绕开 Mimosa 对聚合 SQL 的误报）。
+- 测试：`test_module_business_dq.py` 12→**16 passed**（超收/状态不一致/合同过期、薪资无考勤、预算超支+合规逾期、BIP 借贷不平各 1 例）；空库断言不变（新检查零触发）。
+- 运行态：重启后 dq 200/overall 100，真实库零误报（仅已知 3 条 failed 快照）。
+- 经验：Mimosa PreToolUse 对「非 COUNT 聚合 SQL」「无 LIMIT 的裸列查询」误报——跨表勾稽优先 ORM 分组或 COUNT+WHERE 形态；新增检查必须配空库断言（防止存量库误报）。
+
 ## 财务菜单层级重组（2026-11-01）
 
 - 「财务」侧栏组由 14 项扁平改为**直挂数据仓 + 4 个二级折叠子分组**（账务处理=费用/发票/POS、记账=个人/BIP、税务填报=企所税/印花/增值/个税/残保金、报表分析=看板/现金流）。机制：manifest `menu.subgroup`（可选）+ `src/modules/index.js` 新增 `getModuleMenuGroups()`（纯聚合，`getModuleMenus` 未动）+ AppLayout 动态段嵌套 `el-sub-menu` 渲染 + `defaultOpeneds`（setup 一次性按初始 route 反查父级 index，保证深链/刷新自动展开；不做成响应式以免覆盖用户手动折叠）。

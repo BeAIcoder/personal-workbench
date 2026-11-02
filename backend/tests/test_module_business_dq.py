@@ -13,7 +13,7 @@ from app.modules.business_dq.service import dq_summary
 from app.modules.business_leasing.models import LeasingLead
 from app.modules.business_operations.models import OpsBill, OpsContract, OpsWorkOrder
 from app.modules.business_legal.models import LegalCase
-from app.modules.business_hr.models import HrEmployee
+from app.modules.business_hr.models import HrEmployee, HrPayroll
 from app.modules.business_planning.models import PlanCampaign
 from app.modules.business_facility.models import FacilityCompliance
 
@@ -114,6 +114,49 @@ def test_work_order_orphan_contract_and_equipment(client):
     assert len(ops_issues) == 2, ops_issues
     samples = {s for i in ops_issues for s in (i.get("sample") or [])}
     assert {"WOX1", "WOX2"} <= samples
+
+
+def test_ops_amount_and_status_consistency(client):
+    """v3 勾稽：超收 / 状态金额不一致 / 履约中合同过期。"""
+    _plant(OpsContract, contract_no="HT-V3-1", tenant="甲", status="active",
+           start_date=date(2026, 1, 1), end_date=date(2026, 9, 30))
+    _plant(OpsBill, contract_id=1, period="2026-10", total_amount=100.0, paid_amount=200.0, status="paid")
+    _plant(OpsBill, contract_id=1, period="2026-11", total_amount=100.0, paid_amount=10.0, status="unpaid")
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    issues = [(i["check"], i["level"], i["count"]) for i in data["top_issues"] if i["domain"] == "operations"]
+    assert ("金额异常", "error", 1) in issues
+    assert any(c == "状态一致性" and lv == "warning" and cnt >= 1 for c, lv, cnt in issues)
+    # 合同过期：end 2026-09-30 < as_of 2026-11-01，且 active
+    assert ("状态一致性", "warning", 2) in issues or ("状态一致性", "warning", 1) in issues
+
+
+def test_hr_payroll_without_attendance(client):
+    _plant(HrEmployee, emp_no="E-V3", name="王五", hire_date=date(2026, 1, 1))
+    _plant(HrPayroll, emp_id=1, month="2026-10", base_salary=8000.0)
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    issues = [(i["check"], i["count"]) for i in data["top_issues"] if i["domain"] == "hr"]
+    assert ("跨表勾稽", 1) in issues
+
+
+def test_planning_over_budget_and_facility_overdue(client):
+    _plant(PlanCampaign, name="超支活动", year=2026, start_date=date(2026, 5, 1),
+           end_date=date(2026, 5, 10), budget_total=100.0, actual_total=200.0)
+    _plant(FacilityCompliance, equipment_id=None, kind="annual_inspection",
+           title="过期年检", due_date=date(2026, 6, 1), done_date=None)
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    issues = [(i["domain"], i["check"]) for i in data["top_issues"]]
+    assert ("planning", "预算执行") in issues
+    assert ("facility", "过期未完成") in issues
+
+
+def test_bip_voucher_imbalance(client):
+    """v3 勾稽：按凭证借贷不平。"""
+    from app.modules.finance_ledger_bip.models import BipEntry
+    _plant(BipEntry, voucher_id=9001, batch_id=1, line_no=1, debit=100.0, credit=0.0)
+    _plant(BipEntry, voucher_id=9001, batch_id=1, line_no=2, debit=0.0, credit=90.0)
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    fin = [(i["check"], i["level"], i["count"]) for i in data["top_issues"] if i["domain"] == "finance"]
+    assert ("勾稽平衡", "error", 1) in fin
 
 
 def test_board_stale_snapshot(client):
