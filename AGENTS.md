@@ -58,7 +58,7 @@
 - **空库防误报守卫**：`_board_business_metrics` 只在招商有铺位（total_units>0）、营运有应收（receivable>0）时返回对应指标——业务台账为空时该检查不产生任何 issue（真实运行态已验证：无口径对照项）。
 - **verify 结果扩展**：`verify_snapshot` 返回 `kpi`（内嵌 KPI 字典），端点/缓存/dq 共用；`GET /api/finance/board/verify` 现返回 kpi 键。
 - **定时任务落库锁定**：`test_jobs.py::test_board_action_message_records_attempts` 验证「尝试 N 次」写入 recent_runs（不只消息）。
-- **测试**：dq 19→**21 passed**（差异 warning/一致 info 两例），jobs 全绿，board 13 passed；后端全量见下。
+- **测试**：dq 19→**21 passed**（差异 warning/一致 info 两例），jobs 全绿，board 13 passed；**后端全量 1502 passed（884s）**；**Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:f7ec9756…`。
 
 ## 财务菜单层级重组（2026-11-01）
 
