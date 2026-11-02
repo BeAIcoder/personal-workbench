@@ -4,6 +4,7 @@
 存量坏数据经 ORM 直接插入（写守卫本来就会拦住这类数据——巡检的价值恰在存量巡检）。
 日期类断言用固定 as_of=2026-11-01，可复算。
 """
+import json
 from datetime import date
 
 from app.database import SessionLocal
@@ -190,6 +191,52 @@ def test_board_consecutive_failures(client):
     data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
     fails = [i for i in data["top_issues"] if i["check"] == "连续失败"]
     assert fails and fails[0]["level"] == "error" and fails[0]["count"] == 2
+
+
+def _kpi_env(monkeypatch, tmp_path, kpi):
+    """造「看板快照 HTML + 管线数据源」环境，KPI 由调用方给定。"""
+    from app.modules.finance_board import service as board_svc
+    from app.modules.finance_board.models import BoardSnapshot
+    payload = {"kpi": kpi, "op": {"years": [2026]}}
+    pdir = tmp_path / "pipe"
+    (pdir / "data").mkdir(parents=True)
+    (pdir / "data" / "report_data.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    html = tmp_path / "board.html"
+    html.write_text("<html><script>\nconst R = " + json.dumps(payload, ensure_ascii=False) + ";\n</script></html>", encoding="utf-8")
+    _plant(BoardSnapshot, stamp="20261102_140000", status="ok", html_path=str(html))
+    monkeypatch.setattr(board_svc, "pipeline_dir", lambda: pdir)
+    monkeypatch.setattr(board_svc, "_MIN_HTML_BYTES", 0)
+
+
+def _seed_business_ledger():
+    from app.modules.business_leasing.models import LeasingUnit
+    _plant(LeasingUnit, building="A", floor="1F", unit_no="A-101", area=100.0, status="leased")
+    _plant(OpsContract, contract_no="HT-KPI", tenant="甲", status="active",
+           start_date=date(2026, 1, 1), end_date=date(2027, 12, 31), area=100.0)
+    _plant(OpsBill, contract_id=1, period="2026-10", total_amount=100.0, paid_amount=100.0, status="paid")
+
+
+def test_board_kpi_vs_business_db_warning(client, monkeypatch, tmp_path):
+    """v5.1 双源对账：看板 KPI 与业务库差异大 → warning。"""
+    _seed_business_ledger()
+    _kpi_env(monkeypatch, tmp_path, {"出租率": 88.5, "开业率": 88.0, "收缴率": 65.0,
+                                     "空铺数": 30.0, "累计应收_万元": 2058.6})
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    hit = [i for i in data["top_issues"] if i["check"] == "口径对照"]
+    assert hit and hit[0]["level"] == "warning"
+    samples = hit[0].get("sample") or []
+    assert any("出租率" in s for s in samples)
+    assert any("收缴率" in s for s in samples)
+
+
+def test_board_kpi_vs_business_db_consistent_info(client, monkeypatch, tmp_path):
+    """v5.1 双源对账：看板 KPI 与业务库近似一致 → info。"""
+    _seed_business_ledger()
+    _kpi_env(monkeypatch, tmp_path, {"出租率": 100.0, "开业率": 100.0, "收缴率": 100.0,
+                                     "空铺数": 0.0, "累计应收_万元": 0.01})
+    data = client.get("/api/business/dq/summary", params={"as_of": AS_OF}).json()
+    hit = [i for i in data["top_issues"] if i["check"] == "口径对照"]
+    assert hit and hit[0]["level"] == "info"
 
 
 def test_dq_board_artifact_mismatch(client, monkeypatch, tmp_path):

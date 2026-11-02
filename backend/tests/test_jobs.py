@@ -226,6 +226,23 @@ def test_action_registry_and_actions_endpoint(client):
         JOB_ACTIONS.pop("test.fake", None)
 
 
+def test_board_action_message_records_attempts(client, monkeypatch):
+    """v5：看板动作的成功/失败消息带尝试次数，并落到 recent_runs。"""
+    from app.modules.finance_board import service as board_svc
+    monkeypatch.setattr(board_svc, "run_pipeline",
+                        lambda: {"stamp": "S-ATT", "elapsed_sec": 1.2, "attempts": 2})
+    job = client.post("/api/jobs", json={
+        "name": "看板重试记录", "prompt": "", "action": "finance_board.run",
+        "schedule_type": "interval", "interval_minutes": 60,
+    })
+    jid = job.json()["id"]
+    import asyncio
+    result = asyncio.run(_run(jid))
+    assert result["status"] == "ok" and "尝试 2 次" in result["summary"]
+    row = next(j for j in client.get("/api/jobs").json() if j["id"] == jid)
+    assert "尝试 2 次" in row["recent_runs"][0]["summary"]
+
+
 def test_action_job_unregistered_action(client):
     job = client.post("/api/jobs", json={
         "name": "未注册动作", "prompt": "", "action": "no.such.action",

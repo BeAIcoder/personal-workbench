@@ -474,7 +474,7 @@ def verify_snapshot(snapshot_id: int | None = None) -> dict:
                        "detail": "缺失：" + "、".join(missing_kpi) if missing_kpi else "齐全"})
     fail = sum(1 for c in checks if not c["ok"])
     result = {"available": True, "snapshot": snap_view, "checks": checks, "mismatches": mismatches,
-              "summary": {"ok": len(checks) - fail, "fail": fail}}
+              "kpi": (embedded or {}).get("kpi") or {}, "summary": {"ok": len(checks) - fail, "fail": fail}}
     if len(_VERIFY_CACHE) >= _VERIFY_CACHE_MAX:
         _VERIFY_CACHE.clear()
     _VERIFY_CACHE[cache_key] = result

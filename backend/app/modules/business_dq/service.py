@@ -267,6 +267,31 @@ def _dom_facility(db, as_of):
     return {"available": True, "gap_reasons": [], "context": context, "issues": issues}
 
 
+def _board_business_metrics(db) -> dict:
+    """业务库口径（只读，双源对账用）：招商出租率 + 营运收缴率/应收。
+
+    只返回「业务库有数据」的指标（招商需有铺位、营运需有应收），空库时缺键 → 对账自动跳过，
+    避免把空台账误报成与看板不一致。
+    """
+    out: dict = {}
+    try:
+        from ..business_leasing.service import unit_summary
+        units = unit_summary(db)
+        if (units.get("total_units") or 0) > 0:
+            out["leasing_rate"] = units.get("leasing_rate")
+    except Exception:
+        pass
+    try:
+        from ..business_operations.service import ops_summary as _ops_summary
+        s = _ops_summary(db)
+        if (s.get("receivable") or 0) > 0:
+            out["collection_rate"] = s.get("collection_rate")
+            out["receivable"] = s.get("receivable")
+    except Exception:
+        pass
+    return out
+
+
 def _dom_finance(db, as_of):
     issues, context = [], {}
     present = []
@@ -382,6 +407,33 @@ def _dom_finance(db, as_of):
                 failed_names = [c["name"] for c in vr.get("checks", []) if not c.get("ok")]
                 issues.append(_issue("warning", "产物一致性", len(failed_names), failed_names,
                                      "看板 HTML 与管线数据不一致或产物缺失；建议重新运行管线"))
+            # 双源口径对照（v5.1）：看板 KPI vs 业务库（招商铺位出租率 / 营运收缴率与应收）
+            kpi = (vr or {}).get("kpi") or {}
+            if vr.get("available") and kpi:
+                bm = _board_business_metrics(db)
+                pairs = []
+                if bm.get("leasing_rate") is not None and kpi.get("出租率") is not None:
+                    pairs.append(("出租率", float(bm["leasing_rate"]) * 100, float(kpi["出租率"]), 5.0))
+                if bm.get("collection_rate") is not None and kpi.get("收缴率") is not None:
+                    pairs.append(("收缴率", float(bm["collection_rate"]) * 100, float(kpi["收缴率"]), 5.0))
+                if bm.get("receivable") is not None and kpi.get("累计应收_万元") is not None:
+                    pairs.append(("累计应收(万元)", float(bm["receivable"]) / 10000.0, float(kpi["累计应收_万元"]), None))
+                diffs, bad = [], []
+                for name, biz, dash, tol in pairs:
+                    diff = biz - dash
+                    if tol is None:
+                        over = abs(diff) > max(1.0, abs(dash) * 0.2)
+                        diffs.append(f"{name} 业务库{biz:.1f} vs 看板{dash:.1f}（差{diff:+.1f}）")
+                    else:
+                        over = abs(diff) > tol
+                        diffs.append(f"{name} 业务库{biz:.1f}% vs 看板{dash:.1f}%（差{diff:+.1f}pp）")
+                    if over:
+                        bad.append(name)
+                if diffs:
+                    issues.append(_issue("warning" if bad else "info", "口径对照",
+                                         len(bad) if bad else len(diffs), diffs[:6],
+                                         "看板来源（报表源文件）与业务库（人工台账）为两套口径；差异大时建议核对台账同步"
+                                         if bad else "双源口径近似一致"))
         except Exception:  # 巡检失败不拖垮财务域
             pass
     if not present:

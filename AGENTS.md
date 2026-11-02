@@ -52,6 +52,14 @@
 - **dq 财务域**新增「产物一致性」warning（校验失败列失败项名）；**定时任务** `finance_board.run` 消息带尝试次数（成功含「尝试 N 次」，失败含「重试 N 次后仍失败」）；`run_pipeline` 成功返回 `attempts`。
 - **测试**：board 12→**13 passed**（巡检一致/差异检测/map 检出/动作消息），dq 18→**19 passed**（产物不一致集成）；**后端全量 1499 passed（847s）**；**Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:014041ea…`。
 
+## 看板 KPI vs 业务库双源对账（2026-11-02 深夜 v5.1）
+
+- **口径对照（dq 财务域）**：看板内嵌 KPI（出租率/收缴率/累计应收_万元）vs 工作台业务库（招商 `unit_summary` 出租率、营运 `ops_summary` 收缴率与应收 `/10000`），差异 >5pp（应收 >20% 或 >1 万元）→ warning，否则 info；样本列出「业务库 vs 看板（差±X）」。
+- **空库防误报守卫**：`_board_business_metrics` 只在招商有铺位（total_units>0）、营运有应收（receivable>0）时返回对应指标——业务台账为空时该检查不产生任何 issue（真实运行态已验证：无口径对照项）。
+- **verify 结果扩展**：`verify_snapshot` 返回 `kpi`（内嵌 KPI 字典），端点/缓存/dq 共用；`GET /api/finance/board/verify` 现返回 kpi 键。
+- **定时任务落库锁定**：`test_jobs.py::test_board_action_message_records_attempts` 验证「尝试 N 次」写入 recent_runs（不只消息）。
+- **测试**：dq 19→**21 passed**（差异 warning/一致 info 两例），jobs 全绿，board 13 passed；后端全量见下。
+
 ## 财务菜单层级重组（2026-11-01）
 
 - 「财务」侧栏组由 14 项扁平改为**直挂数据仓 + 4 个二级折叠子分组**（账务处理=费用/发票/POS、记账=个人/BIP、税务填报=企所税/印花/增值/个税/残保金、报表分析=看板/现金流）。机制：manifest `menu.subgroup`（可选）+ `src/modules/index.js` 新增 `getModuleMenuGroups()`（纯聚合，`getModuleMenus` 未动）+ AppLayout 动态段嵌套 `el-sub-menu` 渲染 + `defaultOpeneds`（setup 一次性按初始 route 反查父级 index，保证深链/刷新自动展开；不做成响应式以免覆盖用户手动折叠）。
