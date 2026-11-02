@@ -15,7 +15,7 @@
 - **OpenCode Go 按 ZCode 配置同步**：`dev/sync_opencode_from_zcode.py` 读取 `~/.zcode/v2/config.json` 第一个带 Key 的 OpenCode 供应商，把 apiKey/baseURL/协议写进真实库供应商 id=2（→ **anthropic + `https://opencode.ai/zen/go`**），目录同步 31 模型并**激活 deepseek-v4.1-flash**（默认模型，替换 glm-5.3-flash）。**实测：ZCode 本地 4 个 Key 全部 401**（当前 ZCode 会话模型 `72bd6520…/deepseek-v4.1-flash` 走宿主账号网关，AppData/config 均无本地 Key）——需用户在界面粘贴最新 Key；`/api/assistant/chat` 冒烟返回 502+中文提示（不假成功、不裸栈）。
 - **vault append 行级去重**：`ingest_dataframe` append 模式整行重复自动跳过（DuckDB 关系 API anti-join，列名 `_quote_ident` 双引号转义，无值拼接），返回新增 `skipped_duplicates`；批内重复保留、列集合不一致退回 by_name 直追。测试：契约测试改为新语义 + `test_append_dedupe_semantics`（批内重复/部分重叠/全重复）。
 - **safe_cell 六份拷贝收敛**：leasing/operations/hr/legal/planning/facility 的本地 `_cell`/内联 `cell` 全部改为 `app.utils_xlsx.safe_cell`（A 类别名导入、B 类直接调用）；finance_ledger_bip 的 `_cell` 是 JSON 序列化用途，不属公式防护，保持不动。
-- **验证**：聚焦 **136 passed**（vault 10 + 六业务模块/数据仓相关 126）；运行态重启后 provider2=anthropic/zen-go/31 模型/active=deepseek-v4.1-flash、dq summary 100。
+- **验证**：聚焦 **136 passed**（vault 10 + 六业务模块/数据仓相关 126）；运行态重启后 provider2=anthropic/zen-go/31 模型/active=deepseek-v4.1-flash、dq summary 100。**Mimosa deep 复核**：6 findings 仍全为历史已知项（同上轮），本轮改动文件 0 findings；seal `sha256:b3489936…`。
 
 ## 财务菜单层级重组（2026-11-01）
 
