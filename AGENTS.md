@@ -43,7 +43,7 @@
 - **看板管线失败自动重试与告警**：`_run_pipeline_locked` 改为重试循环（`_PIPELINE_ATTEMPTS=2`、`_RETRY_DELAY_SECONDS=5`，`_execute_attempt` 统一两条通道；`_run_steps_directly(save_failed=False)` 不再逐次落失败快照，日志挂异常 `logs` 属性由最终失败统一落盘）；最终失败调用 `_notify_failure` → **调试中心「问题记录」登记 P2**（`IssueCreate(source="analysis")`；同标题未关闭去重，关闭态是 done/wontfix 不是 closed）。
 - **同秒连跑快照防撞**：新增 `_unique_stamp()`——stamp 已存在（DB 或目录）则追加 `_2/_3` 后缀，避免 `mod_board_snapshot.stamp` 唯一约束冲突（`test_run_pipeline_retry_exhausted_alerts` 二次 /run 同秒触发）。
 - **dq 连续失败检查**：最近两条快照均 failed → error（含 stamp 样本），与告警互补（库内可见 vs 问题记录）。
-- **测试**：board 9→**11 passed**（重试成功/重试耗尽+告警去重），dq 16→**18 passed**（税务勾稽 4 断言、连续失败）；后端全量见下。运行态：dq 200/overall 100。
+- **测试**：board 9→**11 passed**（重试成功/重试耗尽+告警去重），dq 16→**18 passed**（税务勾稽 4 断言、连续失败）；**后端全量 1494 passed（867s）**。运行态：dq 200/overall 100。**Mimosa deep 复核**：6 findings 仍全为历史已知项，本轮文件 0 findings；seal `sha256:104f919f…`。
 
 ## 财务菜单层级重组（2026-11-01）
 
