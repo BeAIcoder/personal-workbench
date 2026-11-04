@@ -16,7 +16,7 @@
 
 ## 全局工程约定
 
-- git 提交经 clean/smudge 脱敏过滤器（本机路径/公司名/昵称 → 占位符）；`dev/sanitize-map.local.json` 是唯一反向钥匙（不入库，丢失无法自动还原）；过滤器按 UTF-8 + GB18030 双编码做字节级替换，覆盖范围见 `.gitattributes`，机制见 `dev/SANITIZE.md`。本地历史已用 `git filter-repo` 重写（HEAD `5e08c6b`，镜像在 `backups/history-mirror-20261104*.git`），**仍未 push**。
+- git 提交经 clean/smudge 脱敏过滤器（本机路径/公司名/昵称 → 占位符）；`dev/sanitize-map.local.json` 是唯一反向钥匙（不入库，丢失无法自动还原）；过滤器按 UTF-8 + GB18030 双编码做字节级替换，覆盖范围见 `.gitattributes`，机制见 `dev/SANITIZE.md`。本地历史已用 `git filter-repo` 重写；当前 HEAD `3cacb0b`，镜像在 `backups/history-mirror-20261104*.git`，工作区 clean，**仍未 push**。
 - 提交信息用中文 conventional commits（`fix(assistant): …` / `docs: …` / `test: …`）。
 - 环境相关默认值统一走 `backend/.env`（字段定义 `backend/app/config.py`，清单 `backend/.env.example`）；新增默认值必须先加配置字段。`WORKBENCH_DATA_DIR` 在 config 导入期派生 `DATA_DIR/UPLOAD_DIR/DATABASE_URL`；探针必须同时设 `WORKBENCH_DATA_DIR / DATABASE_URL / FINANCE_DATA_DIR / DEBUG_DATA_DIR` 四域并在启动前重置自有数据根（`test_swarm_e2e_isolation.py` 的 AST 契约覆盖 20 个探针）。
 - 文档契约（`test_docs_contract.py` 58 例）：新增/删除路由后必须重跑 `cd backend && PYTHONPATH=. venv/Scripts/python.exe ../dev/gen_api_index.py` 并替换 API.md 索引；新增菜单必须在《使用说明》有对应八段式章节；版本号以 `backend/app/config.py` 为单一源；文档内所有 `/api` 路径必须真实存在。
@@ -107,7 +107,7 @@
 
 - 基线：后端全量 2011 passed（并行 116s / 串行 323s）、前端 75 文件 1082 passed、构建 stamp `a79a9b5c9b0c`；发布包 `backups/releases/个人工作台-v1.16.1-20261104.zip`（527 文件 / 2.38 MB，sha256 `d14ef14d…`）。
 - 本轮增量（AI 助手可靠性强化，2026-11-04）：后端串行全量 **2039 passed / 1 个与本轮无关的既有 POS 测试失败**（`test_execute_project_inference_failure_marks_error_for_retry` 期望 503 实得 200，单独复跑仍失败）；xdist 在本机出现 worker 停顿，回归以串行为准；前端 **75 文件 1084 passed**；构建 stamp `0d4fe18b1bd4`。
-- git：HEAD `5e08c6b`（filter-repo 后），工作区含大量交付物**未提交/未推送**；推送需用户在本机完成 GCM 授权；CI 已配置但从未真实首跑。
+- git：HEAD `3cacb0b`（filter-repo 后本地历史），工作区 clean；推送需用户在本机完成 GCM 授权并 force-with-lease；CI 已配置但从未真实首跑。
 - 外部阻断：L-056 / L-068 / L-156（历史本机路径是否再处理待用户决定）、L-170（OpenCode 真实 Key）、L-151（CI 首跑）；已知限制 L-028（MCP 自动重连）。
 - 待办：看板重跑生成合规快照（verify 发现 20 处 KPI 差异 + 旧 HTML 含 map）；U10 真人可用性复测（≥80% 无协助）；2 个依赖外部 SDD `server.log` 的探针未独立运行；准入制四税种待地方口径；13 周现金流待业务口径；政策版本化需逐条官方日期复核。
 - 演进 P1/P2：长文件拆分（orchestrator / config_store / invoice service、SettingsDrawer / ChatPanel）；路由轻量化 UI；EP 迁移已完成；PostgreSQL + Alembic（触发：多设备/多用户/多 worker，且 auth 先行）；pinia、向量检索、MCP 长结果落盘按触发条件；agentscope 精确锁定，升级单独评估。
