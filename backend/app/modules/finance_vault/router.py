@@ -60,7 +60,8 @@ async def ingest_file(
     file: UploadFile = File(...),
     table: str = Query(..., description="目标表名（小写字母/数字/下划线）"),
     mode: str = Query("replace", description="replace=整表重建 / append=按列名追加"),
-    sheet: str = Query("", description="xlsx 工作表名或序号（默认第一个）"),
+    sheet: str = Query("", description="xlsx 工作表名（含纯数字名）或 0-based 序号（默认第一个）"),
+    keep_text: bool = Query(True, description="保留编码/账号为文本（默认开启）"),
 ):
     content = await _read_upload(file, service.MAX_UPLOAD_BYTES)
     try:
@@ -72,6 +73,7 @@ async def ingest_file(
             content,
             mode=mode,
             sheet=sheet,
+            keep_text=keep_text,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -97,3 +99,9 @@ def preview_table(table: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        # 登记表有行但 DuckDB 视图缺失/损坏：属数据仓状态不一致，409 让用户重建数据集
+        raise HTTPException(
+            status_code=409,
+            detail=f"数据集视图不可用（登记信息与数据仓不一致），请重新入仓该数据集：{exc}",
+        ) from exc

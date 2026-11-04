@@ -37,6 +37,12 @@ backend/tmp*
 
 # 备份
 backups/
+# 恢复快照（可能含本机密钥；即使被挪到仓库根也不可见）
+.before_restore_local_*
+*.before_restore_*
+backups/restore-local/
+# 恢复 staging（SIGKILL/断电时可能残留；无斜杠模式匹配任意目录层级）
+.restore_staging_*
 
 # SQLite 日志/临时文件
 *.db-wal
@@ -54,6 +60,8 @@ backend/pytest-*/
 venv/
 node_modules/
 dist/
+# 恢复本机配置临时文件（copy2 半写保护）
+*.restore-tmp
 
 # 系统
 __pycache__/
@@ -113,3 +121,6 @@ backend/xls_smoke_*/
 
 # zcode 工具工作区（本地工具状态，永不入库）
 .zcode/
+
+# finance_bankflow 本机映射（真实账号与 H 编码不入仓库）
+backend/app/modules/finance_bankflow/config.local.yaml

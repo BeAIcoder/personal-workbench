@@ -194,6 +194,69 @@ def test_mcp_disconnect_unregisters_tools(client, tmp_path, fake_server):
     assert tool_name not in TOOL_SPECS, "删除服务器后工具仍留在 TOOL_SPECS"
 
 
+def test_mcp_child_env_is_minimal_and_explicit_env_wins(monkeypatch):
+    from app.agents import mcp
+
+    captured = {}
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    def fake_popen(*args, **kwargs):
+        captured.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(mcp.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("HOST_SECRET", "must-not-leak")
+    monkeypatch.setenv("SystemRoot", "C:/Windows")
+    monkeypatch.setenv("PATH", "C:/host/bin")
+    monkeypatch.setenv("NODE_PATH", "C:/node/modules")
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    server = mcp.McpStdioServer(
+        "env-test", "python", env={"EXPLICIT_ENV": "yes", "PATH": "C:/explicit/bin"}
+    )
+    monkeypatch.setattr(server, "_request", lambda *args, **kwargs: {"tools": []})
+    monkeypatch.setattr(server, "_notify", lambda *args, **kwargs: None)
+    server.start()
+    child_env = captured["env"]
+    leaked_names = {"HOST_SECRET"}.intersection(child_env)
+    assert not leaked_names
+    assert child_env["EXPLICIT_ENV"] == "yes"
+    assert child_env["PATH"] == "C:/explicit/bin"
+    assert child_env["SystemRoot"] == "C:/Windows"
+    assert child_env["NODE_PATH"] == "C:/node/modules"
+    assert child_env["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_mcp_crashed_server_error_suggests_manual_reconnect():
+    import asyncio
+
+    from app.agents import mcp
+
+    server = mcp.McpStdioServer("crashed", "python")
+    mcp._servers["crashed"] = server
+    try:
+        result = asyncio.run(mcp._make_executor("crashed", "echo")())
+    finally:
+        mcp._servers.pop("crashed", None)
+    assert result["ok"] is False
+    assert "重连" in result["error"]
+
+
+def test_mcp_raw_tool_result_is_bounded(monkeypatch):
+    from app.agents import mcp
+
+    server = mcp.McpStdioServer("large", "python")
+    monkeypatch.setattr(server, "_request", lambda *args, **kwargs: {
+        "content": [{"type": "text", "text": "x" * 70000}],
+        "isError": False,
+    })
+    result = server.call_tool("large", {})
+    assert result["raw"]["truncated"] is True
+    assert len(json.dumps(result["raw"], ensure_ascii=False)) < 70000
+
+
 def test_mcp_module_tools_not_in_loaded_modules():
     """MCP 工具不走 Module Registry（宿主级能力），模块清单不含 mcp。"""
     assert "mcp" not in {m.name for m in get_loaded_modules()}

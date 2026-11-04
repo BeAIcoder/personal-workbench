@@ -23,14 +23,14 @@
       <el-tabs v-model="tab" class="mt8">
         <el-tab-pane label="合同审查" name="reviews">
           <div class="filters">
-            <el-input v-model="reviewQuery.keyword" placeholder="合同标题" size="small" clearable style="width: 170px" @keyup.enter="loadReviews" />
+            <el-input v-model="reviewQuery.keyword" placeholder="合同标题" size="small" clearable style="width: 170px" @keyup.enter="onReviewFilterEnter" />
             <el-select v-model="reviewQuery.status" placeholder="状态" size="small" clearable style="width: 120px">
               <el-option v-for="s in reviewStatuses" :key="s.value" :label="s.label" :value="s.value" />
             </el-select>
             <el-select v-model="reviewQuery.risk_level" placeholder="风险" size="small" clearable style="width: 100px">
               <el-option label="低" value="low" /><el-option label="中" value="medium" /><el-option label="高" value="high" />
             </el-select>
-            <el-button size="small" type="primary" @click="loadReviews">筛选</el-button>
+            <el-button size="small" type="primary" @click="searchReviews">筛选</el-button>
             <el-button size="small" type="success" @click="openReview()">新建审查</el-button>
           </div>
           <el-table :data="reviews" size="small" border>
@@ -58,18 +58,24 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination
+            class="pager" background layout="total, sizes, prev, pager, next"
+            :total="reviewTotal" :page-size="reviewPageSize" :current-page="reviewPage"
+            :page-sizes="[20, 50, 100]"
+            @current-change="onReviewPage" @size-change="onReviewSize"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="案件" name="cases">
           <div class="filters">
-            <el-input v-model="caseQuery.keyword" placeholder="案件标题" size="small" clearable style="width: 170px" @keyup.enter="loadCases" />
+            <el-input v-model="caseQuery.keyword" placeholder="案件标题" size="small" clearable style="width: 170px" @keyup.enter="onCaseFilterEnter" />
             <el-select v-model="caseQuery.stage" placeholder="阶段" size="small" clearable style="width: 110px">
               <el-option v-for="s in stages" :key="s.value" :label="s.label" :value="s.value" />
             </el-select>
             <el-select v-model="caseQuery.case_type" placeholder="类型" size="small" clearable style="width: 100px">
               <el-option label="诉讼" value="litigation" /><el-option label="仲裁" value="arbitration" /><el-option label="纠纷" value="dispute" />
             </el-select>
-            <el-button size="small" type="primary" @click="loadCases">筛选</el-button>
+            <el-button size="small" type="primary" @click="searchCases">筛选</el-button>
             <el-button size="small" type="success" @click="openCase()">新建案件</el-button>
           </div>
           <el-table :data="cases" size="small" border>
@@ -95,12 +101,18 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination
+            class="pager" background layout="total, sizes, prev, pager, next"
+            :total="caseTotal" :page-size="casePageSize" :current-page="casePage"
+            :page-sizes="[20, 50, 100]"
+            @current-change="onCasePage" @size-change="onCaseSize"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="用印台账" name="seals">
           <div class="filters">
-            <el-input v-model="sealQuery.keyword" placeholder="用途关键词" size="small" clearable style="width: 180px" @keyup.enter="loadSeals" />
-            <el-button size="small" type="primary" @click="loadSeals">筛选</el-button>
+            <el-input v-model="sealQuery.keyword" placeholder="用途关键词" size="small" clearable style="width: 180px" @keyup.enter="onSealFilterEnter" />
+            <el-button size="small" type="primary" @click="searchSeals">筛选</el-button>
             <el-button size="small" type="success" @click="openSeal()">新建用印</el-button>
           </div>
           <el-table :data="seals" size="small" border>
@@ -117,6 +129,12 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination
+            class="pager" background layout="total, sizes, prev, pager, next"
+            :total="sealTotal" :page-size="sealPageSize" :current-page="sealPage"
+            :page-sizes="[20, 50, 100]"
+            @current-change="onSealPage" @size-change="onSealSize"
+          />
         </el-tab-pane>
       </el-tabs>
     </el-card>
@@ -190,6 +208,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+import { nextPageAfterDelete, pageState, toPageParams } from '../../_shared/pagedList.js'
 
 const aiPrompt = computed(() => '请分析法务台账：合同审查积压与风险分布、案件阶段与开庭提醒、用印合规情况')
 
@@ -218,6 +237,15 @@ const seals = ref([])
 const reviewQuery = reactive({ keyword: '', status: '', risk_level: '' })
 const caseQuery = reactive({ keyword: '', stage: '', case_type: '' })
 const sealQuery = reactive({ keyword: '' })
+const reviewPage = ref(1)
+const reviewPageSize = ref(20)
+const reviewTotal = ref(0)
+const casePage = ref(1)
+const casePageSize = ref(20)
+const caseTotal = ref(0)
+const sealPage = ref(1)
+const sealPageSize = ref(20)
+const sealTotal = ref(0)
 
 const reviewDialog = ref(false)
 const reviewForm = reactive({
@@ -256,22 +284,88 @@ async function loadSummary() {
 async function loadReviews() {
   loading.value = true
   try {
-    const { data } = await api.get('/business/legal/contracts', { params: reviewQuery })
-    reviews.value = data.items || []
+    const { data } = await api.get('/business/legal/contracts', {
+      params: toPageParams(reviewQuery, reviewPage.value, reviewPageSize.value),
+    })
+    const state = pageState(data, { page: reviewPage.value, pageSize: reviewPageSize.value })
+    reviews.value = state.items
+    reviewTotal.value = state.total
+    reviewPage.value = state.page
+    reviewPageSize.value = state.pageSize
   } catch { /* 拦截器已提示 */ } finally { loading.value = false }
+}
+function searchReviews() {
+  reviewPage.value = 1
+  return loadReviews()
+}
+function onReviewFilterEnter() {
+  return searchReviews()
+}
+function onReviewPage(next) {
+  reviewPage.value = next
+  return loadReviews()
+}
+function onReviewSize(size) {
+  reviewPageSize.value = size
+  reviewPage.value = 1
+  return loadReviews()
 }
 async function loadCases() {
   loading.value = true
   try {
-    const { data } = await api.get('/business/legal/cases', { params: caseQuery })
-    cases.value = data.items || []
+    const { data } = await api.get('/business/legal/cases', {
+      params: toPageParams(caseQuery, casePage.value, casePageSize.value),
+    })
+    const state = pageState(data, { page: casePage.value, pageSize: casePageSize.value })
+    cases.value = state.items
+    caseTotal.value = state.total
+    casePage.value = state.page
+    casePageSize.value = state.pageSize
   } catch { /* 拦截器已提示 */ } finally { loading.value = false }
+}
+function searchCases() {
+  casePage.value = 1
+  return loadCases()
+}
+function onCaseFilterEnter() {
+  return searchCases()
+}
+function onCasePage(next) {
+  casePage.value = next
+  return loadCases()
+}
+function onCaseSize(size) {
+  casePageSize.value = size
+  casePage.value = 1
+  return loadCases()
 }
 async function loadSeals() {
   try {
-    const { data } = await api.get('/business/legal/seals', { params: sealQuery })
-    seals.value = data.items || []
+    const { data } = await api.get('/business/legal/seals', {
+      params: toPageParams(sealQuery, sealPage.value, sealPageSize.value),
+    })
+    const state = pageState(data, { page: sealPage.value, pageSize: sealPageSize.value })
+    seals.value = state.items
+    sealTotal.value = state.total
+    sealPage.value = state.page
+    sealPageSize.value = state.pageSize
   } catch { /* 拦截器已提示 */ }
+}
+function searchSeals() {
+  sealPage.value = 1
+  return loadSeals()
+}
+function onSealFilterEnter() {
+  return searchSeals()
+}
+function onSealPage(next) {
+  sealPage.value = next
+  return loadSeals()
+}
+function onSealSize(size) {
+  sealPageSize.value = size
+  sealPage.value = 1
+  return loadSeals()
 }
 async function loadAll() {
   await loadSummary()
@@ -304,8 +398,10 @@ async function saveReview() {
 }
 async function removeReview(row) {
   try { await ElMessageBox.confirm(`确认删除「${row.title}」？`, '删除确认', { type: 'warning' }) } catch { return }
+  const targetPage = nextPageAfterDelete(reviewPage.value, reviewTotal.value, reviewPageSize.value)
   try {
     await api.delete(`/business/legal/contracts/${row.id}`)
+    reviewPage.value = targetPage
     await loadAll()
   } catch { /* 拦截器已提示 */ }
 }
@@ -337,8 +433,10 @@ async function saveCase() {
 }
 async function removeCase(row) {
   try { await ElMessageBox.confirm(`确认删除案件「${row.title}」？`, '删除确认', { type: 'warning' }) } catch { return }
+  const targetPage = nextPageAfterDelete(casePage.value, caseTotal.value, casePageSize.value)
   try {
     await api.delete(`/business/legal/cases/${row.id}`)
+    casePage.value = targetPage
     await loadAll()
   } catch { /* 拦截器已提示 */ }
 }
@@ -363,8 +461,10 @@ async function saveSeal() {
 }
 async function removeSeal(row) {
   try { await ElMessageBox.confirm(`确认删除用印「${row.purpose}」？`, '删除确认', { type: 'warning' }) } catch { return }
+  const targetPage = nextPageAfterDelete(sealPage.value, sealTotal.value, sealPageSize.value)
   try {
     await api.delete(`/business/legal/seals/${row.id}`)
+    sealPage.value = targetPage
     await loadAll()
   } catch { /* 拦截器已提示 */ }
 }
@@ -378,4 +478,5 @@ onMounted(loadAll)
 
 <style scoped>
 .kpi { margin-bottom: 8px; }
+.pager { margin-top: 10px; justify-content: flex-end; }
 </style>

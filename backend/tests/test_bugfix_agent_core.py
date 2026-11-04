@@ -593,7 +593,7 @@ def test_resolve_spec_continuation_skips_internal_job_session(route_team, monkey
     monkeypatch.setattr(orchestrator, "load_team", lambda: route_team)
     calls = []
 
-    async def _route(question, team):
+    async def _route(question, team, session_id=None):
         calls.append(question)
         return "operations"
 

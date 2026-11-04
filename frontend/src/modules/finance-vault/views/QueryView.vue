@@ -40,6 +40,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../../api'
 import { toTableRows } from '../tableRows'
+import { saveBlob } from '../../../utils/download.js'
 import UsageHelp from '../UsageHelp.vue'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
@@ -72,11 +73,7 @@ function exportCsv() {
   const lines = [result.value.columns.map(esc).join(',')]
   for (const row of result.value.rows) lines.push(row.map(esc).join(','))
   const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = `vault_query_${new Date().toISOString().slice(0, 10)}.csv`
-  a.click()
-  URL.revokeObjectURL(a.href)
+  saveBlob(blob, `vault_query_${new Date().toISOString().slice(0, 10)}.csv`)
 }
 
 // URL 参数拼接 SQL 前的表名白名单校验：只允许安全的标识符

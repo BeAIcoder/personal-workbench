@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 from datetime import date, timedelta
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -60,7 +61,10 @@ def equipment_list(db: Session, category: str = "", status: str = "", keyword: s
     if status:
         q = q.filter(FacilityEquipment.status == status)
     if keyword:
-        q = q.filter(FacilityEquipment.name.contains(keyword, autoescape=True))
+        q = q.filter(or_(
+            FacilityEquipment.code.contains(keyword, autoescape=True),
+            FacilityEquipment.name.contains(keyword, autoescape=True),
+        ))
     total = q.count()
     rows = (q.order_by(FacilityEquipment.code.asc())
             .offset((page - 1) * page_size).limit(page_size).all())
@@ -189,7 +193,10 @@ def compliance_save(db: Session, data: dict, compliance_id: int | None = None) -
     if "due_date" in data:
         row.due_date = _as_date(data["due_date"], "到期日期")
     if "done_date" in data:
-        row.done_date = _as_date(data["done_date"], "完成日期")
+        done_date = _as_date(data["done_date"], "完成日期")
+        if done_date is not None and done_date > date.today():
+            raise ValueError("完成日期不能晚于今天：完成日期是既成事实，预填未来日期会把未完成事项标成已完成")
+        row.done_date = done_date
     if "note" in data and data["note"] is not None:
         row.note = str(data["note"]).strip()
     if not (row.title or "").strip():
@@ -252,8 +259,7 @@ def _xlsx(title: str, headers: list[str], rows: list[list]) -> bytes:
 
 
 def equipment_export(db: Session) -> bytes:
-    rows = [[row.code, row.name, row.category_label if hasattr(row, "category_label")
-             else CATEGORY_LABELS.get(row.category, row.category), row.location,
+    rows = [[row.code, row.name, CATEGORY_LABELS.get(row.category, row.category), row.location,
              row.install_date.isoformat() if row.install_date else "",
              EQUIPMENT_STATUS_LABELS.get(row.status, row.status), row.note]
             for row in db.query(FacilityEquipment).order_by(FacilityEquipment.code).all()]

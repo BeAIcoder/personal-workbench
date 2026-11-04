@@ -17,6 +17,7 @@
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -184,18 +185,18 @@ def start_server():
     if DB.exists():
         DB.unlink()
     if FIN_DIR.exists():
-        import shutil
-
         shutil.rmtree(FIN_DIR)
     if DEBUG_DIR.exists():
-        import shutil
-
         shutil.rmtree(DEBUG_DIR)
     _kill_port(PORT)
     env = os.environ.copy()
     env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
     env["FINANCE_DATA_DIR"] = str(FIN_DIR)
     env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+    DATA_DIR = RESULTS / f"{AREA}-data"
+    if DATA_DIR.exists():
+        shutil.rmtree(DATA_DIR)
+    env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
     env["PYTHONIOENCODING"] = "utf-8"
     log = open(LOG, "w", encoding="utf-8")
     proc = subprocess.Popen(
@@ -349,7 +350,7 @@ def run_probes():
         page.locator("button", has_text="导出（重命名").click()
         assert wait_toast(page, "导出完成", kind="success"), "导出成功提示未出现"
         assert desc_value(page, "状态") == "已导出", "导出后状态未变为已导出"
-        dl_btn = page.locator("button", has_text="下载 ZIP")
+        dl_btn = page.locator("button", has_text="下载整批 ZIP")
         assert dl_btn.is_visible(), "导出后下载按钮未出现"
         with page.expect_download(timeout=15000) as dl_info:
             dl_btn.click()
@@ -376,13 +377,14 @@ def run_probes():
         goto(page, "/finance/invoice")
         wait_row(page, "探测-单票").locator("button", has_text="详情").click()
         wait_visible(page, ".el-descriptions")
-        kw = page.locator("input[placeholder*='发票号']")
+        kw = page.locator("input[placeholder*='发票号 / 销方 / 购方']")
+        detail_rows = page.locator(".el-card", has_text="发票明细").locator(".el-table__row")
         kw.fill("26937000000123")
         page.wait_for_timeout(600)
-        assert page.locator(".el-table__row").count() == 1, "命中过滤未生效"
+        assert detail_rows.count() == 1, f"命中过滤未生效（明细表行数 {detail_rows.count()}）"
         kw.fill("绝不存在的关键词zzz")
         page.wait_for_timeout(600)
-        assert page.locator(".el-table__row").count() == 0, "未命中过滤未生效"
+        assert detail_rows.count() == 0, f"未命中过滤未生效（明细表行数 {detail_rows.count()}）"
     record("TC-FIV-005", "明细关键字过滤（命中/未命中）", tc_005_keyword_filter)
 
     def tc_006_broken_pdf_failed_item():
@@ -614,8 +616,10 @@ def run_probes():
         btn.click()
         assert wait_toast(page, "入仓成功", kind="success"), "追加入仓提示未出现"
         row = wait_row(page, "t_probe")
-        assert row.locator("td").nth(2).inner_text().strip() == "6", "追加后行数应为 6"
-    record("TC-FIV-102", "重选同一文件 + append 行数翻倍（takeFile 回归）", tc_102_reselect_same_file_append)
+        # 2026-11-02 起 append 会按整行去重；同一文件重选必须仍触发上传（toast 已证明），
+        # 但 3 行完全重复会被跳过，不应翻倍。
+        assert row.locator("td").nth(2).inner_text().strip() == "3", "完整重复的追加入仓不应增加行数"
+    record("TC-FIV-102", "重选同一文件 + append 整行去重（takeFile 回归）", tc_102_reselect_same_file_append)
 
     def tc_103_preview_dialog():
         goto(page, "/finance/vault")
@@ -656,7 +660,7 @@ def run_probes():
         goto(page, "/finance/vault/query")
         _run_sql("SELECT * FROM t_probe", expect_ok=True)
         card = page.locator(".el-card", has_text="结果：").last
-        assert "6 行" in card.inner_text(), f"结果行数异常：{card.inner_text()[:60]}"
+        assert "3 行" in card.inner_text(), f"结果行数异常：{card.inner_text()[:60]}"
         assert page.locator("td", has_text="差旅费").count() > 0, "结果表未渲染数据单元格"
     record("TC-FIV-105", "合法 SELECT 执行并渲染结果", tc_105_valid_select)
 
@@ -689,7 +693,7 @@ def run_probes():
         _run_sql("-- 注释\nWITH c AS (SELECT * FROM t_probe) SELECT count(*) AS n FROM c LIMIT 999999", expect_ok=True)
         card = page.locator(".el-card", has_text="结果：").last
         assert "1 行" in card.inner_text(), "CTE 聚合应返回 1 行"
-        assert page.locator("td", has_text="6").count() > 0, "CTE 计数结果应为 6（3 行 replace + 3 行 append）"
+        assert page.locator("td", has_text="3").count() > 0, "CTE 计数结果应为 3（追加重导按整行去重）"
     record("TC-FIV-112", "WITH+注释+CTE+超限 LIMIT 改写放行", tc_112_with_comment_cte_ok)
 
     def tc_113_truncate_no_limit():
@@ -803,7 +807,7 @@ def run_probes():
         goto(page, "/finance/vault/query")
         _run_sql("SELECT * FROM T_PROBE", expect_ok=True)
         card = page.locator(".el-card", has_text="结果：").last
-        assert "6 行" in card.inner_text(), "DuckDB 标识符大小写不敏感，应放行并返回 6 行"
+        assert "3 行" in card.inner_text(), "DuckDB 标识符大小写不敏感，应放行并返回 3 行（去重后）"
     record("TC-FIV-121", "大写表名查询（大小写不敏感放行）", tc_121_uppercase_table_query)
 
     def tc_122_string_false_positive():
@@ -836,7 +840,8 @@ def snapshot_pages(context):
 
     routes = [("/finance/invoice", "fin-invoice-list"), ("/finance/vault", "fin-vault-tables"),
               ("/finance/vault/query", "fin-vault-query")]
-    batches = requests.get(f"{BASE}/api/finance/invoice/batches", timeout=10).json()
+    payload = requests.get(f"{BASE}/api/finance/invoice/batches", timeout=10).json()
+    batches = payload.get("items", []) if isinstance(payload, dict) else payload
     if batches:
         routes.append((f"/finance/invoice/batches/{batches[0]['id']}", "fin-invoice-detail"))
     pages = []

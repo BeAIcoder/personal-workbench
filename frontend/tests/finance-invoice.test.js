@@ -24,10 +24,9 @@ describe('finance-invoice 项目拆分与重新归类（静态契约）', () => 
     expect(detailSource).toContain('encodeURIComponent(project)')
   })
 
-  it('下载走 Blob + a.download 显式落名（不依赖 Content-Disposition）', () => {
+  it('下载走 Blob + saveBlob 显式落名（不依赖 Content-Disposition）', () => {
     expect(detailSource).toContain("responseType: 'blob'")
-    expect(detailSource).toContain('URL.createObjectURL')
-    expect(detailSource).toContain('link.download = filename')
+    expect(detailSource).toContain('saveBlob(data, filename)')
     expect(detailSource).toContain('download_name')
     expect(detailSource).toContain('zip_file')
   })

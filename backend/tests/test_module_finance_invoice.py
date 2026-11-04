@@ -306,7 +306,7 @@ def test_upload_503_when_engine_missing(client, finance_dir, monkeypatch, tmp_pa
         resp = upload(client, [("a.pdf", FAKE_PDF)])
         assert resp.status_code == 503
         assert "引擎不可用" in resp.json()["detail"]
-        assert client.get("/api/finance/invoice/batches").json() == []
+        assert client.get("/api/finance/invoice/batches").json() == {"total": 0, "items": [], "page": 1, "page_size": 50}
         status = client.get("/api/finance/invoice/engine/status").json()
         assert status["available"] is False
     finally:
@@ -315,6 +315,40 @@ def test_upload_503_when_engine_missing(client, finance_dir, monkeypatch, tmp_pa
 
 def test_batch_detail_404(client):
     assert client.get("/api/finance/invoice/batches/9999").status_code == 404
+
+
+def test_batch_list_pagination_reports_total(client):
+    """批次列表必须返回 total 并支持 page/page_size（否则第 51 条起不可见）。"""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        for index in range(51):
+            db.add(InvoiceBatch(name=f"批次{index + 1}", status="parsed"))
+        db.commit()
+    finally:
+        db.close()
+
+    first = client.get("/api/finance/invoice/batches", params={"page": 1, "page_size": 25}).json()
+    assert first["total"] == 51
+    assert first["page"] == 1 and first["page_size"] == 25
+    assert len(first["items"]) == 25
+    # 按 id 倒序：page1 是 51..27，page2 是 26..2，page3 只剩 1
+    assert first["items"][0]["name"] == "批次51"
+    assert first["items"][-1]["name"] == "批次27"
+
+    second = client.get("/api/finance/invoice/batches", params={"page": 2, "page_size": 25}).json()
+    assert len(second["items"]) == 25
+    assert second["items"][0]["name"] == "批次26"
+
+    third = client.get("/api/finance/invoice/batches", params={"page": 3, "page_size": 25}).json()
+    assert third["total"] == 51
+    assert [b["name"] for b in third["items"]] == ["批次1"]
+
+    default = client.get("/api/finance/invoice/batches").json()
+    assert default["total"] == 51
+    assert len(default["items"]) == 50
+    assert default["page"] == 1 and default["page_size"] == 50
 
 
 # ---------------- 人工修正 ----------------
@@ -329,6 +363,31 @@ def test_patch_item(client, finance_dir, mock_engine):
     assert body["project_name"] == "修正后项目" and body["remark"] == "人工备注"
     assert body["corrected"] is True
     assert client.patch("/api/finance/invoice/items/9999", json={"remark": "x"}).status_code == 404
+
+
+def test_patch_blank_project_clears_and_invalidates_export(client, finance_dir, mock_engine):
+    """空字符串是「清空」指令，不是「未提供」（前端清空输入框走这里）。"""
+    batch = _exported_batch(client, mock_engine)
+    item_id = batch["items"][0]["id"]
+    resp = client.patch(f"/api/finance/invoice/items/{item_id}", json={"project_name": ""})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["project_name"] == ""
+    assert body["corrected"] is True
+    detail = client.get(f"/api/finance/invoice/batches/{batch['id']}").json()
+    assert detail["status"] == "parsed"
+    assert detail["export_file"] == ""
+    assert client.get(f"/api/finance/invoice/batches/{batch['id']}/download").status_code == 409
+
+
+def test_patch_blank_remark_clears_field(client, finance_dir, mock_engine):
+    mock_engine["a.pdf"] = make_fields(remark="合成备注")
+    batch = upload(client, [("a.pdf", FAKE_PDF)]).json()
+    item_id = batch["items"][0]["id"]
+    resp = client.patch(f"/api/finance/invoice/items/{item_id}", json={"remark": "   "})
+    assert resp.status_code == 200
+    assert resp.json()["remark"] == ""
+    assert resp.json()["corrected"] is True
 
 
 # ---------------- 导出与下载 ----------------

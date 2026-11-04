@@ -28,7 +28,9 @@ def _create_enterprise(client, tax_number="91110108BUGFIX0001", **kw):
 
 
 def _create_return(client, enterprise_id, **kw):
-    payload = {"enterprise_id": enterprise_id, "tax_period": "2026", "report_type": "A类"}
+    # 预缴记录必须带季度：年度记录在 A100000 接入前导出按 409 拒绝（台账 L-052）
+    payload = {"enterprise_id": enterprise_id, "tax_period": "2026", "quarter": "Q1",
+               "report_type": "A类"}
     payload.update(kw)
     r = client.post(f"{P}/tax-returns/", json=payload)
     assert r.status_code == 200, r.text
@@ -179,7 +181,7 @@ def test_b4_batch_parse_failure_marks_failed_and_no_5xx(client, invoice_tmp_dir,
     assert resp.status_code == 400
     assert "解析失败" in resp.json()["detail"]
 
-    batches = client.get(f"{PI}/batches").json()
+    batches = client.get(f"{PI}/batches").json()["items"]
     assert len(batches) == 1
     assert batches[0]["status"] == "failed"  # 不再永留 uploaded
     assert "OSError" in batches[0]["error"] and "disk gone" in batches[0]["error"]

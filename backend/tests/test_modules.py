@@ -133,6 +133,91 @@ def test_build_tools_skips_unknown_names(caplog):
     assert any("ghost_tool_from_disabled_module" in r.message for r in caplog.records)
 
 
+def test_build_tools_tolerates_nonstandard_param_definitions(caplog):
+    """参数定义写成 dict / 2 元组时只告警并按可用信息构造，不让整个专家构建失败。
+
+    回归：finance_vault 的 vault_query 曾把 sql 参数写成
+    {"type": "string", "description": ...}，旧实现对 3 元组解包直接抛
+    ValueError("not enough values to unpack (expected 3, got 2)")，
+    导致财税专员（唯一引用 vault_query 的专家）全部对话 400。
+    """
+    import logging
+
+    name = "param_shape_probe"
+    TOOL_SPECS[name] = {
+        "func": lambda **kwargs: {"ok": True},
+        "description": "参数结构探针",
+        "params": {
+            "triple": ("string", "标准三元组", True),
+            "pair": ("integer", "两元组"),
+            "mapping": {"type": "string", "description": "字典写法"},
+            "odd": 123,
+        },
+        "required": ["triple"],
+    }
+    try:
+        with caplog.at_level(logging.WARNING):
+            tools = build_tools([name])
+        assert len(tools) == 1
+        props = tools[0].input_schema["properties"]
+        assert props["triple"] == {"type": "string", "description": "标准三元组"}
+        assert props["pair"] == {"type": "integer", "description": "两元组"}
+        assert props["mapping"] == {"type": "string", "description": "字典写法"}
+        assert props["odd"] == {"type": "string", "description": ""}
+        assert tools[0].input_schema["required"] == ["triple"]
+        warnings = " ".join(r.message for r in caplog.records)
+        assert "pair" in warnings and "mapping" in warnings and "odd" in warnings
+    finally:
+        TOOL_SPECS.pop(name, None)
+
+
+def _module_tool_contract_offenders(module_names=None, importer=None):
+    import importlib
+    import pkgutil
+
+    import app.modules as modules_pkg
+
+    if module_names is None:
+        root = list(modules_pkg.__path__)[0]
+        module_names = [
+            info.name for info in pkgutil.iter_modules([root])
+            if info.name.startswith(("finance_", "business_"))
+        ]
+    importer = importer or importlib.import_module
+    offenders = []
+    for module_name in module_names:
+        try:
+            mod = importer(f"app.modules.{module_name}.manifest")
+        except Exception as exc:
+            offenders.append(f"{module_name} manifest 导入失败（{type(exc).__name__}）")
+            continue
+        manifest = getattr(mod, "manifest", None)
+        if manifest is None:
+            offenders.append(f"{module_name} 缺少 manifest 对象")
+            continue
+        for tool in manifest.agent_tools or []:
+            for pname, pval in (tool.get("params") or {}).items():
+                if not (isinstance(pval, tuple) and len(pval) == 3):
+                    offenders.append(f"{manifest.name}.{tool.get('name')}.{pname}"
+                                     f" -> {type(pval).__name__}/{getattr(pval, '__len__', lambda: '?')()}")
+    return offenders
+
+
+def test_all_module_agent_tools_params_are_triples():
+    """所有模块必须可导入，且 agent_tools 参数均为标准三元组。"""
+    offenders = _module_tool_contract_offenders()
+    assert not offenders, f"模块工具契约或导入失败：{offenders}"
+
+
+def test_module_contract_import_failure_is_an_offender():
+    def fail_import(name):
+        raise RuntimeError("synthetic manifest import failure")
+
+    offenders = _module_tool_contract_offenders(["finance_synthetic"], fail_import)
+    assert len(offenders) == 1
+    assert "finance_synthetic" in offenders[0] and "导入失败" in offenders[0]
+
+
 # ---------- 财税专员 seed 行为 ----------
 
 def test_finance_specialist_seeded_on_fresh_db(client):

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """数据质量巡检接口：/api/business/dq（只读）。"""
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ...database import get_db

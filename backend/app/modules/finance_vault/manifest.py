@@ -24,7 +24,8 @@ manifest = ModuleManifest(
             "func": vault_query,
             "description": "在数据仓执行只读 SELECT 查询（仅允许引用已注册数据集，自动限流）",
             "params": {
-                "sql": {"type": "string", "description": "只读 SELECT/WITH 查询语句"}
+                # 结构与内置 TOOL_SPECS 同构：(type, description, required)
+                "sql": ("string", "只读 SELECT/WITH 查询语句", True)
             },
             "required": ["sql"],
             "readonly": True,

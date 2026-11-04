@@ -11,6 +11,14 @@
         </div>
       </template>
 
+      <div class="filters">
+        <label class="filter-label" for="dq-as-of">巡检基准日</label>
+        <el-date-picker id="dq-as-of" aria-label="巡检基准日" v-model="asOf" type="date"
+          value-format="YYYY-MM-DD" size="small" placeholder="默认今天" clearable
+          style="width: 150px" @change="load" />
+        <span class="muted">用于未来/过期类检查的历史回看；留空按当天</span>
+      </div>
+
       <el-alert
         type="info"
         :closable="false"
@@ -31,8 +39,9 @@
         </el-col>
         <el-col :span="8">
           <div class="kpi-box">
-            <div class="kpi-label">问题总数</div>
+            <div class="kpi-label">问题计数</div>
             <div class="kpi-value">{{ issueTotal }}</div>
+            <div class="kpi-sub">按检查命中数（分组检查按组计）</div>
           </div>
         </el-col>
       </el-row>
@@ -67,10 +76,13 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import api from '../../../api'
+import { issueTotalOf } from '../summaryCount.js'
+import { domainSummary } from '../domainSummary.js'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const loading = ref(false)
 const data = ref(null)
+const asOf = ref('')
 
 const DOMAIN_LABELS = {
   leasing: '招商',
@@ -89,9 +101,7 @@ const domainList = computed(() =>
       key,
       label,
       score: r?.available ? r.score : null,
-      summary: r?.available
-        ? `E${r.error ?? 0}/W${r.warning ?? 0}/I${r.info ?? 0}`
-        : '未就绪',
+      summary: domainSummary(r),
     }
   })
 )
@@ -101,7 +111,7 @@ const issueRows = computed(() => (data.value?.top_issues || []).map(i => ({ ...i
 const overall = computed(() => data.value?.overall_score ?? null)
 const availableCount = computed(() => Object.values(data.value?.domains || {}).filter(d => d.available).length)
 const totalDomains = computed(() => Object.keys(DOMAIN_LABELS).length)
-const issueTotal = computed(() => (data.value?.top_issues || []).reduce((s, i) => s + (i.count || 0), 0))
+const issueTotal = computed(() => issueTotalOf(data.value))
 
 const aiPrompt = computed(() => {
   const s = data.value?.overall_score
@@ -114,7 +124,8 @@ const aiPrompt = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const resp = await api.get('/business/dq/summary')
+    const params = asOf.value ? { as_of: asOf.value } : {}
+    const resp = await api.get('/business/dq/summary', { params })
     data.value = resp.data
   } catch (e) {
     data.value = null
@@ -127,6 +138,8 @@ onMounted(load)
 </script>
 
 <style scoped>
+.filters { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; }
+.filter-label { font-size: 12px; color: var(--el-text-color-secondary); }
 .kpi { margin-top: 12px; }
 .kpi-box { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 12px; }
 .kpi-label { font-size: 12px; color: #64748b; }

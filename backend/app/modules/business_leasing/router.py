@@ -191,7 +191,7 @@ def update_lead(lead_id: int, payload: LeadUpdate, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.delete("/leads/{lead_id}", summary="删除线索（须先取消签约，连同跟进记录）")
+@router.delete("/leads/{lead_id}", summary="删除线索（已签约须先把阶段改为已流失，连同跟进记录）")
 def delete_lead(lead_id: int, db: Session = Depends(get_db)):
     try:
         service.lead_delete(db, lead_id)

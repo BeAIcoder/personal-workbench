@@ -47,6 +47,18 @@ def _as_date(value, field: str = "日期") -> date | None:
         raise ValueError(f"{field}格式非法，应为 YYYY-MM-DD") from exc
 
 
+def effective_social_base(e: HrEmployee) -> float | None:
+    """社保基数口径：显式填写（含 0 = 不缴社保）按填写值；未填返回 None（出薪时回退基本工资）。
+
+    兼容改造前的数据：`social_base` 列是 NOT NULL 且默认 0，旧记录的 0 只代表"没填过"；
+    旧记录的非 0 值一律视为显式填写（当年就是用户手填的）。显式 0 由 social_base_set=1 标记。
+    """
+    value = money(e.social_base)
+    if value > 0:
+        return value
+    return 0.0 if int(e.social_base_set or 0) == 1 else None
+
+
 # ---------------- 员工 ----------------
 
 def employee_to_dict(e: HrEmployee) -> dict:
@@ -77,7 +89,8 @@ def employee_to_dict(e: HrEmployee) -> dict:
         "status_label": STATUS_LABELS.get(e.status, e.status),
         "phone": e.phone or "",
         "base_salary": money(e.base_salary),
-        "social_base": money(e.social_base),
+        "social_base": effective_social_base(e),
+        "special_additional": money(e.special_additional),
         "note": e.note or "",
         "created_at": str(e.created_at),
     }
@@ -106,11 +119,22 @@ def employee_save(db: Session, data: dict, employee_id: int | None = None) -> di
     for field in ("emp_no", "name", "department", "position", "phone", "note"):
         if field in data and data[field] is not None:
             setattr(e, field, str(data[field]).strip())
-    for field in ("base_salary", "social_base", "special_additional"):
+    for field in ("base_salary", "special_additional"):
         if field in data and data[field] is not None:
             if float(data[field]) < 0:
                 raise ValueError(f"{field} 不能为负数")
             setattr(e, field, money(data[field]))
+    if "social_base" in data:
+        value = data["social_base"]
+        if value is None:
+            # 留空 = 按基本工资（0 是显式"不缴社保"，必须由 social_base_set 区分）
+            e.social_base = 0.0
+            e.social_base_set = 0
+        else:
+            if float(value) < 0:
+                raise ValueError("social_base 不能为负数")
+            e.social_base = money(value)
+            e.social_base_set = 1
     for field in ("hire_date", "probation_end", "contract_end"):
         if field in data:
             setattr(e, field, _as_date(data[field], field))
@@ -137,6 +161,15 @@ def employee_delete(db: Session, employee_id: int) -> None:
     e = db.get(HrEmployee, employee_id)
     if e is None:
         raise LookupError("员工不存在")
+    confirmed = (db.query(HrPayroll)
+                 .filter(HrPayroll.emp_id == employee_id, HrPayroll.status == "confirmed")
+                 .count())
+    if confirmed:
+        # 已确认薪资是已发放凭据，与 payroll_delete 同口径：不能经员工删除绕过
+        raise ValueError(
+            f"该员工有 {confirmed} 条已确认薪资，删除会丢失已发放凭据，已拒绝；"
+            "已确认薪资不支持删除，请把员工状态改为「离职」保留历史"
+        )
     db.query(HrAttendance).filter(HrAttendance.emp_id == employee_id).delete()
     db.query(HrPayroll).filter(HrPayroll.emp_id == employee_id).delete()
     db.delete(e)
@@ -255,6 +288,7 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
     target_month = int(month[5:])
     created = []
     warnings = []
+    missing_detail: list[str] = []
     for emp in employees:
         if emp.hire_date and (emp.hire_date.year, emp.hire_date.month) > (target_year, target_month):
             # P1 修复：入职晚于出薪月份时不再用 max() 兜底成「已入职 1 个月」计税，
@@ -279,16 +313,31 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
         daily = base / WORK_DAYS if base else 0.0
         overtime_pay = money(daily / HOURS_PER_DAY * OVERTIME_MULTIPLIER * overtime_hours)
         deduction = money(daily * leave_days)
-        social_base = money(emp.social_base) or base
+        # 0 是合法社保基数（不缴社保）；只有「未填」才回退基本工资
+        social_base = effective_social_base(emp)
+        if social_base is None:
+            social_base = base
         social = money(social_base * social_rate)
         housing = money(social_base * housing_rate)
         gross = money(base + allowance + overtime_pay)
         current_base = money(gross - deduction - social - housing)
 
+        hire_start_month = (
+            emp.hire_date.month
+            if emp.hire_date and emp.hire_date.year == target_year else 1
+        )
         priors = (db.query(HrPayroll)
                   .filter(HrPayroll.emp_id == emp.id)
                   .filter(HrPayroll.month.like(f"{month[:4]}-%"))
                   .filter(HrPayroll.month < month).all())
+        missing_months = [
+            f"{target_year}-{m:02d}"
+            for m in range(hire_start_month, target_month)
+            if f"{target_year}-{m:02d}" not in {p.month for p in priors}
+        ]
+        if missing_months:
+            # 累计预扣的减除费用按「任职月份数」计算；缺月不补会让累计收入偏低、个税被低估
+            missing_detail.append(f"{emp.emp_no}（{'、'.join(missing_months)}）")
         prior_base = sum(
             float(p.base_salary or 0) + float(p.allowance or 0) + float(p.overtime_pay or 0)
             - float(p.deduction or 0) - float(p.social_insurance or 0)
@@ -296,10 +345,6 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
             for p in priors
         )
         prior_tax = sum(float(p.tax or 0) for p in priors)
-        hire_start_month = (
-            emp.hire_date.month
-            if emp.hire_date and emp.hire_date.year == target_year else 1
-        )
         months_count = max(len(priors) + 1, target_month - hire_start_month + 1)
         special_monthly = money(emp.special_additional or 0)
         current_base = money(current_base - special_monthly)
@@ -319,6 +364,14 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
         db.add(row)
         created.append((row, emp))
 
+    if missing_detail:
+        # 聚合展示：一次列清全部缺月员工（最多 5 人），避免逐人弹窗刷屏
+        shown = "；".join(missing_detail[:5])
+        more = f"；等 {len(missing_detail)} 人" if len(missing_detail) > 5 else ""
+        warnings.append(
+            f"历史月份薪资未生成（{len(missing_detail)} 人）：{shown}{more}；"
+            "累计预扣按任职月份减除，缺月会使累计收入偏低、个税被低估，请补生成或核对累计数"
+        )
     db.commit()
     items = []
     for row, emp in created:
@@ -416,10 +469,12 @@ def employees_export(db: Session) -> bytes:
              e.probation_end.isoformat() if e.probation_end else "",
              e.contract_end.isoformat() if e.contract_end else "",
              STATUS_LABELS.get(e.status, e.status), e.phone,
-             money(e.base_salary), money(e.social_base), e.note]
+             money(e.base_salary),
+             "" if effective_social_base(e) is None else effective_social_base(e),
+             money(e.special_additional), e.note]
             for e in db.query(HrEmployee).order_by(HrEmployee.emp_no).all()]
     headers = ["工号", "姓名", "部门", "岗位", "入职日期", "试用到期", "合同到期",
-               "状态", "手机", "基本工资", "社保基数", "备注"]
+               "状态", "手机", "基本工资", "社保基数", "专项附加扣除", "备注"]
     return _xlsx("员工花名册", headers, rows)
 
 

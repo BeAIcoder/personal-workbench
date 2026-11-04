@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import copy
+import math
 import re
 import threading
 import time
@@ -24,6 +26,7 @@ import pandas as pd
 
 from ...config import get_finance_data_dir
 from ...database import SessionLocal
+from ...utils import repair_upload_mojibake
 from .models import VaultDataset
 
 try:
@@ -41,6 +44,10 @@ QUERY_TIMEOUT_SEC = 5.0                # DuckDB 层查询超时（秒）
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024    # 上传文件大小上限
 ALLOWED_SUFFIXES = (".csv", ".xlsx")   # 上传扩展名白名单
 MAX_SQL_LEN = 20000                    # SQL 文本长度上限
+QUALITY_SCAN_ROW_LIMIT = 50_000        # 质量画像逐表扫描行数上限（超过则抽样标记，不做昂贵 DISTINCT）
+QUALITY_TABLE_BUDGET_SEC = 2.0         # 单表质量画像预算（秒），超过即跳过 DISTINCT/describe
+QUALITY_TIME_BUDGET_SEC = 5.0          # 质量画像总时间预算（秒），超时即停止后续表
+QUALITY_CACHE_TTL_SEC = 60.0           # 质量画像结果缓存（秒），避免 dq 摘要频繁全量扫描
 
 # 表名白名单：仅小写字母/数字/下划线，1-64 字符
 _TABLE_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -67,8 +74,7 @@ _FORBIDDEN_RE = re.compile(
     r"show|describe|explain|use|pivot)\b",
     re.IGNORECASE,
 )
-# 语句末尾的顶层 LIMIT（可选 OFFSET）
-_TRAILING_LIMIT_RE = re.compile(r"\blimit\s+(\d+)(\s+offset\s+\d+)?\s*$", re.IGNORECASE)
+
 
 
 def _string_literal_spans(text: str) -> list[tuple[int, int]]:
@@ -93,13 +99,43 @@ def _string_literal_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _real_trailing_limit(clean: str):
-    """在剥注释后的执行文本上找真实末尾 LIMIT，跳过字符串字面量里的 LIMIT 文本。"""
-    spans = _string_literal_spans(clean)
-    for m in _TRAILING_LIMIT_RE.finditer(clean):
+def _paren_depths(text: str) -> tuple[list[int], list[tuple[int, int]]]:
+    """返回每个字符位置的括号深度（字符串字面量内的括号不计）与字符串区间。"""
+    spans = _string_literal_spans(text)
+    depths: list[int] = []
+    depth = 0
+    span_idx = 0
+    for i, ch in enumerate(text):
+        while span_idx < len(spans) and i >= spans[span_idx][1]:
+            span_idx += 1
+        inside = span_idx < len(spans) and spans[span_idx][0] <= i < spans[span_idx][1]
+        depths.append(depth)
+        if inside:
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")" and depth > 0:
+            depth -= 1
+    return depths, spans
+
+
+def _top_level_trailing_limit(clean: str) -> tuple[int, str] | None:
+    """找括号深度 0 的末尾 LIMIT 子句，返回 (LIMIT 起始位置, 子句尾部文本)。
+
+    子查询/派生表/`IN (SELECT ... LIMIT n)` 里的 LIMIT 深度 >0，不参与判定；
+    只有顶层 LIMIT 才需要补/改/拒绝。字符串字面量里的 LIMIT 同样跳过。
+    """
+    depths, spans = _paren_depths(clean)
+    for m in reversed(list(re.finditer(r"\blimit\b", clean, re.IGNORECASE))):
         if any(start <= m.start() < end for start, end in spans):
             continue
-        return m
+        if depths[m.start()] != 0:
+            continue
+        tail = clean[m.end():].strip()
+        # 列名/别名恰好叫 limit（后接 FROM/AS/逗号等）不是 LIMIT 子句
+        if not tail or (not re.match(r"[-+.\d]", tail) and tail.upper() != "ALL"):
+            continue
+        return m.start(), tail
     return None
 # 词法 token：带引号标识符 / 字符串 / 单词（含 schema.table 形式）/ 括号 / 逗号 / 其他单字符
 _TOKEN_RE = re.compile(r'"(?:[^"]|"")*"|\'[^\']*\'|[a-z_][a-z0-9_.]*|\(|\)|,|\S')
@@ -210,56 +246,119 @@ def list_datasets() -> list[dict]:
         return [_dataset_out(r) for r in rows]
 
 
-def vault_quality_overview(max_tables: int = 30, null_threshold: float = 0.3) -> dict:
-    """数据仓质量画像（只读，2026-11-02 数据质量 v2）。
+_QUALITY_CACHE: dict[str, Any] = {"key": None, "at": 0.0, "value": None}
+
+
+def _quality_cache_key(datasets: list[dict]) -> tuple:
+    # updated_at 只到秒：同一秒内重建数据仓会命中旧缓存；叠加 DuckDB 文件 mtime_ns
+    # 作为亚秒版本，文件不存在/不可读时退回 0（仍按登记表签名缓存）。
+    try:
+        mtime_ns = _db_path().stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    return (mtime_ns, tuple((d["table"], d.get("rows"), d.get("updated_at")) for d in datasets))
+
+
+def vault_quality_overview(
+    max_tables: int = 30,
+    null_threshold: float = 0.3,
+    time_budget: float | None = None,
+) -> dict:
+    """数据仓质量画像（只读、有界执行，2026-11-02 / Task 5 加固）。
 
     对每个已登记数据集做三件事：整行重复计数（总行数 - DISTINCT 行数）、
     高缺失列（describe 的 null_percentage 超阈值）、空表标记。
     全部走 DuckDB 关系 API 与常量 SQL，不拼接任何列名/数据值；单表失败不影响其他表。
+
+    有界性：单表超过 QUALITY_SCAN_ROW_LIMIT 只取行数并标记 sampled（不做昂贵
+    DISTINCT/describe）；单表耗时超过 QUALITY_TABLE_BUDGET_SEC 同样跳过昂贵统计；
+    总耗时超过 time_budget（默认 QUALITY_TIME_BUDGET_SEC）立即停止后续表并给出
+    gap_reasons；完整结果按登记表签名缓存 TTL 秒且返回深拷贝，避免调用方改写
+    污染缓存（L-090 / M9）。
     """
     datasets = list_datasets()[:max_tables]
     if not datasets:
         return {"available": False, "gap_reasons": ["数据仓暂无登记数据集"], "tables": [],
                 "summary": {"datasets": 0, "empty_tables": 0, "dup_tables": 0, "null_heavy_tables": 0}}
-    out = []
+    budget = QUALITY_TIME_BUDGET_SEC if time_budget is None else max(0.0, time_budget)
+    key = _quality_cache_key(datasets)
+    now = time.monotonic()
+    if (
+        budget >= QUALITY_TIME_BUDGET_SEC
+        and _QUALITY_CACHE["key"] == key
+        and (now - _QUALITY_CACHE["at"]) < QUALITY_CACHE_TTL_SEC
+    ):
+        return copy.deepcopy(_QUALITY_CACHE["value"])
+    deadline = now + budget
+    out: list[dict] = []
+    gap_reasons: list[str] = []
     empty = dup_tables = null_heavy = 0
+    truncated = False
     with _write_lock:
         con = _connect()
         try:
             for ds in datasets:
+                if time.monotonic() > deadline:
+                    truncated = True
+                    gap_reasons.append(
+                        f"质量画像超过 {budget:g} 秒预算，剩余 {len(datasets) - len(out)} 个数据集未扫描"
+                    )
+                    break
                 item = {"table": ds["table"], "rows": ds.get("rows") or 0,
-                        "dup_rows": 0, "null_heavy": [], "error": ""}
+                        "dup_rows": 0, "null_heavy": [], "error": "", "sampled": False}
+                table_start = time.monotonic()
                 try:
                     rel = con.table(ds["table"])
                     total = int(rel.aggregate("count(*)").fetchone()[0])
-                    distinct_rows = int(rel.distinct().aggregate("count(*)").fetchone()[0])
                     item["rows"] = total
-                    item["dup_rows"] = max(0, total - distinct_rows)
-                    desc = rel.describe().df()
-                    if "aggr" in desc.columns:
-                        cnt_row = desc[desc["aggr"] == "count"]
-                        if not cnt_row.empty:
-                            for col in [c for c in desc.columns if c != "aggr"]:
-                                non_null = cnt_row.iloc[0][col]
-                                if non_null is None:
-                                    continue
-                                null_pct = max(0.0, (1 - float(non_null) / total) * 100) if total else 0.0
-                                if null_pct > null_threshold * 100:
-                                    item["null_heavy"].append({"column": str(col), "null_pct": round(null_pct, 1)})
+                    table_elapsed = time.monotonic() - table_start
+                    over_budget = table_elapsed > QUALITY_TABLE_BUDGET_SEC or time.monotonic() > deadline
+                    if total > QUALITY_SCAN_ROW_LIMIT or over_budget:
+                        item["sampled"] = True
+                        item["dup_rows"] = None
+                        truncated = True
+                        reason = (
+                            f"共 {total} 行，超过单表扫描上限 {QUALITY_SCAN_ROW_LIMIT}"
+                            if total > QUALITY_SCAN_ROW_LIMIT
+                            else f"单表画像耗时 {table_elapsed:.2f}s 超过预算 {QUALITY_TABLE_BUDGET_SEC:g}s"
+                        )
+                        gap_reasons.append(f"数据集 {ds['table']} {reason}，已跳过重复/缺失统计")
+                    else:
+                        distinct_rows = int(rel.distinct().aggregate("count(*)").fetchone()[0])
+                        item["dup_rows"] = max(0, total - distinct_rows)
+                        desc = rel.describe().df()
+                        if "aggr" in desc.columns:
+                            cnt_row = desc[desc["aggr"] == "count"]
+                            if not cnt_row.empty:
+                                for col in [c for c in desc.columns if c != "aggr"]:
+                                    non_null = cnt_row.iloc[0][col]
+                                    if non_null is None:
+                                        continue
+                                    null_pct = max(0.0, (1 - float(non_null) / total) * 100) if total else 0.0
+                                    if null_pct > null_threshold * 100:
+                                        item["null_heavy"].append({"column": str(col), "null_pct": round(null_pct, 1)})
                 except Exception as exc:  # 单表失败不拖垮整体画像
                     item["error"] = type(exc).__name__
                 if item["rows"] == 0:
                     empty += 1
-                if item["dup_rows"] > 0:
+                if item["dup_rows"] and item["dup_rows"] > 0:
                     dup_tables += 1
                 if item["null_heavy"]:
                     null_heavy += 1
                 out.append(item)
         finally:
             con.close()
-    return {"available": True, "gap_reasons": [], "tables": out,
-            "summary": {"datasets": len(out), "empty_tables": empty,
-                        "dup_tables": dup_tables, "null_heavy_tables": null_heavy}}
+    result = {
+        "available": True,
+        "gap_reasons": gap_reasons,
+        "truncated": truncated,
+        "tables": out,
+        "summary": {"datasets": len(out), "empty_tables": empty,
+                    "dup_tables": dup_tables, "null_heavy_tables": null_heavy},
+    }
+    if not truncated and budget >= QUALITY_TIME_BUDGET_SEC:
+        _QUALITY_CACHE.update(key=key, at=time.monotonic(), value=copy.deepcopy(result))
+    return result
 
 
 # ---------- 入仓 ----------
@@ -385,38 +484,122 @@ def _latest_physical(con: duckdb.DuckDBPyConnection, table: str) -> "str | None"
     return max(revs, key=lambda t: int(t[len(prefix):])) if revs else None
 
 
-def _read_table_file(path: Path, sheet: str = "") -> pd.DataFrame:
+def _excel_sheet_names(path: Path) -> list[str]:
+    with pd.ExcelFile(path) as xls:
+        return [str(name) for name in xls.sheet_names]
+
+
+def _resolve_sheet(sheet_names: list[str], sheet: str) -> tuple[int | str, str]:
+    """工作表参数解析：名字优先（含纯数字名），其次 0-based 序号。
+
+    旧实现把纯数字参数一律当索引，名为「2026」的工作表无法直接指定（L-091）。
+    """
+    text = (sheet or "").strip()
+    if not text:
+        return 0, sheet_names[0] if sheet_names else ""
+    if text in sheet_names:
+        return text, text
+    if text.isdigit():
+        index = int(text)
+        if 0 <= index < len(sheet_names):
+            return index, sheet_names[index]
+    raise ValueError(
+        f"工作表不存在：{text}（可选：{'、'.join(sheet_names[:20]) or '无'}）"
+    )
+
+
+def _coerce_text_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """保留文本读取后的安全类型推断：只把「纯数值且无前导零/未超 15 位」的列转数值。
+
+    这样账号（18 位）、编码（007）、期间（2026-10）等保持文本，金额/数量列仍可
+    直接 SUM；无法判断的一律保守保留为文本。
+    """
+    out = df.copy()
+    text_columns: list[str] = []
+    for col in out.columns:
+        series = out[col]
+        values = [str(v).strip() for v in series if pd.notna(v) and str(v).strip() != ""]
+        if not values:
+            continue
+        # 前导零规则只适用于纯整数编码（007 / 0012345）；0.13 / 0.5 是正常小数，必须可 SUM
+        if any(
+            re.fullmatch(r"-?\d+", v) and v.lstrip("-").startswith("0") and len(v.lstrip("-")) > 1
+            for v in values
+        ):
+            text_columns.append(str(col))
+            continue
+        if all(re.fullmatch(r"-?\d{1,15}(\.\d+)?", v) for v in values):
+            out[col] = pd.to_numeric(series, errors="coerce")
+        else:
+            text_columns.append(str(col))
+    return out, text_columns
+
+
+def _read_table_file(
+    path: Path,
+    sheet: str = "",
+    keep_text: bool = True,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     """把 xlsx/csv 读成 DataFrame；CSV 依次尝试 utf-8-sig / gbk 编码。
+
+    keep_text=True（默认）：先按文本读取，保留前导零/长账号/期间等编码，再对
+    纯数值列做保守类型推断（见 _coerce_text_frame），避免 pandas 自动推断把
+    `007` 变 7、18 位账号变科学计数、`2026-10` 变日期（L-086）。
 
     解析异常统一降级为 ValueError（路由层转 400）：损坏文件（如 ZIP 魔数残缺的
     BadZipFile、pandas 引擎异常）属于客户端错误，不应裸抛成 500。
     """
     suffix = path.suffix.lower()
+    info: dict[str, Any] = {"sheet": "", "sheets": [], "sheet_count": 0, "text_columns": []}
     try:
         if suffix == ".xlsx":
-            s = (sheet or "").strip()
-            sheet_name: str | int = int(s) if s.isdigit() else (s or 0)
-            return pd.read_excel(path, sheet_name=sheet_name)
-        if suffix == ".csv":
+            sheet_names = _excel_sheet_names(path)
+            selector, used = _resolve_sheet(sheet_names, sheet)
+            df = pd.read_excel(path, sheet_name=selector, dtype=str if keep_text else None)
+            info.update(sheet=used, sheets=sheet_names, sheet_count=len(sheet_names))
+        elif suffix == ".csv":
+            df = None
             for enc in ("utf-8-sig", "gbk"):
                 try:
-                    return pd.read_csv(path, encoding=enc)
+                    if keep_text:
+                        df = pd.read_csv(path, encoding=enc, dtype=str, keep_default_na=False)
+                    else:
+                        df = pd.read_csv(path, encoding=enc)
+                    break
                 except UnicodeDecodeError:
                     continue
-            raise ValueError("无法识别 CSV 编码（仅支持 UTF-8 / GBK）")
-        raise ValueError(f"不支持的文件类型：{suffix}")
+            if df is None:
+                raise ValueError("无法识别 CSV 编码（仅支持 UTF-8 / GBK）")
+        else:
+            raise ValueError(f"不支持的文件类型：{suffix}")
     except ValueError:
         raise
     except Exception as exc:
         raise ValueError(f"文件解析失败：{type(exc).__name__}: {exc}") from exc
+    if keep_text:
+        df, text_columns = _coerce_text_frame(df)
+        info["text_columns"] = text_columns
+    else:
+        info["text_columns"] = []
+    return df, info
 
 
-def ingest_uploaded_file(table: str, filename: str, content: bytes, mode: str = "replace", sheet: str = "") -> dict:
-    """上传文件入仓：扩展名白名单 + 大小限制 + 防路径穿越 + 落 inbox 留档后解析。"""
+def ingest_uploaded_file(
+    table: str,
+    filename: str,
+    content: bytes,
+    mode: str = "replace",
+    sheet: str = "",
+    keep_text: bool = True,
+) -> dict:
+    """上传文件入仓：扩展名白名单 + 大小限制 + 防路径穿越 + 落 inbox 留档后解析。
+
+    keep_text=True（默认）保留编码/账号等文本形态（见 _read_table_file）。
+    """
     table = validate_table_name(table)
     if mode not in ("replace", "append"):
         raise ValueError(f"不支持的入仓模式 {mode!r}（仅 replace / append）")
-    safe_name = Path(filename or "").name
+    safe_name = Path(repair_upload_mojibake(filename or "")).name
     if safe_name in ("", ".", ".."):
         raise ValueError("非法的文件名")
     suffix = Path(safe_name).suffix.lower()
@@ -432,7 +615,7 @@ def ingest_uploaded_file(table: str, filename: str, content: bytes, mode: str = 
         raise ValueError("非法的文件名")
     dest.write_bytes(content)
     try:
-        df = _read_table_file(dest, sheet=sheet)
+        df, info = _read_table_file(dest, sheet=sheet, keep_text=keep_text)
         result = ingest_dataframe(table, df, mode=mode, source=safe_name)
     except Exception:
         dest.unlink(missing_ok=True)  # 失败不留档，避免 inbox 堆积垃圾
@@ -440,7 +623,15 @@ def ingest_uploaded_file(table: str, filename: str, content: bytes, mode: str = 
     with SessionLocal() as db:  # 补充列信息到返回值（ingest_dataframe 已登记）
         row = db.query(VaultDataset).filter(VaultDataset.table_name == table).first()
         columns = row.columns_json if row else []
-    return {"table": result["table"], "rows": result["rows"], "source": safe_name, "mode": mode, "columns": columns}
+    return {
+        "table": result["table"],
+        "rows": result["rows"],
+        "source": safe_name,
+        "mode": mode,
+        "columns": columns,
+        "keep_text": keep_text,
+        **info,
+    }
 
 
 # ---------- 只读 SQL 校验 ----------
@@ -500,17 +691,48 @@ def _scan_sql(sql: str) -> tuple[str, str]:
     return "".join(view), "".join(clean)
 
 
+def _collect_cte_names(tokens: list[str]) -> set[str]:
+    """识别 CTE 定义名：`WITH x AS (`、`WITH x(a) AS (`、`WITH x AS MATERIALIZED (`。"""
+    ctes: set[str] = set()
+    n = len(tokens)
+    for i, tok in enumerate(tokens):
+        if tok != "as":
+            continue
+        j = i + 1
+        if j < n and tokens[j] == "materialized":
+            j += 1
+        elif j + 1 < n and tokens[j] == "not" and tokens[j + 1] == "materialized":
+            j += 2
+        if j >= n or tokens[j] != "(":
+            continue
+        k = i - 1
+        if k >= 0 and tokens[k] == ")":  # 列清单 x(a, b)：向前找匹配的 (
+            depth = 0
+            while k >= 0:
+                if tokens[k] == ")":
+                    depth += 1
+                elif tokens[k] == "(":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k -= 1
+            k -= 1
+        if k >= 0 and _IDENT_RE.fullmatch(tokens[k]):
+            ctes.add(tokens[k].split(".")[-1])
+    return ctes
+
+
 def _extract_refs_and_ctes(view: str) -> tuple[set[str], set[str]]:
     """从校验视图（转小写后）提取 FROM/JOIN 表引用集合与 CTE 别名集合。
 
     逐 token 走状态机（idle → expect_table → after_table），覆盖：
     显式 JOIN（含 LEFT/RIGHT/FULL/CROSS/NATURAL/LATERAL 等修饰词）、逗号连接
-    （FROM a, b）、派生表/子查询（括号栈恢复上下文）。
+    （FROM a, b）、派生表/子查询（括号栈恢复上下文）、FROM-first 语法。
     FROM/JOIN 后直接跟字符串（文件路径表）抛 SqlRejected。
     """
     tokens = _TOKEN_RE.findall(view.lower())
     refs: set[str] = set()
-    ctes: set[str] = set()
+    ctes = _collect_cte_names(tokens)
     paren_stack: list[str] = []
     state = "idle"
     i, n = 0, len(tokens)
@@ -586,8 +808,8 @@ def validate_readonly_sql(sql: str, allowed_tables: set[str]) -> str:
     if ";" in view:
         raise SqlRejected("只允许单条查询语句（禁止分号多语句）")
     head = re.match(r"[a-zA-Z]+", view)
-    if not head or head.group(0).lower() not in ("select", "with"):
-        raise SqlRejected("只允许 SELECT / WITH 开头的只读查询")
+    if not head or head.group(0).lower() not in ("select", "with", "from"):
+        raise SqlRejected("只允许 SELECT / WITH / FROM 开头的只读查询")
     hit = _FORBIDDEN_RE.search(view)
     if hit:
         raise SqlRejected(f"只允许只读查询，检测到禁止的关键词：{hit.group(0).upper()}")
@@ -597,28 +819,39 @@ def validate_readonly_sql(sql: str, allowed_tables: set[str]) -> str:
     if unknown:
         raise SqlRejected(f"引用了未注册的数据集：{'、'.join(unknown)}")
     # 强制 LIMIT：无顶层 LIMIT 补上；超出上限改写为上限+1。
-    # 匹配必须在剥注释后的执行文本上做，并跳过字符串字面量，否则
-    # SELECT 'LIMIT 999999' ... LIMIT 999999 会被改写成字符串内容而非真实 LIMIT。
-    m = _real_trailing_limit(clean)
-    if m is None:
+    # 只在括号深度 0 的顶层判定：子查询/派生表里已有的 LIMIT 不参与，
+    # 否则 SELECT * FROM (SELECT ... LIMIT 5) 会被误判并被拒绝（Fix round 1 / I1）。
+    info = _top_level_trailing_limit(clean)
+    if info is None:
         return f"{clean}\nLIMIT {MAX_QUERY_ROWS + 1}"
-    if int(m.group(1)) <= MAX_QUERY_ROWS:
+    start, tail = info
+    tail_match = re.fullmatch(r"(\d+)(\s+offset\s+\d+)?", tail, re.IGNORECASE)
+    if tail_match is None:
+        raise SqlRejected(
+            "末尾 LIMIT 只支持整数常量（如 LIMIT 100）：请把 "
+            f"LIMIT {tail[:40]} 改写为整数后重试"
+        )
+    if int(tail_match.group(1)) <= MAX_QUERY_ROWS:
         return clean
-    return clean[:m.start()] + f"LIMIT {MAX_QUERY_ROWS + 1}{m.group(2) or ''}" + clean[m.end():]
+    return clean[:start] + f"LIMIT {MAX_QUERY_ROWS + 1}{tail_match.group(2) or ''}"
 
 
 # ---------- 查询 / 预览 ----------
 
 
 def _cell(v: Any) -> Any:
-    """把 DuckDB 值转成 JSON 友好类型。"""
-    if v is None or isinstance(v, (bool, int, float, str)):
+    """把 DuckDB 值转成 JSON 友好类型；NaN/Infinity 返回 None（JSON 不支持）。"""
+    if v is None or isinstance(v, (bool, int, str)):
         return v
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
     if isinstance(v, datetime):
         return v.isoformat(sep=" ")
     if isinstance(v, date):
         return v.isoformat()
     if isinstance(v, Decimal):
+        if not v.is_finite():
+            return None
         return float(v)
     if isinstance(v, (bytes, bytearray)):
         return bytes(v).hex()

@@ -296,7 +296,7 @@ def test_gm_manifest_endpoint_and_tool_are_readonly_and_preset(client):
     loaded = {item.name: item for item in get_loaded_modules()}
     manifest = loaded["business_gm"]
     assert manifest.tables == []
-    assert manifest.preset_experts == ["realestate", "cre_gm"]
+    assert manifest.preset_experts == ["realestate"]
     tool = next(item for item in manifest.agent_tools if item["name"] == "gm_summary")
     assert tool["readonly"] is True
     assert tool["required"] == []

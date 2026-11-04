@@ -82,7 +82,29 @@ def test_install_from_market_and_idempotent(env):
     skill_store.set_enabled("demo-market-skill", True)
     r2 = sm.install_from_market("demo-market-skill")
     assert r2["updated"] is True
+    assert r2["enabled"] is True
     assert "demo-market-skill" not in skill_store.disabled_packs(env["store"])
+
+
+def test_install_copy_failure_preserves_old_pack_and_cleans_temp(env, monkeypatch):
+    sm.install_from_market("demo-market-skill")
+    dest = env["store"] / "demo-market-skill"
+    original = (dest / "SKILL.md").read_bytes()
+
+    def fail_copy(src, dst, **kwargs):
+        from pathlib import Path
+
+        partial = Path(dst)
+        partial.mkdir(parents=True)
+        (partial / "SKILL.md").write_text("半成品", encoding="utf-8")
+        raise OSError("synthetic copy failure")
+
+    monkeypatch.setattr(skill_store.shutil, "copytree", fail_copy)
+    with pytest.raises(OSError, match="synthetic copy"):
+        sm.install_from_market("demo-market-skill")
+    assert (dest / "SKILL.md").read_bytes() == original
+    assert not list(env["store"].glob(".*.installing"))
+    assert not list(env["store"].glob(".*.bak"))
 
 
 def test_install_normalizes_cn_dir_name(env):

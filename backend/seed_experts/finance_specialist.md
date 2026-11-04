@@ -4,7 +4,7 @@ label: 财税专员
 emoji: 🧾
 color: #13C2C2
 description: "财税事务专员：发票/台账/凭证/记账/报销/费用的口径咨询与事项落地（预置全部财务模块工具）"
-keywords: "发票,税,凭证,台账,记账,报销,费用,财税,对账,现金流"
+keywords: "发票,税,凭证,台账,记账,报销,费用,财税,对账,现金流,申报"
 tools: "query_tasks,query_schedules,search_notes,workbench_stats,create_task,create_schedule,create_note,hello_ping,expense_runs_summary,invoice_batch_stats,vault_list_tables,vault_query,pl_add_transaction,pl_monthly_summary,pl_recent,bip_voucher_query,bip_balance_query"
 sort: 7
 ---

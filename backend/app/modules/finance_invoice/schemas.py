@@ -64,6 +64,17 @@ class InvoiceBatchDetail(InvoiceBatchOut):
 
     items: list[InvoiceItemOut] = []
     download_name: str = ""  # 整批 ZIP 建议文件名（「发票汇总2026年10月.zip」）
+    amount_warning_count: int = 0  # 金额为空/不可解析的明细数（统计按 0 计入，需人工核对）
+    amount_warnings: list[dict] = []
+
+
+class InvoiceBatchPage(BaseModel):
+    """批次分页响应（total 用于跨页浏览，旧实现只返回前 50 条且无总数）。"""
+
+    total: int
+    items: list[InvoiceBatchOut]
+    page: int
+    page_size: int
 
 
 class ExportResult(BaseModel):
@@ -74,6 +85,8 @@ class ExportResult(BaseModel):
     zip_size: int
     projects: int
     project_zips: dict[str, str] = {}  # 项目名 → 单项目 ZIP 文件名（拆分打包）
+    amount_warning_count: int = 0
+    warnings: list[str] = []
 
 
 class ProjectSummary(BaseModel):

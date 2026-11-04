@@ -52,7 +52,7 @@ def policy_status(policy_key: str, tax_year: str | int) -> dict:
             "message": f"政策 {policy_key!r} 未登记，请核实最新政策后使用",
             "policy_basis": "", "effective_date": "", "expires_date": None,
         }
-    year = str(tax_year or "")[:4]
+    year = str(tax_year if tax_year is not None else "").strip()
     if not (year.isdigit() and len(year) == 4):
         return {
             "policy_key": policy_key, "status": "not_started", "valid": False,

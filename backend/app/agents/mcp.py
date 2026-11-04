@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import subprocess
 import sys
@@ -32,6 +33,33 @@ PROTOCOL_VERSION = "2024-11-05"
 CALL_TIMEOUT = 30          # 单次工具调用超时（秒）
 START_TIMEOUT = 15         # 握手超时（秒）
 MAX_MESSAGE_BYTES = 4 * 1024 * 1024
+MAX_RAW_RESULT_CHARS = 60_000
+_INHERITED_ENV_NAMES = (
+    "SystemRoot", "SystemDrive", "WINDIR", "ComSpec", "OS",
+    "PATH", "PATHEXT", "TEMP", "TMP", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "NODE_PATH", "NVM_HOME", "NVM_SYMLINK", "PNPM_HOME", "COREPACK_HOME", "NPM_CONFIG_CACHE",
+    "PYTHONHOME", "PYTHONPATH", "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONUNBUFFERED",
+    "PYTHONDONTWRITEBYTECODE", "VIRTUAL_ENV", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+)
+
+
+def _child_env(explicit: dict) -> dict[str, str]:
+    env = {name: os.environ[name] for name in _INHERITED_ENV_NAMES if name in os.environ}
+    env.update({str(key): str(value) for key, value in explicit.items()})
+    return env
+
+
+def _bounded_raw(result: dict) -> dict:
+    text = json.dumps(result, ensure_ascii=False, default=str)
+    if len(text) <= MAX_RAW_RESULT_CHARS:
+        return result
+    return {
+        "truncated": True,
+        "message": "原始结果过大，已截断",
+        "preview": text[:MAX_RAW_RESULT_CHARS],
+    }
 
 
 class McpError(RuntimeError):
@@ -58,10 +86,7 @@ class McpStdioServer:
     def start(self) -> None:
         if self.proc and self.proc.poll() is None:
             return
-        import os
-
-        full_env = dict(os.environ)
-        full_env.update({k: str(v) for k, v in self.env.items()})
+        full_env = _child_env(self.env)
         try:
             self.proc = subprocess.Popen(
                 [self.command, *self.args],
@@ -201,7 +226,7 @@ class McpStdioServer:
         return {
             "text": "\n".join(texts)[:8000],
             "is_error": bool(result.get("isError")),
-            "raw": result,
+            "raw": _bounded_raw(result),
         }
 
 
@@ -349,11 +374,14 @@ def _make_executor(server_name: str, tool_name: str):
     async def _call(**kwargs: Any) -> dict:
         server = _servers.get(server_name)
         if server is None or not server.is_alive():
-            return {"ok": False, "error": f"MCP 服务器 {server_name} 未连接"}
+            return {"ok": False, "error": f"MCP 服务器 {server_name} 未连接或进程已退出，请在管理页点击「重连」后重试"}
         try:
             result = await asyncio.to_thread(server.call_tool, tool_name, kwargs)
         except Exception as exc:  # noqa: BLE001  工具失败转为可读错误，不崩 Agent
-            return {"ok": False, "error": str(exc)[:300]}
+            return {
+                "ok": False,
+                "error": f"MCP 调用失败：{str(exc)[:200]}；请在管理页点击「重连」后重试",
+            }
         if result.get("is_error"):
             return {"ok": False, "error": result.get("text", "")[:500]}
         return {"ok": True, "result": result.get("text", "")}

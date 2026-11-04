@@ -14,15 +14,14 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 from pathlib import Path
 
 from . import skill_store, workbuddy_sync
-from ..config import settings
+from ..config import DEFAULT_QWENPAW_SKILL_POOL, settings
 
 # ---------- 常量 ----------
 
-QWENPAW_SKILL_POOL_DEFAULT = "D:/AIApps/QwenPaw/data/skill_pool"
+QWENPAW_SKILL_POOL_DEFAULT = str(DEFAULT_QWENPAW_SKILL_POOL)
 _MARKET_MAX_FILE_BYTES = 4 * 1024 * 1024
 # 安装进技能池的目录名归一：小写字母/数字/连字符（与 skill_store 建包命名口径一致）
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -152,38 +151,11 @@ def install_from_market(name: str) -> dict:
     src = Path(target["source_dir"] or "")
     if not _is_valid_pack(src):
         raise ValueError(f"技能包源目录无效：{src}")
-    dest = skill_store._pack_dir(_norm_name(name))
-    existed = (dest / "SKILL.md").is_file()
-    # 原子替换：先拷到临时目录，成功后再切换；失败时旧包仍在（BUGfix AGT-03）。
-    # 旧实现先 rmtree 再 copytree，拷贝中途失败会直接丢掉用户已装的包。
-    tmp = dest.with_name(f".{dest.name}.installing")
-    backup = dest.with_name(f".{dest.name}.bak")
-    shutil.rmtree(tmp, ignore_errors=True)
-    shutil.copytree(src, tmp)
-    try:
-        shutil.rmtree(backup, ignore_errors=True)
-        if dest.exists():
-            dest.rename(backup)
-        tmp.rename(dest)
-        # 新包默认停用；停用标记写失败则回滚，绝不留下「默认启用」的半成品
-        if not existed:
-            try:
-                skill_store.set_enabled(dest.name, False)
-            except Exception:
-                shutil.rmtree(dest, ignore_errors=True)
-                if backup.exists():
-                    backup.rename(dest)
-                raise
-        shutil.rmtree(backup, ignore_errors=True)
-    except Exception:
-        if not dest.exists() and backup.exists():
-            backup.rename(dest)
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
-    # 归一目录名与 frontmatter name 不一致时，重写 SKILL.md 的 name 字段保持一致
-    _rewrite_frontmatter_name(dest, dest.name)
-    return {"name": dest.name, "installed": True, "updated": existed,
-            "enabled": False, "source": target["source"]}
+    normalized = _norm_name(name)
+    result = skill_store.install_pack(
+        src, normalized, prepare=lambda tmp: _rewrite_frontmatter_name(tmp, normalized)
+    )
+    return {"installed": True, "source": target["source"], **result}
 
 
 def _rewrite_frontmatter_name(pack_dir: Path, name: str) -> None:

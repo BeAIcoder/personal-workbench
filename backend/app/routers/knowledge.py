@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..agents import memory as memory_svc
 from ..agents import rag
 from ..database import get_db
+from ..utils import DbId
 
 router = APIRouter(prefix="/knowledge", tags=["知识库与记忆"])
 
@@ -78,7 +79,7 @@ def create_memory(payload: MemoryIn, db: Session = Depends(get_db)):
 
 
 @router.put("/memories/{memory_id}", summary="更新记忆（内容/标签/置顶/类型）")
-def update_memory(memory_id: int, payload: MemoryUpdateIn, db: Session = Depends(get_db)):
+def update_memory(memory_id: DbId, payload: MemoryUpdateIn, db: Session = Depends(get_db)):
     try:
         return memory_svc.update_memory(db, memory_id, payload.model_dump(exclude_unset=True))
     except LookupError as exc:
@@ -88,7 +89,7 @@ def update_memory(memory_id: int, payload: MemoryUpdateIn, db: Session = Depends
 
 
 @router.delete("/memories/{memory_id}", summary="删除记忆")
-def delete_memory(memory_id: int, db: Session = Depends(get_db)):
+def delete_memory(memory_id: DbId, db: Session = Depends(get_db)):
     try:
         memory_svc.delete_memory(db, memory_id)
     except LookupError as exc:

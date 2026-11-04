@@ -32,7 +32,8 @@ def test_wan_input_saved_as_yuan(client):
     """输入 100 万元 → 落库 1,000,000 元；小微 5% → 50,000 元。"""
     ent = _create_enterprise(client, "91110108UNIT0001")
     r = client.post(f"{P}/tax-returns/", json={
-        "enterprise_id": ent["id"], "tax_period": "2026", "report_type": "A类",
+        "enterprise_id": ent["id"], "tax_period": "2026", "quarter": "Q1",
+        "report_type": "A类",
         "total_revenue": 100, "total_costs": 0, "total_expenses": 0,
     })
     assert r.status_code in (200, 201), r.text
@@ -45,7 +46,8 @@ def test_small_micro_boundary_300_wan(client):
     """300 万含等号仍小微（5%）；300.01 万按 25%。"""
     ent = _create_enterprise(client, "91110108UNIT0002")
     at_limit = client.post(f"{P}/tax-returns/", json={
-        "enterprise_id": ent["id"], "tax_period": "2026", "report_type": "A类",
+        "enterprise_id": ent["id"], "tax_period": "2026", "quarter": "Q1",
+        "report_type": "A类",
         "total_revenue": 300, "total_costs": 0, "total_expenses": 0,
     })
     assert at_limit.status_code in (200, 201), at_limit.text
@@ -53,7 +55,8 @@ def test_small_micro_boundary_300_wan(client):
 
     ent2 = _create_enterprise(client, "91110108UNIT0003")
     over = client.post(f"{P}/tax-returns/", json={
-        "enterprise_id": ent2["id"], "tax_period": "2026", "report_type": "A类",
+        "enterprise_id": ent2["id"], "tax_period": "2026", "quarter": "Q1",
+        "report_type": "A类",
         "total_revenue": 300.01, "total_costs": 0, "total_expenses": 0,
     })
     assert over.status_code in (200, 201), over.text
@@ -61,18 +64,28 @@ def test_small_micro_boundary_300_wan(client):
 
 
 def test_a200000_export_uses_yuan():
-    """A200000「金额单位：元」：100 万元所得 → 利润总额 1,000,000、应补 50,000。"""
+    """A200000「金额单位：元」：真实利润表 100 万元 → 第 3 行 1,000,000、应补 50,000。
+
+    台账 L-051：旧断言把「应纳税所得额」当「利润总额」，反向锁定了错误值；
+    现改为锁定真实利润表口径与表内自洽。
+    """
     ent = Enterprise(
         id=1, name="单位契约测试企业", tax_number="X", industry_type="一般行业",
         total_assets=100.0, employee_count=50, is_restricted_industry=False,
     )
     ret = TaxReturn(
-        id=1, enterprise_id=1, year=2026, quarter=None, return_type="年度",
+        id=1, enterprise_id=1, year=2026, quarter=1, return_type="预缴",
         status="draft", taxable_income=1_000_000.0, tax_amount=50_000.0,
+        operating_revenue=1_200_000.0, operating_cost=200_000.0, total_profit=1_000_000.0,
+        tax_type="小型微利企业",
     )
     form = tr._build_a200000_form_data(ret, ent)
+    assert form.operating_revenue == pytest.approx(1_200_000.0)
+    assert form.operating_cost == pytest.approx(200_000.0)
     assert form.total_profit == pytest.approx(1_000_000.0)
     assert form.tax_to_pay_or_refund == pytest.approx(50_000.0)
+    assert form.tax_rate == pytest.approx(0.25)  # 第 9 行仍填法定税率
+    assert form.tax_reduction == pytest.approx(200_000.0)  # 第 11 行体现 20 点减免
 
 
 def test_calculate_accepts_year_alias_and_rejects_expired_policy(client):

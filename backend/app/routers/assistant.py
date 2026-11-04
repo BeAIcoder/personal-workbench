@@ -19,7 +19,7 @@ from ..agents.model_sync import ProviderSyncBusy
 from ..config import UPLOAD_DIR
 from ..database import SessionLocal
 from ..document_text import DOCUMENT_SUFFIXES, DocumentExtractionError, extract_document, extracted_text_path
-from ..models import AgentSpecModel
+from ..models import AgentSpecModel, AgentSpecTombstone
 from ..schemas import AgentSpecCreate, AgentSpecOut, AgentSpecUpdate
 from ..utils import DbId
 
@@ -49,9 +49,11 @@ _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{6,64}")
 
 
 def _check_session_id(session_id: str) -> None:
-    """session_id 字符集校验：不匹配返回 400（上传/导出/会话管理等同口径）。"""
+    """用户会话字符集与保留内部标识校验（上传/导出/会话管理同口径）。"""
     if not _SESSION_ID_RE.fullmatch(session_id):
         raise HTTPException(status_code=400, detail="非法的 session_id")
+    if session_id.startswith(("job-", "memory-extract")):
+        raise HTTPException(status_code=400, detail="非法的 session_id：内部会话标识不可用于用户会话")
 
 
 class AttachmentItem(BaseModel):
@@ -228,6 +230,8 @@ async def test_config(payload: TestRequest):
             result["image"] = image_result
             if target_model_id:
                 config_store.record_probe_verdict(target_model_id, "supports_vision", image_result.get("verdict", "unknown"))
+    if text_result.get("ok") and target_model_id and (payload.test_tools or payload.include_image):
+        orchestrator.invalidate()
     return result
 
 
@@ -628,6 +632,8 @@ def delete_agent(agent_id: int):
         if row is None:
             raise HTTPException(status_code=404, detail="专家不存在")
         name = row.name
+        if row.is_builtin and db.get(AgentSpecTombstone, name) is None:
+            db.add(AgentSpecTombstone(name=name))
         db.delete(row)
         db.commit()
     _invalidate_agents()
@@ -675,6 +681,7 @@ def reset_agents():
 
     restored = []
     with SessionLocal() as db:
+        db.query(AgentSpecTombstone).delete(synchronize_session=False)
         for spec in sorted(TEAM.values(), key=lambda s: s.sort):
             row = db.query(AgentSpecModel).filter(AgentSpecModel.name == spec.name).first()
             if row is None:
@@ -730,7 +737,10 @@ def rename_session(session_id: str, payload: SessionRequest):
 @router.delete("/sessions/{session_id}", summary="删除会话（含全部消息）")
 def delete_session(session_id: str):
     _check_session_id(session_id)
-    orchestrator.session_delete(session_id)
+    try:
+        orchestrator.session_delete(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -778,12 +788,13 @@ async def chat(payload: ChatRequest):
         orchestrator.assert_vision_supported(atts, payload.agent)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    # 同一会话串行：双击发送/双标签页时，第二个请求直接 409，避免两个协程
+    # 同时对同一 Agent 调 reply_stream（BUGfix AGT-02）。begin_session_run 的
+    # 检查与占入之间无 await，单事件循环内是原子的。
+    if not orchestrator.begin_session_run(payload.session_id):
+        raise HTTPException(status_code=409, detail="当前会话正在生成中，请稍后再试")
     try:
-        # 同一会话串行：双击发送/双标签页时，第二个请求直接 409，避免两个协程
-        # 同时对同一 Agent 调 reply_stream（BUGfix AGT-02）。
         lock = orchestrator.session_run_lock(payload.session_id)
-        if lock.locked():
-            raise HTTPException(status_code=409, detail="当前会话正在生成中，请稍后再试")
         async with lock:
             return await orchestrator.chat(
                 payload.session_id, payload.message, payload.agent, payload.mode or "standard", atts
@@ -797,6 +808,8 @@ async def chat(payload: ChatRequest):
         # 模型网络/鉴权等运行时错误：记录完整堆栈，对外不回传内部细节
         logger.exception("chat 接口执行失败：session_id=%s", payload.session_id)
         raise HTTPException(status_code=502, detail="助手服务暂时不可用，请稍后重试")
+    finally:
+        orchestrator.end_session_run(payload.session_id)
 
 
 @router.post("/chat/stream", summary="与 Agent 团队对话（SSE 流式）")
@@ -809,12 +822,12 @@ async def chat_stream(payload: ChatRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
     async def sse():
-        lock = orchestrator.session_run_lock(payload.session_id)
-        if lock.locked():
+        if not orchestrator.begin_session_run(payload.session_id):
             yield f"data: {json.dumps({'type': 'error', 'message': '当前会话正在生成中，请稍后再试'}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             return
         try:
+            lock = orchestrator.session_run_lock(payload.session_id)
             # 整个流式生成期间持锁；客户端断开/取消时 async with 退出自动释放
             async with lock:
                 async for event in orchestrator.chat_stream(
@@ -829,6 +842,8 @@ async def chat_stream(payload: ChatRequest):
             # 流式端点保持 SSE 协议：记录日志后在流内发 error 事件，不回传内部细节
             logger.exception("chat/stream 接口执行失败：session_id=%s", payload.session_id)
             yield f"data: {json.dumps({'type': 'error', 'message': '助手服务暂时不可用，请稍后重试'}, ensure_ascii=False)}\n\n"
+        finally:
+            orchestrator.end_session_run(payload.session_id)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

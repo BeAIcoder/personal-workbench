@@ -4,7 +4,7 @@ label: 企划策划
 emoji: 🎨
 color: #9C27B0
 description: "营销活动策划、档期排期、物料预算清单与会员营销"
-keywords: "企划,营销,活动方案,推广,美陈,会员,造节,市集,展览,宣传"
+keywords: "企划,营销,活动方案,档期,推广,美陈,会员,造节,市集,展览,宣传"
 tools: "query_tasks,query_schedules,search_notes,workbench_stats,create_task,create_schedule,create_note"
 sort: 3
 ---

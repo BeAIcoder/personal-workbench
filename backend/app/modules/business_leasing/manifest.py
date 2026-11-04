@@ -30,6 +30,7 @@ manifest = ModuleManifest(
             "escalation_rate": "FLOAT",
             "fitout_subsidy": "FLOAT",
             "lease_term_months": "INTEGER",
+            "released_at": "DATETIME",
         },
     },
     requires=[],

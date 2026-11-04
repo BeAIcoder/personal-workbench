@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import io
+import logging
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
 from ...utils_xlsx import safe_cell as _cell
 from .models import LeasingFollowup, LeasingLead, LeasingUnit
+
+logger = logging.getLogger(__name__)
 
 UNIT_STATUS_LABELS = {
     "vacant": "空置",
@@ -77,9 +81,11 @@ def _unit_name(unit: LeasingUnit | None) -> str:
 
 
 def _other_signed_lead(db: Session, unit_id: int, exclude_lead_id: int | None = None):
+    """同铺位的「仍在占用」签约线索（已释放的历史线索不算占用）。"""
     query = db.query(LeasingLead).filter(
         LeasingLead.unit_id == unit_id,
         LeasingLead.stage == "signed",
+        LeasingLead.released_at.is_(None),
     )
     if exclude_lead_id is not None:
         query = query.filter(LeasingLead.id != exclude_lead_id)
@@ -114,7 +120,11 @@ def unit_list(db: Session, building: str = "", status: str = "", keyword: str = 
     if status:
         q = q.filter(LeasingUnit.status == status)
     if keyword:
-        q = q.filter(LeasingUnit.unit_no.contains(keyword, autoescape=True))
+        q = q.filter(or_(
+            LeasingUnit.unit_no.contains(keyword, autoescape=True),
+            LeasingUnit.building.contains(keyword, autoescape=True),
+            LeasingUnit.floor.contains(keyword, autoescape=True),
+        ))
     total = q.count()
     rows = (q.order_by(LeasingUnit.building, LeasingUnit.floor, LeasingUnit.unit_no)
             .offset((page - 1) * page_size).limit(page_size).all())
@@ -148,6 +158,7 @@ def unit_save(db: Session, data: dict, unit_id: int | None = None) -> dict:
         signed_exists = db.query(LeasingLead).filter(
             LeasingLead.unit_id == unit.id,
             LeasingLead.stage == "signed",
+            LeasingLead.released_at.is_(None),
         ).exists()
         changed = db.query(LeasingUnit).filter(
             LeasingUnit.id == unit.id,
@@ -157,6 +168,13 @@ def unit_save(db: Session, data: dict, unit_id: int | None = None) -> dict:
         if changed != 1:
             db.rollback()
             raise ConflictError("铺位状态已变化或存在有效签约线索，请刷新后重试")
+    if (unit_id is not None and unit.status == "leased"
+            and previous_status != "leased" and _other_signed_lead(db, unit.id) is None):
+        # 审计：手工把铺位改成已租但与签约线索脱钩，会让出租率虚高（DQ「已租无签约」也会报）
+        logger.warning(
+            "铺位 %s 被手工标记为已租，但没有占用中的签约线索；出租率与出账口径可能不一致",
+            unit.unit_no or unit.id,
+        )
     if unit_id is None:
         db.add(unit)
     try:
@@ -172,6 +190,21 @@ def unit_delete(db: Session, unit_id: int) -> None:
     unit = db.get(LeasingUnit, unit_id)
     if unit is None:
         raise LookupError("铺位不存在")
+    # 跨模块守卫：被营运合同引用的铺位不能删，否则合同变成悬挂引用、
+    # 出账时租决参数静默丢失，最终按错误口径计租
+    try:
+        from ..business_operations.models import OpsContract
+    except ImportError:
+        OpsContract = None
+    if OpsContract is not None:
+        contract = (db.query(OpsContract)
+                    .filter(OpsContract.unit_id == unit_id)
+                    .order_by(OpsContract.id.desc()).first())
+        if contract is not None:
+            raise ConflictError(
+                f"铺位仍被营运合同引用（{contract.contract_no}），不能删除；"
+                "请先在合同台账解除铺位关联"
+            )
     if db.query(LeasingLead.id).filter(LeasingLead.unit_id == unit_id).first() is not None:
         raise ConflictError("铺位仍被招商线索引用，不能删除；请先删除线索或变更意向铺位")
     lead_exists = db.query(LeasingLead).filter(
@@ -243,6 +276,7 @@ def lead_to_dict(lead: LeasingLead) -> dict:
         "fitout_subsidy": money(lead.fitout_subsidy) if lead.fitout_subsidy is not None else None,
         "lease_term_months": lead.lease_term_months,
         "owner": lead.owner or "",
+        "released_at": str(lead.released_at) if lead.released_at else None,
         "next_action_at": lead.next_action_at.isoformat() if lead.next_action_at else None,
         "note": lead.note or "",
         "created_at": str(lead.created_at),
@@ -342,8 +376,11 @@ def lead_save(db: Session, data: dict, lead_id: int | None = None) -> dict:
         ):
             if old_unit is not None and _other_signed_lead(db, old_unit_id, lead.id) is None:
                 old_unit.status = "vacant"
-        if lead.stage == "signed":
+        if lead.stage == "signed" and changing_signed_unit:
+            # 只有本次「进入签约」或「换铺」才重新占用：纯编辑已释放线索不得复活铺位、
+            # 不得清 released_at（否则退租后的历史记录一改备注就又变成在租）
             new_unit.status = "leased"
+            lead.released_at = None
         if lead_id is None:
             db.add(lead)
         db.commit()

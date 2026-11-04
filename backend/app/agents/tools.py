@@ -102,7 +102,12 @@ def query_tasks(
     limit: int = 10,
 ) -> list[dict]:
     """查询工作台中的任务清单，可按状态、优先级、关键词、是否逾期过滤。"""
-    limit = max(1, min(int(limit), 50))
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        result = {"ok": False, "error": "参数 limit 必须是整数"}
+        _record("query_tasks", {"limit": limit}, result)
+        return result
     st = STATUS_EN.get(status.strip(), status.strip().lower())
     pr = PRIORITY_EN.get(priority.strip(), priority.strip().lower())
     with SessionLocal() as db:
@@ -157,8 +162,14 @@ def create_task(
 
 def complete_task(task_id: int) -> dict:
     """把指定任务标记为已完成。"""
+    try:
+        task_id = int(task_id)
+    except (TypeError, ValueError):
+        result = {"ok": False, "error": "参数 task_id 必须是整数"}
+        _record("complete_task", {"task_id": task_id}, result)
+        return result
     with SessionLocal() as db:
-        task = db.get(Task, int(task_id))
+        task = db.get(Task, task_id)
         if task is None:
             result = {"ok": False, "error": f"任务 {task_id} 不存在"}
         else:
@@ -174,9 +185,14 @@ def complete_task(task_id: int) -> dict:
 
 # ---------------- 日程 ----------------
 
-def query_schedules(start_date: str = "", end_date: str = "", keyword: str = "", limit: int = 10) -> list[dict]:
+def query_schedules(start_date: str = "", end_date: str = "", keyword: str = "", limit: int = 10) -> list[dict] | dict:
     """查询日程安排，可按日期范围（含边界）与关键词过滤。"""
-    limit = max(1, min(int(limit), 50))
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        result = {"ok": False, "error": "参数 limit 必须是整数"}
+        _record("query_schedules", {"limit": limit}, result)
+        return result
     with SessionLocal() as db:
         q = db.query(Schedule)
         try:
@@ -249,9 +265,14 @@ def create_schedule(
 
 # ---------------- 笔记 ----------------
 
-def search_notes(keyword: str = "", tag: str = "", limit: int = 5) -> list[dict]:
+def search_notes(keyword: str = "", tag: str = "", limit: int = 5) -> list[dict] | dict:
     """搜索工作台笔记，可按关键词（标题/内容）与标签过滤。"""
-    limit = max(1, min(int(limit), 20))
+    try:
+        limit = max(1, min(int(limit), 20))
+    except (TypeError, ValueError):
+        result = {"ok": False, "error": "参数 limit 必须是整数"}
+        _record("search_notes", {"limit": limit}, result)
+        return result
     with SessionLocal() as db:
         q = db.query(Note)
         if keyword.strip():
@@ -414,11 +435,39 @@ def register_module_tools(specs: dict) -> None:
         logger.info("模块工具已注册：%s", name)
 
 
+def _param_schema(pname: str, pval) -> dict:
+    """把单个参数定义归一为 JSON Schema 片段。
+
+    历史上出现过三种写法（内置工具为 3 元组；模块 manifest 曾误写 dict）：
+    3 元组 (type, desc, required) / 2 元组 (type, desc) / dict {type, description}。
+    这里统一兼容并在非标准写法时告警——单个工具的参数格式问题不应让整个专家
+    构建失败（曾导致 finance_specialist 全部请求 400「not enough values to unpack」）。
+    """
+    if isinstance(pval, dict):
+        if not {"type", "description"} <= set(pval):
+            logger.warning("工具参数 %s 结构不标准（dict 缺少 type/description），已按缺省值处理", pname)
+        else:
+            logger.warning("工具参数 %s 使用 dict 写法（建议改为 (type, description, required) 三元组）", pname)
+        return {
+            "type": str(pval.get("type") or "string"),
+            "description": str(pval.get("description") or ""),
+        }
+    if isinstance(pval, (tuple, list)):
+        if len(pval) != 3:
+            logger.warning("工具参数 %s 结构不标准（期望 3 元组，实得 %d），已按前两位处理", pname, len(pval))
+        ptype = pval[0] if len(pval) > 0 else "string"
+        desc = pval[1] if len(pval) > 1 else ""
+        return {"type": str(ptype or "string"), "description": str(desc or "")}
+    logger.warning("工具参数 %s 结构不可识别（%s），已按 string 处理", pname, type(pval).__name__)
+    return {"type": "string", "description": ""}
+
+
 def build_tools(names: list[str]) -> list:
     """按名称构造 FunctionTool 列表（显式 JSON Schema，含中文参数说明）。
 
     白名单引用了未注册的工具名（如所属模块已禁用）时跳过并记日志，
-    保证其余工具可用、Agent 构建不崩。
+    保证其余工具可用、Agent 构建不崩。参数定义结构异常同样只告警不中断
+    （见 _param_schema）。
     """
     from agentscope.tool import FunctionTool
 
@@ -429,13 +478,12 @@ def build_tools(names: list[str]) -> list:
             logger.warning("工具 %s 未注册（可能所属模块已禁用），已跳过", name)
             continue
         properties = {
-            pname: {"type": ptype, "description": desc}
-            for pname, (ptype, desc, _req) in spec["params"].items()
+            pname: _param_schema(pname, pval) for pname, pval in (spec.get("params") or {}).items()
         }
         schema = {
             "type": "object",
             "properties": properties,
-            "required": spec["required"],
+            "required": list(spec.get("required") or []),
         }
         tools.append(FunctionTool(spec["func"], name=name, description=spec["description"], input_schema=schema))
     return tools

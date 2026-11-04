@@ -64,6 +64,30 @@ def _mk_provider(client, name="测试供应商", protocol="openai", base_url="ht
     return body["provider"]["id"]
 
 
+def test_provider_protocol_url_and_key_validation(client):
+    created = client.post("/api/assistant/providers", json={
+        "name": "协议归一", "protocol": "Anthropic", "base_url": "https://api.example.com/anthropic",
+        "api_key": "sk-synthetic",
+    })
+    assert created.status_code == 200
+    assert created.json()["provider"]["protocol"] == "anthropic"
+
+    invalid_protocol = client.post("/api/assistant/providers", json={
+        "name": "非法协议", "protocol": "not-a-protocol", "base_url": "https://api.example.com/v1",
+    })
+    assert invalid_protocol.status_code == 400
+    invalid_url = client.post("/api/assistant/providers", json={
+        "name": "非法地址", "protocol": "openai", "base_url": "javascript://bad",
+    })
+    assert invalid_url.status_code == 400
+    long_key = client.post("/api/assistant/providers", json={
+        "name": "超长密钥", "protocol": "openai", "base_url": "https://api.example.com/v1",
+        "api_key": "k" * 301,
+    })
+    assert long_key.status_code == 400
+    assert "300" in long_key.json()["detail"]
+
+
 def test_provider_crud(client):
     pid = _mk_provider(client)
     provs = client.get("/api/assistant/providers").json()["providers"]

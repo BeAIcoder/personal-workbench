@@ -326,7 +326,7 @@ class SearchItem(BaseModel):
 
 class SearchResult(BaseModel):
     q: str
-    total: int
+    total: int = Field(description="全部命中数；tasks/schedules/notes 各最多返回 5 条")
     tasks: List[SearchItem]
     schedules: List[SearchItem]
     notes: List[SearchItem]
@@ -386,8 +386,20 @@ class ScheduledJobUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
-class ScheduledJobOut(ScheduledJobBase):
+class ScheduledJobOut(BaseModel):
+    """历史行读取模型：不继承创建入口的跨字段校验。"""
+
     id: int
+    name: str
+    prompt: str = ""
+    agent_name: Optional[str] = None
+    mode: str = "standard"
+    schedule_type: str = "interval"
+    interval_minutes: Optional[int] = None
+    daily_at: Optional[str] = None
+    cron_expr: str = ""
+    action: str = ""
+    enabled: bool = True
     last_run_at: Optional[datetime] = None
     last_status: str = ""
     last_error: str = ""

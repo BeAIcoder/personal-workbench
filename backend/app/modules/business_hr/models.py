@@ -25,7 +25,10 @@ class HrEmployee(Base):
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     phone: Mapped[str] = mapped_column(String(50), default="")
     base_salary: Mapped[float] = mapped_column(Float, default=0.0)
+    # 社保基数：0 是合法值（不缴社保），"留空按基本工资"无法用 NOT NULL 数字列表达，
+    # 因此用 social_base_set 区分「显式填写（含 0）」与「未填」；旧库该列为 NULL。
     social_base: Mapped[float] = mapped_column(Float, default=0.0)
+    social_base_set: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 个税专项附加扣除（元/月，员工申报口径，出薪时进入累计预扣）
     special_additional: Mapped[float] = mapped_column(Float, default=0.0)
     note: Mapped[str] = mapped_column(Text, default="")

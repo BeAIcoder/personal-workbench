@@ -127,7 +127,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { encodePackFilePath, encodePackName } from '../utils/skillPack'
@@ -234,6 +234,11 @@ function marketSearch() {
   clearTimeout(marketTimer)
   marketTimer = setTimeout(doMarketSearch, 250)
 }
+
+onBeforeUnmount(() => {
+  clearTimeout(marketTimer)
+  marketTimer = null
+})
 
 async function doMarketSearch() {
   marketDialog.loading = true

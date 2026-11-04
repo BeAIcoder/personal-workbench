@@ -15,6 +15,7 @@ from .schemas import (
     ExportResult,
     InvoiceBatchDetail,
     InvoiceBatchOut,
+    InvoiceBatchPage,
     InvoiceItemOut,
     InvoiceItemPatch,
     ProjectSummary,
@@ -96,9 +97,16 @@ async def create_batch(
     return service.batch_detail_dict(db, batch)
 
 
-@router.get("/batches", response_model=list[InvoiceBatchOut], summary="批次列表（按 id 倒序）")
-def list_batches(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
-    return [service.batch_to_dict(b) for b in service.list_batches(db, limit)]
+@router.get("/batches", response_model=InvoiceBatchPage, summary="批次列表（分页，按 id 倒序）")
+def list_batches(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
+                 db: Session = Depends(get_db)):
+    result = service.list_batches(db, page=page, page_size=page_size)
+    return {
+        "total": result["total"],
+        "items": [service.batch_to_dict(b) for b in result["items"]],
+        "page": result["page"],
+        "page_size": result["page_size"],
+    }
 
 
 @router.get("/batches/{batch_id}", response_model=InvoiceBatchDetail, summary="批次详情（含明细）")
@@ -135,6 +143,8 @@ def export_batch(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="批次不存在")
     try:
         return service.export_batch(db, batch)
+    except service.ExportBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

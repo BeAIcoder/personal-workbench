@@ -31,7 +31,10 @@ class EmployeeIn(BaseModel):
     status: EmployeeStatus = "active"
     phone: str = Field(default="", max_length=50)
     base_salary: float = Field(default=0, ge=0, le=100_000_000)
-    social_base: float = Field(default=0, ge=0, le=100_000_000)
+    social_base: float | None = Field(
+        default=None, ge=0, le=100_000_000,
+        description="社保基数；留空按基本工资，0 表示不缴社保",
+    )
     special_additional: float = Field(default=0, ge=0, le=100_000)
     note: str = Field(default="", max_length=2000)
 
@@ -112,7 +115,8 @@ def create_employee(payload: EmployeeIn, db: Session = Depends(get_db)):
 @router.put("/employees/{employee_id}", summary="更新员工")
 def update_employee(employee_id: int, payload: EmployeeUpdate, db: Session = Depends(get_db)):
     data = payload.model_dump(exclude_unset=True, exclude_none=True)
-    for field in ("probation_end", "contract_end"):
+    # 显式 null 是有效指令：结束日期清空、社保基数回到「按基本工资」
+    for field in ("probation_end", "contract_end", "social_base"):
         if field in payload.model_fields_set and getattr(payload, field) is None:
             data[field] = None
     try:
@@ -123,12 +127,14 @@ def update_employee(employee_id: int, payload: EmployeeUpdate, db: Session = Dep
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.delete("/employees/{employee_id}", summary="删除员工（连同考勤/薪资）")
+@router.delete("/employees/{employee_id}", summary="删除员工（有已确认薪资时拒绝；否则连同考勤/草稿薪资）")
 def delete_employee(employee_id: int, db: Session = Depends(get_db)):
     try:
         service.employee_delete(db, employee_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
 
 

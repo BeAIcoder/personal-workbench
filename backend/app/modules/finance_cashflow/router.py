@@ -36,7 +36,18 @@ async def create_run(
     db: Session = Depends(get_db),
 ):
     try:
-        uploads = [(f.filename or "file.xlsx", await _read_upload(f)) for f in files]
+        uploads: list[tuple[str, bytes]] = []
+        total = 0
+        if len(files) > service.MAX_FILES_PER_BATCH:
+            raise ValueError(f"单批次文件数超过 {service.MAX_FILES_PER_BATCH} 上限，请拆分后上传")
+        for f in files:
+            content = await _read_upload(f)
+            total += len(content)
+            if total > service.MAX_BATCH_BYTES:
+                raise ValueError(
+                    f"上传批次总大小超过 {service.MAX_BATCH_BYTES // 1024 // 1024}MB 上限，请拆分后上传"
+                )
+            uploads.append((f.filename or "file.xlsx", content))
         # 归集/落盘是同步重活：丢线程池执行，避免阻塞事件循环、拖垮并发请求
         return await run_in_threadpool(service.create_run, db, uploads, actual_month)
     except service.EngineUnavailableError as exc:
@@ -73,7 +84,7 @@ def execute_run(run_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/runs/{run_id}/artifacts/{name}", summary="下载单个产物")
+@router.get("/runs/{run_id}/artifacts/{name:path}", summary="下载单个产物（支持子目录相对名）")
 def download_artifact(run_id: int, name: str, db: Session = Depends(get_db)):
     run = service.get_run(db, run_id)
     try:

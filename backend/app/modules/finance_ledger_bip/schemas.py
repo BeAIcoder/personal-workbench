@@ -39,7 +39,13 @@ class ConfirmOut(BaseModel):
     skipped_vouchers: int
     inserted_entries: int
     inserted_balances: int
+    updated_balances: int = 0
+    unchanged_balances: int = 0
+    merged_vouchers: int = 0
+    merged_entries: int = 0
+    ambiguous_entries: int = 0
     skipped_rows: int
+    invalid_amount_rows: int = 0
     warnings: list[str]
     message: str
 
@@ -55,7 +61,13 @@ class BatchOut(BaseModel):
     skipped_vouchers: int
     inserted_entries: int
     inserted_balances: int
+    updated_balances: int = 0
+    unchanged_balances: int = 0
+    merged_vouchers: int = 0
+    merged_entries: int = 0
+    ambiguous_entries: int = 0
     skipped_rows: int
+    invalid_amount_rows: int = 0
     warnings: list[str]
     stored_path: str
     created_at: datetime
@@ -113,6 +125,7 @@ class VoucherDetailOut(BaseModel):
     voucher_no: str
     voucher_full_no: str
     summary: str
+    sources: str = ""  # 已合并来源（voucher/aux，逗号分隔）
     debit_total: float
     credit_total: float
     balanced: bool
@@ -157,6 +170,8 @@ class BalanceSummaryOut(BaseModel):
     subject_count: int
     debit_total: float
     credit_total: float
+    entries_without_subject: int = 0
+    note: str = ""
 
 
 class ExportIn(BaseModel):

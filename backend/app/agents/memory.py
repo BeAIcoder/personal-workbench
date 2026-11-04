@@ -53,16 +53,63 @@ def _norm_type(t: str | None) -> str:
     return t if t in MEMORY_TYPES else ""
 
 
+def _content_samples(db: Session) -> list[str]:
+    """一次取回全部既有记忆内容，供批量导入复用（避免每条全表扫）。"""
+    return [row[0] for row in db.query(Memory.content).all() if row[0]]
+
+
+def _duplicate_against(content: str, samples: list[str]) -> bool:
+    sample = content[:80]
+    return any(sample in existing[:80] or existing[:80] in sample for existing in samples)
+
+
 def _is_duplicate(db: Session, content: str) -> bool:
     """近重复检查：与既有记忆互相高覆盖率包含即视为重复。"""
-    sample = content[:80]
-    for (existing,) in db.query(Memory.content).all():
-        if not existing:
-            continue
-        a, b = sample, existing[:80]
-        if a in b or b in a:
-            return True
-    return False
+    return _duplicate_against(content, _content_samples(db))
+
+
+def add_memories(db: Session, entries: list, source: str = "import",
+                 default_type: str = "", session_id: str = "") -> dict:
+    """批量保存：一次性预取既有内容做近重复判断，避免逐条全表扫描。
+
+    entries 支持字符串或 {content, type, tags, pinned, session_id} 字典。
+    返回 {added, skipped, skipped_empty, items}；批内重复同样跳过。
+    """
+    samples = _content_samples(db)
+    rows: list[Memory] = []
+    skipped = skipped_empty = 0
+    try:
+        for entry in entries:
+            if isinstance(entry, str):
+                content, type_, tags, pinned, sid = entry, default_type, None, False, session_id
+            else:
+                content = entry.get("content", "")
+                type_ = entry.get("type", default_type)
+                tags = entry.get("tags")
+                pinned = bool(entry.get("pinned", False))
+                sid = entry.get("session_id", session_id)
+            content = (content or "").strip()
+            if not content:
+                skipped_empty += 1
+                continue
+            if len(content) > MAX_CONTENT:
+                content = content[:MAX_CONTENT]
+            if _duplicate_against(content, samples):
+                skipped += 1
+                continue
+            row = Memory(content=content, source=source, session_id=sid or "",
+                         tags=tags or [], pinned=pinned, type=_norm_type(type_))
+            db.add(row)
+            db.flush()
+            samples.append(content)
+            rows.append(row)
+        db.commit()
+    except Exception:
+        # 整批一个事务：任一行失败（含 flush/commit）全部回滚，不留下半批记忆。
+        db.rollback()
+        raise
+    return {"added": len(rows), "skipped": skipped, "skipped_empty": skipped_empty,
+            "items": [_out(row) for row in rows]}
 
 
 def update_memory(db: Session, memory_id: int, data: dict) -> dict:
@@ -233,8 +280,8 @@ def export_markdown() -> str:
 
 def import_markdown(db: Session, text: str) -> dict:
     """导入 MEMORY.md 风格 Markdown：## 节=类型，- 列表行=记忆条目（近重复跳过）。"""
-    added, skipped = 0, 0
     current_type = ""
+    entries: list[dict] = []
     for raw in (text or "").splitlines():
         line = raw.rstrip()
         if line.startswith("## "):
@@ -245,12 +292,9 @@ def import_markdown(db: Session, text: str) -> dict:
             content = content.replace(" [置顶]", "")
             if not content:
                 continue
-            try:
-                add_memory(db, content, source="import", type=current_type)
-                added += 1
-            except ValueError:
-                skipped += 1
-    return {"added": added, "skipped": skipped}
+            entries.append({"content": content, "type": current_type})
+    result = add_memories(db, entries, source="import")
+    return {"added": result["added"], "skipped": result["skipped"]}
 
 
 # ---------- LLM 抽取（一次性动作） ----------
@@ -289,10 +333,6 @@ async def extract_from_conversation(conversation: str) -> dict:
     entries = [ln for ln in lines if 8 <= len(ln) <= 200][:10]
     saved = 0
     with SessionLocal() as db:
-        for entry in entries:
-            try:
-                add_memory(db, entry, source="auto", session_id="memory-extract")
-                saved += 1
-            except ValueError:
-                continue
+        result = add_memories(db, entries, source="auto", session_id="memory-extract")
+        saved = result["added"]
     return {"extracted": len(entries), "saved": saved}

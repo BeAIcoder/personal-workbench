@@ -70,4 +70,16 @@ class ModuleManifest:
             errors.append("requires 必须是 list")
         if not isinstance(self.preset_experts, list):
             errors.append("preset_experts 必须是 list")
+        else:
+            # 可解析契约：专家名必须是非空字符串且不重复，否则预置会被静默丢弃
+            seen: set[str] = set()
+            for expert in self.preset_experts:
+                if not isinstance(expert, str) or not expert.strip():
+                    errors.append(f"preset_experts 元素必须是非空字符串，当前 {expert!r}")
+                    continue
+                if expert != expert.strip():
+                    errors.append(f"preset_experts 元素不能含首尾空白：{expert!r}")
+                if expert in seen:
+                    errors.append(f"preset_experts 存在重复专家：{expert!r}")
+                seen.add(expert)
         return errors

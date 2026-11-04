@@ -371,6 +371,7 @@ def route_scores(question: str, team: dict[str, AgentSpec] | None = None) -> lis
     for spec in _ordered_specs(team):
         hits = []
         matched_terms = []
+        matched_pairs = []
         score = 0
         has_specific = False
         for keyword in spec.keywords:
@@ -381,15 +382,18 @@ def route_scores(question: str, team: dict[str, AgentSpec] | None = None) -> lis
             weight = _route_term_weight(normalized_keyword)
             hits.append(keyword)
             matched_terms.append(matched)
+            matched_pairs.append((matched, keyword))
             score += weight
             has_specific = has_specific or weight > 1
         matched_label = _match_route_term(q, spec.label)
         if matched_label is not None:
             label_weight = _route_term_weight(normalize_route_text(spec.label), is_label=True)
-            if matched_label in matched_terms:
-                matched_keyword = hits[matched_terms.index(matched_label)]
-                keyword_weight = _route_term_weight(normalize_route_text(matched_keyword))
-                score += max(0, label_weight - keyword_weight)
+            keyword_weights = [
+                _route_term_weight(normalize_route_text(keyword))
+                for matched, keyword in matched_pairs if matched == matched_label
+            ]
+            if keyword_weights:
+                score += max(0, label_weight - max(keyword_weights))
             else:
                 matched_terms.append(matched_label)
                 score += label_weight

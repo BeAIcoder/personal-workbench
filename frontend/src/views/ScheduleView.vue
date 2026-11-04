@@ -46,20 +46,20 @@
 
       <el-empty v-if="!dayEvents.length" :description="emptyDayText" :image-size="80" />
       <div v-else class="event-list">
-        <div v-for="ev in dayEvents" :key="ev.id" class="event-item" @click="openEdit(ev)">
+        <div v-for="ev in dayEvents" :key="ev.id" class="event-item" role="listitem">
           <span class="event-bar" :style="{ background: ev.color }"></span>
-          <div class="event-main">
-            <div class="event-title">
+          <button type="button" class="event-main" :aria-label="`编辑日程 ${ev.title}`" @click="openEdit(ev)">
+            <span class="event-title">
               {{ ev.title }}
               <el-tag v-if="ev.all_day" size="small" type="info">全天</el-tag>
-            </div>
-            <div class="event-meta">
+            </span>
+            <span class="event-meta">
               {{ ev.all_day ? '全天' : formatEventTimeRange(ev.start_time, ev.end_time) }}
               <span v-if="ev.location"> · 📍{{ ev.location }}</span>
-            </div>
-          </div>
-          <el-button size="small" link type="primary" title="AI 备会" @click.stop="aiPrepare(ev)"><el-icon><MagicStick /></el-icon></el-button>
-          <el-button size="small" type="danger" plain @click.stop="remove(ev)">删除</el-button>
+            </span>
+          </button>
+          <el-button size="small" link type="primary" title="AI 备会" @click.stop="aiPrepare(ev)" @keydown.enter.stop @keydown.space.stop><el-icon><MagicStick /></el-icon></el-button>
+          <el-button size="small" type="danger" plain @click.stop="remove(ev)" @keydown.enter.stop @keydown.space.stop>删除</el-button>
         </div>
       </div>
     </el-card>
@@ -437,7 +437,6 @@ watch(currentDate, (nv, ov) => {
   gap: 10px;
   padding: 10px 6px;
   border-bottom: 1px dashed var(--el-border-color-lighter);
-  cursor: pointer;
   border-radius: 6px;
 }
 
@@ -459,13 +458,29 @@ watch(currentDate, (nv, ov) => {
 .event-main {
   flex: 1;
   min-width: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.event-main:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .event-title {
+  display: block;
   font-weight: 500;
 }
 
 .event-meta {
+  display: block;
   color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 2px;

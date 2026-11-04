@@ -17,6 +17,15 @@ _TOL = 0.005
 _LEVEL_DEDUCT = {"error": 10, "warning": 3, "info": 1}
 _DOMAIN_LABELS = {"leasing": "招商", "operations": "营运", "hr": "人事", "legal": "法务", "planning": "企划", "facility": "工程", "finance": "财务"}
 
+# 巡检里硬编码的枚举须与模块服务层同源（契约测试锁定，防止模块加状态而巡检静默漏检）
+LEAD_STAGE_VALUES = ("lead", "contact", "offer", "intent", "signed", "lost")
+UNIT_STATUS_VALUES = ("vacant", "negotiating", "reserved", "leased")
+
+
+def _sql_values(values) -> str:
+    """把受控常量元组拼成 SQL IN 列表（仅用于本模块常量，不接受外部输入）。"""
+    return ", ".join(f"'{value}'" for value in values)
+
 __all__ = ["build_profile", "dq_summary"]
 
 
@@ -29,6 +38,17 @@ def _exists(db, name):
         text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:t"), {"t": name},
     ).first()
     return row is not None
+
+
+def _columns(db, name) -> set[str]:
+    """表的实际列名（列补丁尚未执行时 DQ 也不能整域失败）。"""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name or "")):
+        return set()
+    try:
+        rows = db.execute(text(f"PRAGMA table_info({name})")).fetchall()
+    except Exception:
+        return set()
+    return {str(row[1]) for row in rows}
 
 
 def _dom_leasing(db, as_of):
@@ -49,6 +69,48 @@ def _dom_leasing(db, as_of):
             "(SELECT 1 FROM mod_leasing_unit u WHERE u.id = l.unit_id) LIMIT 5"
         )).fetchall()
         issues_out.append(_issue("warning", "孤儿引用", n, [r[0] for r in samp], "线索关联的铺位已不存在；建议清理该线索的铺位关联或恢复铺位数据"))
+    # 内部不变量（2026-11-04）：同铺位多份占用中的签约 / 已租但无签约 / 非法枚举
+    released_filter = (
+        " AND released_at IS NULL" if "released_at" in _columns(db, "mod_leasing_lead") else ""
+    )
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM (SELECT unit_id FROM mod_leasing_lead "
+        "WHERE stage = 'signed' AND unit_id IS NOT NULL" + released_filter +
+        " GROUP BY unit_id HAVING COUNT(*) > 1)"
+    )).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT unit_id FROM mod_leasing_lead WHERE stage = 'signed' AND unit_id IS NOT NULL"
+            + released_filter + " GROUP BY unit_id HAVING COUNT(*) > 1 LIMIT 5"
+        )).fetchall()
+        issues_out.append(_issue("error", "重复签约", n, [r[0] for r in samp], "同一铺位存在多份占用中的签约线索；只会有一份合同生效，建议释放其余线索"))
+    n = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_leasing_unit u WHERE u.status = 'leased' AND NOT EXISTS "
+        "(SELECT 1 FROM mod_leasing_lead l WHERE l.unit_id = u.id AND l.stage = 'signed'"
+        + released_filter + ")"
+    )).scalar() or 0)
+    if n:
+        samp = db.execute(text(
+            "SELECT unit_no FROM mod_leasing_unit u WHERE u.status = 'leased' AND NOT EXISTS "
+            "(SELECT 1 FROM mod_leasing_lead l WHERE l.unit_id = u.id AND l.stage = 'signed'"
+            + released_filter + ") LIMIT 5"
+        )).fetchall()
+        issues_out.append(_issue("warning", "已租无签约", n, [r[0] for r in samp], "铺位标记为已租但无占用中的签约线索；出租率可能虚高，建议补录签约或改回空置"))
+    bad_lead = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_leasing_lead WHERE stage NOT IN (" + _sql_values(LEAD_STAGE_VALUES) + ")"
+    )).scalar() or 0)
+    bad_unit = int(db.execute(text(
+        "SELECT COUNT(*) FROM mod_leasing_unit WHERE status NOT IN (" + _sql_values(UNIT_STATUS_VALUES) + ")"
+    )).scalar() or 0)
+    n = bad_lead + bad_unit
+    if n:
+        samp = [r[0] for r in db.execute(text(
+            "SELECT company FROM mod_leasing_lead WHERE stage NOT IN (" + _sql_values(LEAD_STAGE_VALUES) + ") LIMIT 3"
+        )).fetchall()]
+        samp += [r[0] for r in db.execute(text(
+            "SELECT unit_no FROM mod_leasing_unit WHERE status NOT IN (" + _sql_values(UNIT_STATUS_VALUES) + ") LIMIT 2"
+        )).fetchall()]
+        issues_out.append(_issue("error", "非法枚举", n, samp, "线索阶段或铺位状态不在允许取值内；筛选与统计会失真，建议修正为合法枚举"))
     return {"available": True, "gap_reasons": [], "context": context, "issues": issues_out}
 
 
@@ -135,6 +197,28 @@ def _dom_operations(db, as_of):
             "SELECT contract_no FROM mod_ops_contract WHERE status = 'active' AND end_date IS NOT NULL AND date(end_date) < date(:as_of) LIMIT 5"
         ), {"as_of": as_of}).fetchall()
         issues.append(_issue("warning", "状态一致性", n, [r[0] for r in samp], "履约中合同已过租期；建议办理续签或终止"))
+    # 租决未匹配（Fix round 1）：关联铺位但同租户没有占用中の签约线索 → 出账只能按固定租金，
+    # 免租期/递增率/抽成形式静默失效；提示核对租户名称或补录签约
+    if _exists(db, "mod_leasing_lead"):
+        released = (
+            " AND l.released_at IS NULL"
+            if "released_at" in _columns(db, "mod_leasing_lead") else ""
+        )
+        n = int(db.execute(text(
+            "SELECT COUNT(*) FROM mod_ops_contract c WHERE c.status = 'active' "
+            "AND c.unit_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_leasing_lead l "
+            "WHERE l.unit_id = c.unit_id AND l.stage = 'signed'" + released +
+            " AND TRIM(l.company) = TRIM(c.tenant))"
+        )).scalar() or 0)
+        if n:
+            samp = db.execute(text(
+                "SELECT c.contract_no FROM mod_ops_contract c WHERE c.status = 'active' "
+                "AND c.unit_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mod_leasing_lead l "
+                "WHERE l.unit_id = c.unit_id AND l.stage = 'signed'" + released +
+                " AND TRIM(l.company) = TRIM(c.tenant)) LIMIT 5"
+            )).fetchall()
+            issues.append(_issue("info", "租决未匹配", n, [r[0] for r in samp],
+                                 "合同已关联铺位但没有同租户的生效签约线索，出账将按固定租金（租决参数不生效）；建议核对租户名称或补录签约"))
     return {"available": True, "gap_reasons": [], "context": context, "issues": issues}
 
 
@@ -364,7 +448,7 @@ def _dom_finance(db, as_of):
             if s["empty_tables"]:
                 issues.append(_issue("info", "覆盖", s["empty_tables"], [], "数据仓存在 0 行数据集；建议重新上传或清理登记"))
             if s["dup_tables"]:
-                samples = [t["table"] for t in vq["tables"] if t["dup_rows"] > 0][:5]
+                samples = [t["table"] for t in vq["tables"] if (t.get("dup_rows") or 0) > 0][:5]
                 issues.append(_issue("warning", "重复", s["dup_tables"], samples, "数据仓存在整行重复的数据集；建议按 replace 重新入仓或在源头去重"))
             if s["null_heavy_tables"]:
                 samples = [f'{t["table"]}.{t["null_heavy"][0]["column"]}' for t in vq["tables"] if t["null_heavy"]][:5]
@@ -449,8 +533,15 @@ def _score_of(issues):
 
 
 def build_profile(db, as_of=""):
-    if as_of and not AS_OF_RE.match(as_of):
-        raise ValueError("as_of 需为 YYYY-MM-DD 格式")
+    if as_of:
+        if not AS_OF_RE.match(str(as_of)):
+            raise ValueError("as_of 需为 YYYY-MM-DD 格式")
+        try:
+            date.fromisoformat(str(as_of))
+        except ValueError as exc:
+            # 正则只挡形状，2026-02-30 这类日历上不存在的日期会让 SQLite date() 返回 NULL，
+            # 未来/过期类检查全部静默通过 → 输出 100 分假健康
+            raise ValueError("as_of 不是有效日期（如 2026-02-30），请填 YYYY-MM-DD 的真实日期") from exc
     day = as_of or str(date.today())
     results = {}
     for fn in (_dom_leasing, _dom_operations, _dom_hr, _dom_legal, _dom_planning, _dom_facility, _dom_finance):
@@ -465,15 +556,29 @@ def build_profile(db, as_of=""):
         r = results[key]
         issues = r.get("issues", [])
         r["score"] = _score_of(issues) if r.get("available") else None
+        # L-176：前端域标签按 error/warning/info 显示，必须与 issues 同源；此前只返回
+        # score/issues，UI 的 `?? 0` 导致每域恒显示 E0/W0/I0。
+        r["error"] = sum(1 for it in issues if it.get("level") == "error")
+        r["warning"] = sum(1 for it in issues if it.get("level") == "warning")
+        r["info"] = sum(1 for it in issues if it.get("level") == "info")
         if r.get("available"):
             scores.append(r["score"])
     overall = round(sum(scores) / len(scores)) if scores else None
     top = []
+    issue_count = 0
     for key in _DOMAIN_LABELS:
         for it in results[key].get("issues", []):
+            issue_count += int(it.get("count") or 0)
             top.append({"domain": key, **it})
     top.sort(key=lambda x: {"error": 0, "warning": 1, "info": 2}.get(x["level"], 3))
-    return {"as_of": day, "overall_score": overall, "domains": results, "top_issues": top[:20]}
+    return {
+        "as_of": day,
+        "overall_score": overall,
+        # 真实问题总数（Σ 各检查命中行数），与 top_issues 的 20 条截断无关
+        "issue_count": issue_count,
+        "domains": results,
+        "top_issues": top[:20],
+    }
 
 
 def dq_summary(as_of: str = ""):
@@ -497,6 +602,7 @@ def dq_summary(as_of: str = ""):
             "error": cnt["error"], "warning": cnt["warning"], "info": cnt["info"],
             "top_issues": r.get("issues", [])[:3],
         }
-    return {"as_of": profile["as_of"], "overall_score": profile["overall_score"], "domains": domains}
+    return {"as_of": profile["as_of"], "overall_score": profile["overall_score"],
+            "issue_count": profile["issue_count"], "domains": domains}
 
 

@@ -24,6 +24,6 @@ manifest = ModuleManifest(
     ],
     column_patches={},
     requires=[],
-    preset_experts=["realestate", "cre_gm"],
+    preset_experts=["realestate"],
     enabled=True,
 )

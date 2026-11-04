@@ -12,6 +12,7 @@ Agent 实例按 (会话, 专家, 模式) 缓存在进程内；会话消息持久
 """
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -155,23 +156,49 @@ def invalidate() -> None:
     _agents.clear()
     _agent_locks.clear()
     _route_cache.clear()
+    _summary_retry_until.clear()
     # 只清「未持有」的运行锁：正在生成中的会话应立即完成本轮，不能因配置保存
     # 而在下一轮出现同一 session 两把锁（BUGfix AGT-02）。
     for sid in [s for s, lock in _session_run_locks.items() if not lock.locked()]:
         _session_run_locks.pop(sid, None)
+        _session_run_lock_last_used.pop(sid, None)
 
 
 # 同一会话的运行锁：同一 session 的 chat / chat_stream 必须串行，
 # 否则两个协程同时对同一 Agent 调 reply_stream，内部状态与历史会交错。
 _session_run_locks: dict[str, asyncio.Lock] = {}
+_session_run_lock_last_used: dict[str, float] = {}
+_SESSION_RUN_LOCK_IDLE_SECONDS = 300.0
+# 单事件循环内的原子占用集合：检查与占入之间没有 await，同一个 session 的第二个
+# 请求立即 409，而不是在 async with lock 上排队。仅覆盖当前部署的单 worker 模型。
+_active_sessions: set[str] = set()
+
+
+def begin_session_run(session_id: str) -> bool:
+    """原子占入会话；返回 False 表示同一会话已有请求在生成。"""
+    if session_id in _active_sessions:
+        return False
+    _active_sessions.add(session_id)
+    return True
+
+
+def end_session_run(session_id: str) -> None:
+    _active_sessions.discard(session_id)
 
 
 def session_run_lock(session_id: str) -> asyncio.Lock:
-    """返回该会话唯一的运行锁（调用方负责 acquire；锁被占用时应直接提示忙）。"""
+    """返回会话唯一运行锁；未持有且空闲超过 5 分钟的旧锁可回收。"""
+    now = time.monotonic()
+    for sid, existing in list(_session_run_locks.items()):
+        idle_since = _session_run_lock_last_used.get(sid, now)
+        if not existing.locked() and now - idle_since >= _SESSION_RUN_LOCK_IDLE_SECONDS:
+            _session_run_locks.pop(sid, None)
+            _session_run_lock_last_used.pop(sid, None)
     lock = _session_run_locks.get(session_id)
     if lock is None:
         lock = asyncio.Lock()
         _session_run_locks[session_id] = lock
+    _session_run_lock_last_used[session_id] = now
     return lock
 
 
@@ -229,16 +256,15 @@ def _get_spec_model(spec: AgentSpec, session_id: str | None = None):
     return _get_model(session_id)
 
 
-def _get_routing_model():
-    """路由仲裁模型（演进第二批）：agent_settings.routing_model_id 指定的轻量模型。
-
-    None / 不可用回退全局激活模型；指定模型走共享缓存（model_id 维度，invalidate 清空），
-    不占用专家绑定模型的会话缓存维度。
-    """
+def _get_routing_model(session_id: str | None = None):
+    """路由仲裁模型；job 使用交互套餐时返回 None，由调用方回退离线路由。"""
     rm_id = config_store.load().get("routing_model_id")
     if rm_id:
+        cfg = config_store.model_cfg_by_id(int(rm_id))
+        if _is_job_session(session_id) and cfg and cfg.get("usage_scope") == "plan_interactive_only":
+            logger.warning("定时任务不使用仅限交互式套餐的路由模型（model_id=%s），回退关键词", rm_id)
+            return None
         if rm_id not in _models:
-            cfg = config_store.model_cfg_by_id(int(rm_id))
             _models[rm_id] = build_model(cfg) if cfg else None
             if _models[rm_id] is None:
                 logger.warning("路由模型不可用（model_id=%s），回退全局激活模型", rm_id)
@@ -396,6 +422,8 @@ def _get_agent(session_id: str, spec: AgentSpec, mode: str):
 
 
 async def _ensure_agent(session_id: str, spec: AgentSpec, mode: str):
+    if _is_job_session(session_id):
+        return await _build_agent(spec, mode, session_id=session_id)
     try:
         return _get_agent(session_id, spec, mode)
     except KeyError:
@@ -413,14 +441,22 @@ async def _ensure_agent(session_id: str, spec: AgentSpec, mode: str):
             if summary:
                 history = [_summary_message(summary)] + history
             if history:
-                agent.observe(history)
+                # observe 是 async：不 await 协程永不执行，历史注入（含滚动摘要）等于失效
+                try:
+                    await agent.observe(history)
+                except Exception:
+                    logger.warning("历史注入失败（已忽略，不影响本轮对话）", exc_info=True)
             _agent_cache_put(key, agent)
             return agent
 
 
+def _is_job_session(session_id: str | None) -> bool:
+    return any(str(session_id or "").startswith(prefix) for prefix in _INTERNAL_SESSION_PREFIXES)
+
+
 def _load_history_msgs(session_id: str, limit: int | None = None) -> list:
-    if session_id in _INTERNAL_SESSION_IDS:
-        return []  # 记忆抽取等固定 id 内部会话：不注入历史，避免上下文反复膨胀
+    if session_id in _INTERNAL_SESSION_IDS or _is_job_session(session_id):
+        return []  # 内部会话不注入历史；定时任务每次独立执行
     cfg = config_store.load()
     if not cfg.get("enable_memory", True):
         return []
@@ -434,9 +470,12 @@ def _load_history_msgs(session_id: str, limit: int | None = None) -> list:
             db.query(ChatMessage)
             .filter(ChatMessage.session_id == session_id)
             .order_by(ChatMessage.id.desc())
-            .limit(n)
+            .limit(n + 1)
             .all()
         )
+    if rows and rows[0].role == "user":
+        rows = rows[1:]
+    rows = rows[:n]
     msgs = []
     for row in reversed(rows):
         role = "user" if row.role == "user" else "assistant"
@@ -455,6 +494,10 @@ _SUMMARY_WINDOW_FACTOR = 2
 _SUMMARY_MSG_MAX = 400
 _SUMMARY_PROMPT_MAX = 6000
 _SUMMARY_MAX_CHARS = 2000
+# 摘要模型失败后的进程内退避：避免每次 Agent 重建都重试失败调用。
+# 续聊/历史仍走旧摘要，游标不推进；重启后允许立即重试一次。
+_SUMMARY_RETRY_SECONDS = 600.0
+_summary_retry_until: dict[str, float] = {}
 
 
 def _load_summary_text(session_id: str) -> str:
@@ -495,17 +538,19 @@ def _summary_state(session_id: str) -> tuple[int, int | None]:
 
 
 async def _refresh_session_summary(session_id: str) -> str:
-    """超阈值时把窗口外更早消息压缩进会话摘要；返回注入用摘要文本（可为空串）。"""
-    if session_id in _INTERNAL_SESSION_IDS:
-        return _load_summary_text(session_id)
+    """超阈值时压缩普通会话；关闭记忆或内部执行会话不读取、不生成摘要。"""
+    if session_id in _INTERNAL_SESSION_IDS or _is_job_session(session_id):
+        return ""
     cfg = config_store.load()
     if not cfg.get("enable_memory", True):
-        return _load_summary_text(session_id)
+        return ""
     existing = _load_summary_text(session_id)
     window = max(int(cfg.get("history_inject", 12)), 1)
     latest, cursor = _summary_state(session_id)
     pending = latest - max(cursor or 0, 0) - window
     if pending < window * _SUMMARY_WINDOW_FACTOR:
+        return existing
+    if _summary_retry_until.get(session_id, 0.0) > time.monotonic():
         return existing
     with SessionLocal() as db:
         older = (
@@ -557,29 +602,35 @@ async def _refresh_session_summary(session_id: str) -> str:
                 if agg_row is not None:
                     agg_row.summary_until = max((older[-1].id if older else 0), cursor or 0)
                     db.commit()
+        if text:
+            _summary_retry_until.pop(session_id, None)
         return text if text else existing
     except Exception as exc:
-        logger.warning("会话摘要压缩失败（%s），沿用既有摘要", type(exc).__name__)
+        _summary_retry_until[session_id] = time.monotonic() + _SUMMARY_RETRY_SECONDS
+        logger.warning("会话摘要压缩失败（%s），沿用既有摘要并退避 %.0fs", type(exc).__name__, _SUMMARY_RETRY_SECONDS)
     return existing
 
 
-# LLM 仲裁结果短窗缓存（演进第二批）：键=(名册文本, 问题前 200 字)，TTL 10 分钟，上限 128 条。
+# LLM 仲裁结果短窗缓存：键=(名册文本, 完整问题 SHA-256)，TTL 10 分钟，上限 128 条。
 # 只缓存「成功解析出唯一专家」的仲裁；失败/None 不缓存（模型恢复后立即可用）。
 _ROUTE_CACHE_TTL = 600.0
 _ROUTE_CACHE_MAX = 128
 _route_cache: dict[tuple[str, str], tuple[float, str]] = {}
 
 
-async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None:
+async def _route_by_llm(question: str, team: dict[str, AgentSpec], session_id: str | None = None) -> str | None:
     """LLM 纯文本仲裁；任何失败都返回 None（回退关键词/默认）。"""
     from agentscope.agent import Agent
     from agentscope.message import Msg, TextBlock
 
-    cache_key = (roster_text(team), (question or "").strip()[:200])
+    normalized_question = (question or "").strip()
+    question_hash = hashlib.sha256(normalized_question.encode("utf-8")).hexdigest()
+    cache_key = (roster_text(team), question_hash)
     hit = _route_cache.get(cache_key)
     if hit is not None and time.monotonic() - hit[0] < _ROUTE_CACHE_TTL:
         return hit[1]
-    if _get_routing_model() is None:
+    model = _get_routing_model(session_id=session_id) if session_id is not None else _get_routing_model()
+    if model is None:
         return None
     try:
         router = Agent(
@@ -588,7 +639,7 @@ async def _route_by_llm(question: str, team: dict[str, AgentSpec]) -> str | None
                 "你是 Agent 团队的任务调度员。根据团队名册和用户消息，"
                 "选出最合适的一位专家。只做路由选择，不做具体回答；只返回一个 name。"
             ),
-            model=_get_routing_model(),
+            model=model,
         )
         reply = await router.reply(
             Msg(
@@ -659,6 +710,20 @@ def _persist(session_id: str, role: str, agent_name: str, content: str, trace: l
             )
         )
         db.commit()
+
+
+def _persist_user_turn(session_id: str, message: str) -> None:
+    _touch_session(session_id, message)
+    _persist(session_id, "user", "", message, [])
+
+
+def _try_persist_assistant(session_id: str, spec: AgentSpec, text: str, trace: list, thinking: str) -> str | None:
+    try:
+        _persist(session_id, "assistant", spec.name, text, trace, thinking)
+    except Exception:
+        logger.warning("助手回复落库失败：session_id=%s", session_id, exc_info=True)
+        return "回复已生成，但保存到会话失败；请复制保留本次回复，并检查数据库后再继续。"
+    return None
 
 
 def _touch_session(session_id: str, first_message: str | None = None) -> None:
@@ -933,7 +998,10 @@ async def _resolve_route(question: str, agent_name: str | None, session_id: str 
         current_agent = _session_current_agent(session_id)
         if current_agent in team:
             return team[current_agent], "续聊", matches
-    picked = await _route_by_llm(question, team)
+    if _is_job_session(session_id):
+        picked = await _route_by_llm(question, team, session_id=session_id)
+    else:
+        picked = await _route_by_llm(question, team)
     if picked in team:
         return team[picked], "AI 调度", matches
     if matches:
@@ -1017,13 +1085,15 @@ def _job_scope_refusal(session_id: str, spec: AgentSpec | None = None) -> str | 
 
 
 def _preroute_scope_refusal(session_id: str, agent_name: str | None) -> str | None:
-    """路由前的套餐预检：仅自动路由需要（路由本身可能调用全局激活模型仲裁）。
+    """路由前的套餐预检：用「本轮最可能生效的模型」提前拒绝，避免先写 user 行再早退。
 
-    明确指定专家时路由不会触碰全局模型，由路由后的 spec 复核兜底——
-    避免「全局是交互式套餐、专家绑定按量模型」的合法定时任务被误伤。
+    明确指定专家时按该专家绑定模型（路由后不会触碰全局模型，不能用全局套餐误伤）；
+    自动路由时路由本身可能调用全局激活模型仲裁，因此按全局模型预检，
+    路由定到专家后再按实际 spec 复核一次（见 chat/chat_stream）。
     """
-    if agent_name and agent_name in load_team():
-        return None
+    team = load_team()
+    if agent_name and agent_name in team:
+        return _job_scope_refusal(session_id, team[agent_name])
     return _job_scope_refusal(session_id)
 
 
@@ -1034,17 +1104,21 @@ async def chat(
     mode: str = "standard",
     attachments: list | None = None,
 ) -> dict:
-    """处理一轮对话（非流式）：路由 → 专家执行 → 持久化。"""
+    """处理一轮对话（非流式）：前置门禁通过后保存提问，再路由、执行并保存回复。"""
     if not llm_status()["configured"]:
         return {
             "ok": False,
             "need_llm_config": True,
             "message": "模型未配置：请在 AI 助手「⚙ 设置」中选择供应商并填写 API Key，保存后即可激活 Agent 团队。",
         }
-
+    if not load_team():
+        return {"ok": False, "message": EMPTY_TEAM_MESSAGE}
     refusal = _preroute_scope_refusal(session_id, agent_name)
     if refusal:
         return {"ok": False, "message": refusal}
+    # 门禁通过才写入提问：早退路径不留孤立 user 行（下次对话不会注入被拒绝的问题）；
+    # 模型/构建失败仍保留提问（写入发生在路由与调用之前）
+    _persist_user_turn(session_id, message)
 
     mode = _resolve_mode(mode)
     resolved = await _resolve_spec(message, agent_name, session_id)
@@ -1073,10 +1147,7 @@ async def chat(
     finally:
         tool_trace.reset(token)
 
-    _touch_session(session_id, message)
-    _persist(session_id, "user", "", message, [])
-    _persist(session_id, "assistant", spec.name, text, trace, thinking)
-
+    persistence_warning = _try_persist_assistant(session_id, spec, text, trace, thinking)
     return {
         "ok": True,
         "session_id": session_id,
@@ -1086,6 +1157,8 @@ async def chat(
         "routed_by": routed_by,
         "mode": mode,
         "trace": trace,
+        "persisted": persistence_warning is None,
+        "persistence_warning": persistence_warning or "",
     }
 
 
@@ -1096,7 +1169,7 @@ async def chat_stream(
     mode: str = "standard",
     attachments: list | None = None,
 ):
-    """流式对话：逐段 yield 事件 dict，由路由层封装为 SSE。"""
+    """流式对话：前置门禁通过后保存提问，再逐段 yield 事件 dict，由路由层封装为 SSE。"""
     if not llm_status()["configured"]:
         yield {
             "type": "error",
@@ -1104,12 +1177,17 @@ async def chat_stream(
             "message": "模型未配置：请在 AI 助手「⚙ 设置」中选择供应商并填写 API Key，保存后即可激活 Agent 团队。",
         }
         return
-
-    mode = _resolve_mode(mode)
+    if not load_team():
+        yield {"type": "error", "message": EMPTY_TEAM_MESSAGE}
+        return
     refusal = _preroute_scope_refusal(session_id, agent_name)
     if refusal:
         yield {"type": "error", "message": refusal}
         return
+    # 门禁通过才写入提问：早退路径不留孤立 user 行；模型/流式失败仍保留提问
+    _persist_user_turn(session_id, message)
+
+    mode = _resolve_mode(mode)
     resolved = await _resolve_route(message, agent_name, session_id)
     if resolved is None:
         yield {"type": "error", "message": EMPTY_TEAM_MESSAGE}
@@ -1143,9 +1221,6 @@ async def chat_stream(
         ToolCallStartEvent,
     )
     from agentscope.message import Msg
-
-    _touch_session(session_id, message)
-    _persist(session_id, "user", "", message, [])
 
     token = tool_trace.set([])
     delta_parts: list[str] = []
@@ -1201,7 +1276,9 @@ async def chat_stream(
     finally:
         tool_trace.reset(token)
 
-    _persist(session_id, "assistant", spec.name, text, trace, thinking)
+    # 落库失败只是「回复已生成但未入历史」的非终止告警：只随 done 下发，
+    # 不再发 type=error（error 在 SSE 契约里表示本轮终止，前端会把它渲染成失败气泡）
+    persistence_warning = _try_persist_assistant(session_id, spec, text, trace, thinking)
     yield {
         "type": "done",
         "session_id": session_id,
@@ -1212,6 +1289,8 @@ async def chat_stream(
         "route_candidates": route_candidates,
         "mode": mode,
         "trace": trace,
+        "persisted": persistence_warning is None,
+        "persistence_warning": persistence_warning or "",
     }
 
 
@@ -1274,6 +1353,9 @@ def session_rename(session_id: str, title: str) -> dict:
 
 
 def session_delete(session_id: str) -> None:
+    lock = _session_run_locks.get(session_id)
+    if lock is not None and lock.locked():
+        raise ValueError("当前会话正在生成中，请稍后再删除")
     with SessionLocal() as db:
         row = db.get(AgentSession, session_id)
         if row is not None:
@@ -1290,6 +1372,7 @@ def session_delete(session_id: str) -> None:
     for key in [k for k in list(_session_models) if k[1] == session_id]:
         _session_models.pop(key, None)
     _session_run_locks.pop(session_id, None)
+    _session_run_lock_last_used.pop(session_id, None)
 
 
 def session_set_archived(session_id: str, archived: bool) -> dict:

@@ -160,12 +160,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import BaseChart from '../components/BaseChart.vue'
 import { dashboardApi, gmApi, BACKEND_HINT } from '../api'
 import { fmtDT, isOverdue, priorityLabel, priorityTag } from '../utils/format'
+import { createDayClock, greetingOf, todayTextOf } from '../utils/clock'
 
 const router = useRouter()
 
@@ -176,17 +177,11 @@ const gmPeriod = ref(dayjs().format('YYYY-MM'))
 const gmReminders = ref([])
 const gmLoading = ref(false)
 const gmLoadFailed = ref(false)
-const todayText = dayjs().format('YYYY年MM月DD日 dddd')
-
-const greeting = computed(() => {
-  const h = dayjs().hour()
-  if (h < 6) return '夜深了，注意休息'
-  if (h < 9) return '早上好'
-  if (h < 12) return '上午好'
-  if (h < 14) return '中午好'
-  if (h < 18) return '下午好'
-  return '晚上好'
-})
+// 跨午夜/长时间挂机后「今天」与问候必须跟着变：一分钟刷新一次 now。
+const now = ref(new Date())
+const todayText = computed(() => todayTextOf(now.value))
+const greeting = computed(() => greetingOf(now.value))
+const dayClock = createDayClock()
 
 const cards = computed(() => {
   const t = data.value || {}
@@ -278,7 +273,10 @@ function openGm() {
 onMounted(() => {
   load()
   loadGmReminders()
+  dayClock.start((value) => { now.value = value })
 })
+
+onBeforeUnmount(() => dayClock.stop())
 
 function fmtTime(s) {
   return s ? dayjs(s).format('HH:mm') : ''

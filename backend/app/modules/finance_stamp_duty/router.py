@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ...database import get_db
+from ...utils_filing import unlink_export_artifact
 from . import service
 from .models import StampDutyFiling
 
@@ -83,9 +84,12 @@ def delete_filing(filing_id: int, db: Session = Depends(get_db)):
     f = db.get(StampDutyFiling, filing_id)
     if f is None:
         raise HTTPException(status_code=404, detail="填报记录不存在")
+    # 先落库删除、再清产物：commit 失败时不得先丢掉底稿（复核 M-5）
+    export_path = f.export_path
     db.delete(f)
     db.commit()
-    return {"ok": True}
+    removed = unlink_export_artifact(export_path, service.module_exports_dir())
+    return {"ok": True, "export_removed": removed}
 
 
 @router.post("/filings/{filing_id}/export", summary="生成申报表底稿 xlsx")

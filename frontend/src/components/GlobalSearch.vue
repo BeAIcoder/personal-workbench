@@ -4,9 +4,9 @@
     v-model="keyword"
     :fetch-suggestions="fetchSuggestions"
     :trigger-on-focus="false"
+    class="global-search"
     placeholder="全局搜索任务 / 日程 / 笔记（Ctrl + K）"
     clearable
-    style="width: 340px"
     @select="onSelect"
   >
     <template #default="{ item }">
@@ -115,3 +115,23 @@ onBeforeUnmount(() => debounce.cancel())
 
 defineExpose({ focus })
 </script>
+
+<style scoped>
+.global-search {
+  width: 340px;
+  flex-shrink: 1;
+  min-width: 140px;
+}
+
+@media (max-width: 1280px) {
+  .global-search {
+    width: 260px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .global-search {
+    width: 210px;
+  }
+}
+</style>

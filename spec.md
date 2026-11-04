@@ -1,8 +1,8 @@
 # 个人工作台 · 需求与设计规格（spec）
 
-> **版本 v1.17.0（2026-10-30）**
+> **版本 v1.16.1（与 `backend/app/config.py` 一致；2026-10-30 之后的四税种/WorkBuddy/记忆增强等增量尚未单独发版，随当前版本提供）**
 >
-> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → v1.15.0 会话归档与导出 + 聊天传图多模态理解 → v1.15.1 复核加固轮（三路并行审计驱动，23 项修复）→ v1.16.0 调试中心 → v1.16.1 体验修复十一项 → **v1.17.0 政策有效期登记（POLICY_REGISTRY）+ 四税种填报（印花税/增值税/个税/残保金）+ WorkBuddy 同步导入（技能包/记忆/身份文件，幂等）+ 记忆类型/统计/MD 导入导出/注入预算（2026-10-30 五部分轮）**。
+> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → v1.15.0 会话归档与导出 + 聊天传图多模态理解 → v1.15.1 复核加固轮（三路并行审计驱动，23 项修复）→ v1.16.0 调试中心 → v1.16.1 体验修复十一项 → **未发版增量：政策有效期登记（POLICY_REGISTRY）+ 四税种填报（印花税/增值税/个税/残保金）+ WorkBuddy 同步导入（技能包/记忆/身份文件，幂等）+ 记忆类型/统计/MD 导入导出/注入预算（2026-10-30 五部分轮）**。
 >
 > 权威 as-built 快照：`20261012New/REVERSE_02-SPEC重构.md`；接口细节：`API.md`；架构决策：`20261012New/adr/ADR-001~005`。
 >
@@ -23,17 +23,17 @@
 ## 1. 定位与硬约束（不可违反）
 
 面向个人日常办公的**本机单人 Web 工作台**：任务、日程、笔记三大事项载体 + 概览与全局搜索；
-外加一个**表驱动可配的 AI 助手 Agent 团队**（13 位专家）与一整套**财务业务模块群**，
+外加一个**表驱动可配的 AI 助手 Agent 团队**（内置 8 位，可按需导入 QwenPaw 角色）与一整套**财务业务模块群**，
 让自然语言可以直接操作工作台与财务数据。
 
 | 约束 | 内容 |
 | --- | --- |
-| 部署形态 | 仅监听 `127.0.0.1`、无登录鉴权、数据不出本机；启动时对非回环 HOST 打印醒目告警 |
+| 部署形态 | 仅监听 `127.0.0.1`、无登录鉴权、数据不出本机；非回环监听且未开 `ALLOW_NON_LOOPBACK=1` 时除健康检查外全部 503 |
 | 存储 | SQLite 单文件 `backend/data/workbench.db`，零外部数据库依赖；不允许 Docker 与外部独立数据库 |
 | 运行环境 | Windows 11 · Python 3.12+ · Node 24.22.1+ |
 | 依赖红线 | 仅 MIT / Apache-2.0 / BSD；新增依赖需锁版本（`requirements-lock.txt`） |
 | 业务值外置 | 真实业务数据放各引擎 `local_business.json` / `config.local.yaml`；**现金流 V1 数据永不推远端** |
-| Agent 权限边界 | 删除类操作不开放给 Agent（仅页面物理删除；任务可由 Agent 标记完成） |
+| Agent 权限边界 | 不开放物理删除（仅页面删除；任务可由 Agent 标记完成）；Agent 可新建/完成任务、日程、笔记与查询；财税专员另有 `pl_add_transaction` 可新增一笔个人记账（只新增、不删除） |
 | 交付标准 | 测试、文档、双击 bat 启动三件套齐全 |
 
 ## 2. 架构总览
@@ -196,7 +196,7 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 - **校验**：`interval` 必须带 `interval_minutes`（5~10080）、`daily` 必须带 `daily_at`（HH:MM）、
   `cron` 必须带合法 `cron_expr`，否则 422。
 
-### 4.4 财务模块（13 可入库 + 1 机制示例）
+### 4.4 财务模块（14 可入库/可用 + 1 机制示例）
 
 | 模块 | 级别 | 关键规格 |
 | --- | --- | --- |
@@ -206,14 +206,15 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 | finance_ledger_personal 个人记账 | 全新 | 两级账户/分类/交易/预算，CSV 导入导出 |
 | finance_ledger_bip 企业记账 | 全新 | BIP 三类导出列签名识别 + 人工映射，借贷平衡 warning，export-to-vault |
 | finance_tax 企业所得税 | 整体迁入 | 原项目 5 routers + 10 services 零改动移植，`mod_tax_` 表前缀，迁移脚本幂等 |
-| finance_board 报表看板 | L2 | m01–m04 管线子进程触发（单步 600s 超时），HTML 快照归档 + 管线日志尾部（入库截断至 4000 字符、读取只暴露末 500 字符），iframe 嵌入（响应带 CSP `frame-ancestors 'self'`） |
+| finance_board 报表看板 | L2 | 优先计划任务「微信报表监控」通道（轮询 `last_run.json`，600s 超时；无任务回退直接子进程），失败最多尝试 2 次（重试 1 次/间隔 5s），HTML 快照归档 + 日志尾部（入库截断 4000、读取末 500），iframe 嵌入（CSP `frame-ancestors 'self'`），产物校验 `GET /verify`（仅接口） |
 | finance_pos POS 对账 | L1 | 台账 + 差异分析两步执行（单步 900s 超时），产物差集归集，上传 50MB |
+| finance_bankflow 银行流水模板 | 纯转换 | 建行/中行流水 xlsx → BIP 银行对账单模板；列名匹配、账号映射（全号/尾号）、无流水号合成 `SYN`、官方骨架保格式、20MB、零新表 |
 | finance_cashflow 现金流填报 | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护；运行记录列表分页（`page` ≥ 1、`page_size` 1–100，返回 `{total, items, page, page_size}`，按 id 倒序），上传 50MB |
 | finance_hello 模块示例 | 机制实证 | 连通性自检 + 样例表 `mod_hello_entry` + 只读工具 `hello_ping`（财税专员白名单内） |
-| finance_stamp_duty 印花税填报 | 新增（v1.17.0） | 13 税目税率表（印花税法）+ 免税标记 + 六税两费减半（policy_status 有效期校验），申报底稿 xlsx 导出 |
-| finance_vat 增值税填报 | 新增（v1.17.0） | 一般纳税人（13%/9%/6% 白名单销项−进项，留抵归 0）/ 小规模（季度 30 万免征、超限全额 1%，19号公告有效期校验）双模式，底稿导出 |
-| finance_iit 个人所得税填报 | 新增（v1.17.0） | 工资薪金累计预扣法逐月模拟（5000 减除+社保+专项附加+其他，七级预扣率跨档），扣缴底稿导出 |
-| finance_dsf 残保金填报 | 新增（v1.17.0） | （职工总数×比例−安排数）×年平均工资；30 人免征；安排比例分档减收 50%/90%（8号公告有效期校验），底稿导出 |
+| finance_stamp_duty 印花税填报 | 新增（未发版，随 v1.16.1） | 13 税目税率表（印花税法）+ 免税标记 + 六税两费减半（policy_status 有效期校验），申报底稿 xlsx 导出 |
+| finance_vat 增值税填报 | 新增（未发版，随 v1.16.1） | 一般纳税人（13%/9%/6% 白名单销项−进项，留抵归 0）/ 小规模（季度 30 万免征、超限全额 1%，19号公告有效期校验）双模式，底稿导出 |
+| finance_iit 个人所得税填报 | 新增（未发版，随 v1.16.1） | 工资薪金累计预扣法逐月模拟（5000 减除+社保+专项附加+其他，七级预扣率跨档），扣缴底稿导出 |
+| finance_dsf 残保金填报 | 新增（未发版，随 v1.16.1） | （职工总数×比例−安排数）×年平均工资；30 人免征；安排比例分档减收 50%/90%（8号公告有效期校验），底稿导出 |
 
 跨项目引擎/数据路径（费用分类 / 发票 / POS / 现金流 / 报表看板）经
 `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` / `FINANCE_POS_ENGINE_PATH` /
@@ -337,15 +338,16 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 | business_hr | employee / attendance / payroll | 考勤缺录 warning；任职月数与个税公共累计预扣；薪资确认留痕、级联 |
 | business_facility | equipment / compliance | 设备一机一档 ABC 分级；年检/消防/维保到期，pending/done/overdue 派生；工单可空关联设备 |
 | business_gm | 无表 | 六域只读聚合；失败域 available=false，缺源 null+reason；12 个月到期面积集中度 strict >25%；`gm_summary` 只读工具 |
+| business_dq | 无表 | 七域×五维只读巡检；score=100−Σ(error10/warning3/info1)，issue_count=Σ命中行数，top_issues≤20；财务域含数据仓画像/看板陈旧与产物校验/KPI 双源对照/税务勾稽/BIP 借贷不平；空库不误报；`dq_summary` 工具 |
 
 跨模块边界仍是只导出 xlsx、不写财务表。经营聚合按域延迟导入，单域失败不拖垮宿主。
 
-## 5. Agent 团队与四级路由
+## 5. Agent 团队与五级路由
 
 ### 5.1 专家团队（表驱动，8 位内置出厂 + 5 位 QwenPaw 导入，合计 13 位）
 
 专家 = `agent_specs` 行；`TEAM` 代码内置 8 位出厂专家（seed 数据源），
-`seed_agent_specs()` 按 **增量 upsert**（缺谁补谁，ADR-005）灌入，绝不覆盖用户改动。
+`seed_agent_specs()` 按 **增量 upsert**（缺谁补谁，ADR-005）灌入，尊重删除墓碑（`agent_spec_tombstones`）：删掉的内置专家不会在重启时复活，只有「恢复出厂」清墓碑后才重建；绝不覆盖用户改动。
 运行时经 `load_team()` 读取（60 秒进程内缓存），表为空或数据库不可用时回退内置 `TEAM` 保证离线可用。
 
 | name | 中文名 | sort | 来源 | 关键词（内置专家出厂值，界面可改） |
@@ -366,19 +368,17 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 
 > 具体关键词清单以 `agent_specs.keywords`（界面可改）为准；`sort` 即路由优先级，小者优先（先专后宽）。
 
-### 5.2 四级路由
+### 5.2 五级路由（含续聊保持）
 
-路由顺序：**用户指定 > 关键词规则 > LLM 结构化调度 > 默认专家**（`_resolve_spec`）。
+路由顺序：**用户指定 > 高置信关键词 > 续聊保持 > LLM 结构化调度 > 关键词回退/默认专家**（`_resolve_route`）。
 
 1. **指定**：入参 `agent` 命中启用中的专家，`routed_by="指定"`。
-2. **关键词**：对每位启用中的专家统计 `keywords` 在消息（小写化）中的出现次数（子串包含），
-   按命中数降序排列，**同分时 sort 小者胜**（稳定排序），`routed_by="关键词"`。
-3. **LLM 结构化调度**：关键词未命中且模型可用时，调度员 Agent 以名册文本 + 用户消息做结构化输出
-   `{agent, reason}`；输出不在名册内或任何异常都视为失败，回退下一步，`routed_by="AI 调度"`。
-4. **默认专家**：优先 `realestate`（商业地产管家）；被删除/停用时取 sort 最小者，`routed_by="默认"`。
+2. **高置信关键词**：统计每位启用中专家 `keywords` 的命中数与具体度，唯一最高分且命中具体词/label 才直路，`routed_by="关键词"`；同分或仅泛词不抢路。
+3. **续聊保持**：没有高置信关键词且消息含「继续/接着/上面/刚才」等续聊标记时，沿用当前会话最近一次 assistant 的专家，`routed_by="续聊"`；内部 `job-*` / `memory-extract` 会话不参与。
+4. **LLM 结构化调度**：仍未命中且模型可用时，调度员 Agent 以名册文本 + 用户消息做结构化输出 `{agent, reason}`；输出不在名册内或异常视为失败，下一步，`routed_by="AI 调度"`。
+5. **关键词回退/默认**：LLM 失败先保留最佳弱关键词候选（`routed_by="关键词回退"`）；完全无候选才取 `realestate` 或 sort 最小者（`routed_by="默认"`）。
 
-缓存与失效：`load_team()` 进程内 60 秒 TTL；任何专家/模型/供应商配置变更由路由层调用
-`invalidate_team_cache()` + `orchestrator.invalidate()` 立即生效。
+缓存与失效：`load_team()` 进程内 60 秒 TTL；路由仲裁结果缓存 10 分钟（键=名册+问题前缀，失败不缓存）；任何专家/模型/供应商配置变更由路由层调用 `invalidate_team_cache()` + `orchestrator.invalidate()` 立即生效。
 路由预览：`POST /api/assistant/agents/route-test` 输入 `{text}`，返回 `{routed, matched_by, matches}`。
 
 ### 5.3 工具白名单
@@ -665,7 +665,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | ZIP 安全 | zip-slip 防护：`is_relative_to` 判定拒绝越界与绝对路径条目 + 解压后总量上限 200MB（finance_cashflow / finance_pos / finance_invoice） |
 | 数据仓 SQL | SELECT-only + 表名白名单 + 强制 LIMIT + 独立线程 `interrupt()` 超时；去注释后执行 |
 | 执行面 | Bash 工具默认关闭且自带危险文件/目录黑名单；QwenPaw 插件默认关闭且只读模式跳过 |
-| 监听面 | 仅 127.0.0.1；非回环 HOST 启动时告警（未做鉴权，勿在不可信网络开放） |
+| 监听面 | 默认仅 127.0.0.1；`LoopbackBindingGuardMiddleware` 在非回环监听且未开 `ALLOW_NON_LOOPBACK=1` 时，除 `GET/HEAD /api/health` 外 `/api` 一律 **503** 中文拒绝（判定用 `scope["server"]` 实际监听地址，不依赖 `.env` 的 HOST）。开启 `ALLOW_NON_LOOPBACK=1` 不等于有鉴权，必须自行加 VPN/反向代理鉴权与防火墙 |
 | 数据边界 | `gitignore` 分层：`data/`、`.env`、`backups/`、现金流引擎产出/真实数据；提交前无真实业务值 |
 
 ## 11. 接口设计
@@ -820,3 +820,54 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - 真实浏览器：临时数据库下完成主要菜单与新增入口验收。
 - 外部验证（2026-10-23，隔离服务 + 脱敏数据，真实 `backend/data` 字节级零改动）：第 0 章 G1–G9、第 1 章 LLM、第 2 章 MCP、第 3 章 BIP 11/11、第 4 章五管线 + E4/E9、第 5 章 W1–W9、第 6 章 U1–U10 代理走查。
 - 完整记录见 `20261022-修复与验收报告.md`。
+## 16. 2026-11-04 as-built 追平（银行流水 / 数据质量 / 看板校验 / 滚动摘要 / 路由缓存）
+
+> 本节只记录**当前实现**口径；历史测试数字保持快照语义，不在此重写。版本以 `backend/app/config.py` 为准（v1.16.1）。
+
+### 16.1 银行流水 → BIP 模板（finance_bankflow）
+
+- **零新表**：`prefix=/api/finance/bankflow`，只有 `POST /preview` 与 `POST /template`；上传 20MB。
+- **解析**：遍历工作簿全部 sheet 的前 10 行，定位同时含「交易日期」与「账号」的表头行；按**列名**映射，与列顺序无关。核心必需列 `交易日期/账号/收入/支出/用途`；流水号候选链 `银行交易流水号→交易流水号→对账批号→资金系统单据号→单证号码`，全空时用「日期+账号+金额+余额+对方+用途」SHA-256 合成稳定 `SYN<20位>`（幂等）。
+- **账号映射**：模块 `config.local.yaml`（gitignore）的 `bank_accounts`；全号精确优先，未命中按 ≥4 位尾号最长后缀匹配；未映射账号预览高亮、导出禁用。
+- **格式**：官方骨架 `template_skeleton.xlsx`（清空 r10 起数据行，保留表头样式/列宽/数据验证/文本格式 @/5 sheet）；r10 起追加数据，每列复制 r9 示例行 `_style`；骨架缺失中文 400 拒绝，不降级为无格式模板。
+- **硬性行校验**：收入与支出同时有值、均为空、用途为空、交易日期无法解析（坏日期）→ 预览标出，**导出返回 400（不生成模板）**；不是跳过坏行继续导出。
+- **下载名**：`{银行简称}{尾4}_银行流水导入模板_{YYYYMMDD}-{YYYYMMDD}.xlsx`；ASCII 兜底 + `filename*` 双头。
+
+### 16.2 数据质量巡检（business_dq）
+
+- **只读、零新表**：`GET /api/business/dq/summary?as_of=YYYY-MM-DD`；`as_of` 用 `Query(default=None, pattern=...)`，空=今天；形状错 422，日历不存在日期（2026-02-30）也 422（否则 SQLite `date()` 返回 NULL 会让未来/过期检查静默通过，输出 100 分假健康）。
+- **七域**：leasing / operations / hr / legal / planning / facility / finance；**五维**：空值/重复/孤儿引用/日期有效性/金额异常。
+- **计分**：每域 `score=100−Σ(error 10 / warning 3 / info 1)`，下限 0；`overall_score` 为可用域均分；单域异常只 `available=false + gap_reasons`，不拖垮总览。
+- **计数**：`issue_count` = Σ各检查 `count`（命中行数），与 `top_issues` 只取 20 条无关；`dq_summary` Agent 工具只返回前 10 条与每域 error/warning/info 计数。
+- **跨表勾稽**：营运超收/状态金额不一致/履约中合同过期；人事薪资无考勤；企划预算超支；工程合规逾期；财务 BIP 借贷不平；税务申报无财务数据/财务数据无申报/有税无所得/税额超 25%。
+- **财务域附加**：数据仓质量画像（行数/整行重复/高缺失列/空表，单表失败不拖垮）、看板陈旧快照（>7 天 warning）、连续失败（最近两条 failed→error）、看板产物一致性（`verify_snapshot` 失败项）、看板 KPI vs 业务库双源对照（带空库守卫）、税务勾稽。
+- **空库防误报**：只有对应业务表有数据时才执行相关检查；真实空库只报表缺失/不可用，不产生假问题。
+
+### 16.3 看板：计划任务通道 + 重试 + 产物校验
+
+- **执行通道**：`run_pipeline` 优先 `schtasks /run /tn 微信报表监控`，轮询 `logs/last_run.json`（started/finished/ok/steps），超时 600s；无此计划任务的机器回退直接子进程（`_run_steps_directly`）。这是为了绕开终端安全软件按**进程树**拦截跨目录写盘（venv python 派生的子进程不能写AssetLib区域）。
+- **重试**：`_PIPELINE_ATTEMPTS=2`（最多尝试 2 次，即失败后重试 1 次）、`_RETRY_DELAY_SECONDS=5`；逐次失败不落快照，最终失败统一落 failed 快照并 `_notify_failure` 到「调试→问题记录」P2（同标题未关闭去重）。
+- **同秒防撞**：`_unique_stamp()` 在 DB/目录已存在时追加 `_2/_3`，避免 `mod_board_snapshot.stamp` 唯一约束冲突。
+- **产物校验**：`GET /api/finance/board/verify?snapshot_id=` 提取 HTML 内嵌 `const R = {...}` 与管线 `data/report_data.json` 对照——文件规模、JSON 可解析、敏感 `map` 剔除、顶层键一致（meta 不参与）、递归数值容差 0.01（差异限 20 条）、关键 KPI 齐全；按（快照 id、HTML 大小、数据 mtime）缓存。**仅提供接口，页面无按钮**；失败项在 DQ 财务域显示 warning。
+
+### 16.4 发票按项目归类与拆分打包
+
+- 规则源：引擎 `invoice_processor/config.local.yaml` 的 `address_keywords` + `address_force_mapping`，运行时只读；长词优先；规则为空时**入库/创建阶段**返回 unchanged（不把发票清成未归类）。
+- 判定顺序：引擎项目名 → 备注 → PDF 全文（懒加载）→ 同批同购方唯一项目继承 → 未归类。
+- 入库即归类；`POST /batches/{id}/reclassify` 可重算（`asyncio.to_thread`，未归类才补取全文），**该接口在规则不可用时返回 400 且不改任何数据**；**人工修正（corrected）永不被覆盖**；已导出批次重新归类会回落 parsed 并清 `export_file`（旧包下载 409）。
+- 导出：整批 ZIP + 按项目 ZIP（`outbox/batch_{id}_projects/` + `batch_{id}_projects.json`）；ZIP 名「项目+月份.zip」/「发票汇总+月份.zip」，跨月为区间；下载由前端 Blob + `a.download` 显式落名，响应头同时给 ASCII 兜底与 `filename*`。
+
+### 16.5 长会话滚动摘要、路由缓存与 trace 治理
+
+- **滚动摘要**：`agent_sessions.summary` + `summary_until`（游标）；未压缩历史超过注入窗口 2 倍时，把窗口外更早消息压缩进摘要（复用路由模型或全局模型），注入时 `【此前对话摘要】` 置顶 + 最近窗口；失败只告警沿用旧摘要，不阻塞聊天。`Agent.observe(history)` 必须 `await`（历史注入与摘要依赖它）。
+- **路由轻量化**：`agent_settings.routing_model_id` 可选轻量模型做 LLM 仲裁（None=跟随全局激活模型）；`_route_cache` 键=名册文本+问题前 200 字，TTL 600s、上限 128，只缓存成功仲裁；`invalidate()` 同步清空。
+- **trace 治理**：`_govern_trace` 单条 result 截 4k 字符、总量 100KB 超限丢弃最旧并留说明标记，保持 `{tool,args,result}` 列表结构（前端折叠渲染依赖）。
+- **参数契约**：模块 manifest 的 `agent_tools.params` 必须是三元组 `(type, desc, required)`；`build_tools._param_schema` 兼容 2 元组/dict 并告警，单个工具参数格式错误不再炸掉整个专家。
+
+### 16.6 数据与备份（Task 9 口径）
+
+- **WAL + busy_timeout**：连接监听设置 `journal_mode=WAL`、`busy_timeout=5000`；备份走 `Connection.backup`，ZIP 跳过 `.wal/.shm`。
+- **数据目录派生**：`WORKBENCH_DATA_DIR` 在 config 导入期预读进程环境或 `WORKBENCH_ENV_FILE` 指向的 `.env`，派生 `DATA_DIR/UPLOAD_DIR/默认 DATABASE_URL`；默认仍是 `backend/data`。
+- **备份双产物 + 敏感配置**：`.db` 与 `workbench_data_*.zip`；本机配置四项（`.env`、银行映射、脱敏钥匙、PII 词表）只由 CLI 收集，ZIP 注释 + `.SENSITIVE.txt` 标记，发布扫描拒绝同名文件。
+- **恢复原子化**：按实际写入字节限额；解压到同卷临时目录 → `PRAGMA integrity_check` → 旧目录整目录快照 → 一次换入；第二次 rename 失败把快照改回；快照保留 3 份；本机配置先写 `backups/restore-local/local_*`，任一步失败整体回滚；拒绝 zip-slip/设备名/ADS/0 字节/无业务表库。
+- **安全边界**：非回环 503（`ALLOW_NON_LOOPBACK=1` 才放行）、Origin 403、`CORS_ORIGINS`、无鉴权；DPAPI 缺 pywin32 拒绝启动。

@@ -35,6 +35,7 @@ def _run_probe(model_id: int, fn) -> dict:
             logger.warning("模型探测执行失败：model_id=%s", model_id, exc_info=True)
             result = {"error": f"{type(exc).__name__}: {exc}"[:200]}
         state = model_probe.probe_state(row)
+    orchestrator.invalidate()
     return {"model_id": model_id, "result": result, "probe": state}
 
 

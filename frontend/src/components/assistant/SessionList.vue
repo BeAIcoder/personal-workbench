@@ -12,25 +12,27 @@
         </el-button>
       </div>
     </template>
-    <div class="session-list">
+    <div class="session-list" role="list">
       <div
         v-for="s in sessions"
         :key="s.session_id"
         class="session-item"
         :class="{ active: s.session_id === currentSessionId }"
-        @click="emit('select', s.session_id)"
+        role="listitem"
       >
-        <div class="session-title">{{ s.title }}</div>
-        <div class="session-meta">
-          <span>{{ s.msg_count }} 条</span>
-          <span class="session-time">{{ fmtDT(s.updated_at) }}</span>
-        </div>
+        <button type="button" class="session-main" :aria-label="`打开会话 ${s.title}`" @click="emit('select', s.session_id)">
+          <span class="session-title">{{ s.title }}</span>
+          <span class="session-meta">
+            <span>{{ s.msg_count }} 条</span>
+            <span class="session-time">{{ fmtDT(s.updated_at) }}</span>
+          </span>
+        </button>
         <div class="session-actions" @click.stop>
-          <el-icon v-if="!s.archived" title="归档" @click="emit('archive', s)"><FolderChecked /></el-icon>
-          <el-icon v-else title="恢复" @click="emit('restore', s)"><FolderOpened /></el-icon>
-          <el-icon title="导出 Markdown" @click="exportSession(s)"><Download /></el-icon>
-          <el-icon title="重命名" @click="emit('rename', s)"><Edit /></el-icon>
-          <el-icon class="danger" title="删除" @click="emit('delete', s)"><Delete /></el-icon>
+          <el-icon v-if="!s.archived" role="button" tabindex="0" title="归档" :aria-label="`归档会话 ${s.title}`" @click="emit('archive', s)" @keydown.enter.prevent.stop="emit('archive', s)" @keydown.space.prevent.stop="emit('archive', s)"><FolderChecked /></el-icon>
+          <el-icon v-else role="button" tabindex="0" title="恢复" :aria-label="`恢复会话 ${s.title}`" @click="emit('restore', s)" @keydown.enter.prevent.stop="emit('restore', s)" @keydown.space.prevent.stop="emit('restore', s)"><FolderOpened /></el-icon>
+          <el-icon role="button" tabindex="0" title="导出 Markdown" :aria-label="`导出会话 ${s.title}`" @click="exportSession(s)" @keydown.enter.prevent.stop="exportSession(s)" @keydown.space.prevent.stop="exportSession(s)"><Download /></el-icon>
+          <el-icon role="button" tabindex="0" title="重命名" :aria-label="`重命名会话 ${s.title}`" @click="emit('rename', s)" @keydown.enter.prevent.stop="emit('rename', s)" @keydown.space.prevent.stop="emit('rename', s)"><Edit /></el-icon>
+          <el-icon class="danger" role="button" tabindex="0" title="删除" :aria-label="`删除会话 ${s.title}`" @click="emit('delete', s)" @keydown.enter.prevent.stop="emit('delete', s)" @keydown.space.prevent.stop="emit('delete', s)"><Delete /></el-icon>
         </div>
       </div>
       <el-empty v-if="!sessions.length" :description="archived ? '暂无已归档会话' : '暂无会话'" :image-size="50" />
@@ -81,10 +83,27 @@ function exportSession(s) {
 
 .session-item {
   position: relative;
-  padding: 8px 10px;
+  padding: 4px 10px;
   border-radius: 8px;
-  cursor: pointer;
   border: 1px solid transparent;
+}
+
+.session-main {
+  display: block;
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-main:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .session-item:hover {
@@ -97,6 +116,7 @@ function exportSession(s) {
 }
 
 .session-title {
+  display: block;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -116,12 +136,13 @@ function exportSession(s) {
   position: absolute;
   right: 8px;
   top: 8px;
-  display: none;
+  display: flex;
   gap: 6px;
   color: var(--el-text-color-secondary);
 }
 
-.session-item:hover .session-actions {
+.session-item:hover .session-actions,
+.session-item:focus-within .session-actions {
   display: flex;
 }
 

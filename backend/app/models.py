@@ -194,6 +194,15 @@ class AgentSpecModel(TimestampMixin, Base):
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class AgentSpecTombstone(Base):
+    """已删除内置专家的 name 墓碑；仅 reset 清除，阻止启动 seed 复活。"""
+
+    __tablename__ = "agent_spec_tombstones"
+
+    name: Mapped[str] = mapped_column(String(50), primary_key=True)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
 class AgentSettings(Base):
     """AI 助手运行时配置（单行，id 恒为 1；界面可改，无需手改 .env）"""
 

@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import io
 import json
@@ -63,6 +64,7 @@ VENV_PY = ROOT / "backend" / "venv" / "Scripts" / "python.exe"
 KEEP_ROOT_MD = {
     "README.md",
     "使用说明.md",
+    "数据收传使用说明.md",
     "算法实现逻辑.md",
     "算法和性能优化.md",
     "功能模块拓扑图.md",
@@ -76,10 +78,12 @@ KEEP_ROOT_MD = {
 EXCLUDE_DIRS = {"20261012New"}
 # 递归剔除的内部目录（相对仓库根）：测试与脱敏工具会带出真实样本/本机路径，
 # 分发包只需要运行时与用户文档；保留 backend/scripts（备份等运维脚本）。
+# docs/ 是内部评审截图（v1.1.0 旧界面），既不参与文本扫描也不该随包。
 PRUNE_DIRS = (
     "dev",
     "backend/tests",
     "frontend/tests",
+    "docs",
 )
 # 真实客户/员工名称词表：从本地词表/映射表/环境变量加载，真实值不入库
 # （本文件随 dev/ 一起被剔除，不参与分发）
@@ -113,6 +117,7 @@ REQUIRED_FILES = [
     "停止服务.bat",
     "README.md",
     "使用说明.md",
+    "数据收传使用说明.md",
     "算法实现逻辑.md",
     "功能模块拓扑图.md",
     "LICENSE",
@@ -121,6 +126,22 @@ REQUIRED_FILES = [
     "backend/app/main.py",
     "frontend/dist/index.html",
 ]
+
+# 允许随包的二进制（相对仓库根的 fnmatch；其余一律视为未登记并中止）
+ALLOWED_BINARY_PATTERNS = (
+    "数据模板/*.xlsx",
+    "backend/app/modules/finance_bankflow/template_skeleton.xlsx",
+    "frontend/dist/*",  # 构建产物（字体/图标）由构建流程决定
+)
+# 本机敏感配置：只进本机备份，绝不进分发包
+FORBIDDEN_FILE_NAMES = {
+    ".env",
+    "config.local.yaml",
+    "sanitize-map.local.json",
+    "pii-terms.local.txt",
+}
+# requirements.txt 必须能装出运行所需的核心依赖（冒烟用仓库 venv 不会暴露漏项）
+REQUIRED_REQUIREMENTS = ("fastapi", "uvicorn", "sqlalchemy", "pydantic")
 
 
 class PackageError(RuntimeError):
@@ -291,7 +312,7 @@ def scan_secrets(staging: Path) -> list[str]:
 
     mapping = json.loads(SANITIZE_MAP.read_text(encoding="utf-8"))
     entries = mapping.get("mappings") or []
-    reals = [e.get("real", "") for e in entries if isinstance(e, dict) and len(e.get("real", "")) >= 3]
+    reals = [e.get("real", "") for e in entries if isinstance(e, dict) and len(e.get("real", "")) >= 2]
     log(f"      脱敏映射表 {len(reals)} 条真实值参与反查")
 
     compiled = [(re.compile(p), label) for p, label in SECRET_PATTERNS]
@@ -356,13 +377,17 @@ def structural_check(staging: Path) -> list[str]:
     for path in staging.rglob("*"):
         rel = path.relative_to(staging).as_posix()
         if path.is_dir():
-            if path.name in {"__pycache__", "node_modules", "venv", ".zcode", ".playwright-mcp", "脱敏数据"}:
+            if path.name in {"__pycache__", "node_modules", "venv", ".zcode",
+                             ".playwright-mcp", "脱敏数据", "backups", "docs"}:
                 problems.append(f"禁止的目录：{rel}")
             continue
-        if path.name == ".env":
-            problems.append(f"禁止的文件：{rel}")
+        if path.name in FORBIDDEN_FILE_NAMES:
+            problems.append(f"禁止的本机配置文件：{rel}（只允许进本机敏感备份）")
         if path.suffix.lower() in forbidden_ext:
             problems.append(f"禁止的数据文件：{rel}")
+        elif path.suffix.lower() in BINARY_EXTS:
+            if not any(fnmatch.fnmatch(rel, pattern) for pattern in ALLOWED_BINARY_PATTERNS):
+                problems.append(f"未登记二进制：{rel}（如确需随包，请登记到 ALLOWED_BINARY_PATTERNS）")
         if path.name.endswith(".pyc"):
             problems.append(f"禁止的字节码：{rel}")
     data_dir = staging / "backend" / "data"
@@ -372,6 +397,12 @@ def structural_check(staging: Path) -> list[str]:
     for rel in REQUIRED_FILES:
         if not (staging / rel).exists():
             problems.append(f"缺少必需文件：{rel}")
+    requirements = staging / "backend" / "requirements.txt"
+    if requirements.is_file():
+        text = requirements.read_text(encoding="utf-8", errors="replace").lower()
+        for name in REQUIRED_REQUIREMENTS:
+            if name not in text:
+                problems.append(f"requirements.txt 缺少核心依赖：{name}")
     return problems
 
 

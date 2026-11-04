@@ -9,9 +9,9 @@
 *.yaml  filter=sanitize
 *.txt   filter=sanitize
 *.example filter=sanitize
-*.vbs   filter=sanitize
-*.bat   filter=sanitize
+*.vbs   text eol=crlf filter=sanitize
+*.bat   text eol=crlf filter=sanitize
 *.html  filter=sanitize
 *.css   filter=sanitize
 # 无扩展名的脚本类文件（如有新增请在此登记；二进制一律不要加）
-*.sh    filter=sanitize
+*.sh    text eol=lf filter=sanitize

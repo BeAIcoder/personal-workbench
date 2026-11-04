@@ -56,6 +56,8 @@ class LeasingLead(Base):
     escalation_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     fitout_subsidy: Mapped[float | None] = mapped_column(Float, nullable=True)
     lease_term_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 释放时间：合同终止后解除铺位占用，但保留已签约历史（NULL = 仍在占用）
+    released_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     owner: Mapped[str] = mapped_column(String(50), default="", index=True)
     next_action_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     note: Mapped[str] = mapped_column(Text, default="")

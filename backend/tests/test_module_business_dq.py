@@ -33,7 +33,7 @@ def test_manifest_loaded_and_tool_preset():
     manifest = loaded["business_dq"]
     assert manifest.prefix == "/api/business/dq"
     assert manifest.tables == []
-    assert manifest.preset_experts == ["realestate", "cre_gm"]
+    assert manifest.preset_experts == ["realestate"]
     tool = next(item for item in manifest.agent_tools if item["name"] == "dq_summary")
     assert tool["readonly"] is True
     assert callable(tool["func"])
@@ -53,7 +53,7 @@ def test_empty_db_safe_summary(client):
 
 
 def test_orphan_lead_unit_and_bill_contract(client):
-    _plant(LeasingLead, company="孤儿线索", stage="negotiating", unit_id=99999)
+    _plant(LeasingLead, company="孤儿线索", stage="intent", unit_id=99999)
     _plant(OpsBill, contract_id=99999, period="2026-10", status="pending")
     resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
     data = resp.json()
@@ -181,6 +181,12 @@ def test_tax_reconciliation(client):
     assert ("申报勾稽", "warning", 1) in fin        # 2027 申报无财务数据
     assert ("税额异常", "warning", 1) in fin        # 2027 税额超 25%
     assert ("申报勾稽", "info", 1) in fin           # 2028 财务数据无申报
+    # L-176：域级计数必须与 issues 同级同源（页面显示 W1 而不是 W0）
+    fin_domain = data["domains"]["finance"]
+    assert fin_domain["error"] == 1
+    assert fin_domain["warning"] == 2
+    assert fin_domain["info"] == 1
+    assert fin_domain["warning"] == sum(1 for i in fin if i[1] == "warning")
 
 
 def test_board_consecutive_failures(client):
@@ -287,4 +293,4 @@ def test_score_aggregation(client):
     resp = client.get("/api/business/dq/summary", params={"as_of": AS_OF})
     data = resp.json()
     assert data["domains"]["legal"]["score"] == 97
-    assert data["overall_score"] is not None# __N10B__
+    assert data["overall_score"] is not None

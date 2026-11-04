@@ -519,3 +519,21 @@ def test_http_traversal_blocked(client, tmp_path):
     resp = client.get(f"{P}/..%2Fsecret/content")
     assert resp.status_code != 200
     assert resp.status_code in (400, 404)
+
+
+def test_repo_seed_packs_match_fresh_db_without_diff(client, monkeypatch):
+    """L-177：新库内置专家与仓库 seed_experts 必须完全一致，页面不得显示「有差异」。
+
+    关键词/工具/提示词以 team.py 为单一源；seed 文件是分发副本。任何漂移都会让用户
+    在专家包页看到「有差异」并可能误点导入覆盖数据库，因此用真实 seed_experts 目录
+    对新库做一次全量契约。
+    """
+    monkeypatch.setattr(expert_packs, "packs_dir", lambda: expert_packs.SEED_DIR)
+    seed_names = {path.stem for path in expert_packs.SEED_DIR.glob("*.md")}
+    with SessionLocal() as db:
+        items = {item["name"]: item for item in expert_packs.list_packs(db)}
+    assert set(items) == seed_names, f"种子文件与清单不一致：{sorted(set(items) ^ seed_names)}"
+    for name, item in items.items():
+        assert item["imported"] is True, f"{name} 未导入"
+        assert item["diff"] is None, f"{name} 与种子文件有差异：{item['diff']}"
+        assert item["diff_fields"] == [], f"{name} 差异字段：{item['diff_fields']}"

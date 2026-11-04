@@ -90,6 +90,10 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = RESULTS / f"{AREA}-data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 env["SEED_ON_STARTUP"] = "0"
 # 无可用 LLM：显式空串覆盖 backend/.env 的兜底配置
@@ -1044,8 +1048,11 @@ try:
             archived = api_body(api("GET", "/api/assistant/sessions", params={"archived": "true"}))["sessions"]
             assert [s["session_id"] for s in active] == ["s_contract_active"], f"archived=false 过滤异常: {active}"
             assert [s["session_id"] for s in archived] == ["s_contract_archived"], f"archived=true 过滤异常: {archived}"
-            create_session("job-contract-123", "内部任务会话")
-            create_session("memory-extract", "记忆抽取会话")
+            for internal_sid in ("job-contract-123", "memory-extract"):
+                r = api("POST", "/api/assistant/sessions", json={
+                    "session_id": internal_sid, "title": "内部任务会话"})
+                assert r.status == 400, f"内部会话前缀不应允许用户创建: {internal_sid} -> {r.status}"
+                assert "内部会话" in (api_body(r).get("detail") or ""), "内部前缀拒绝文案缺失"
             all_rows = api_body(api("GET", "/api/assistant/sessions"))["sessions"]
             ids = {s["session_id"] for s in all_rows}
             assert "job-contract-123" not in ids and "memory-extract" not in ids, "内部会话泄露到列表"

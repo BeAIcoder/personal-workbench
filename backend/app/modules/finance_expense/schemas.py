@@ -13,6 +13,8 @@ class ExpenseRunOut(BaseModel):
     matched_rows: int
     status: str
     duration_sec: float
+    bad_amount_rows: int = 0
+    warnings: list[str] = []
     artifact_path: str
     created_at: datetime
 

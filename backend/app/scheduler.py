@@ -9,6 +9,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Callable
 
 from .database import SessionLocal
@@ -21,9 +22,15 @@ logger = logging.getLogger(__name__)
 TICK_SECONDS = 20          # 调度检查间隔
 RECENT_MAX = 20            # 每个任务保留的最近运行记录条数
 SESSION_PREFIX = "job-"    # 定时任务专用会话前缀
+MAX_CONCURRENT_JOBS = 3    # 自动调度派生任务的并发上限
+SKIP_THROTTLE_SECONDS = 300
 
 _running: set[int] = set()                 # 正在执行的 job id
+_reserved: set[int] = set()                # 自动调度已预约（含等待信号量）的 job id
 _tasks: set[asyncio.Task] = set()          # 后台执行任务引用（防 GC）
+_skipped_at: dict[int, datetime] = {}      # skipped 不占到点槽位，仅做内存节流
+_semaphore: asyncio.Semaphore | None = None
+_semaphore_loop: asyncio.AbstractEventLoop | None = None
 
 # 模块动作注册表：name -> sync handler() -> dict（由各模块在 import 时注册，
 # 定时任务到点执行注册动作而非 LLM 对话，如 finance_board.run）
@@ -130,8 +137,8 @@ def validate_cron_expr(expr: str) -> bool:
 def cron_matches(expr: str, now: datetime | None = None) -> bool:
     """纯函数：五段 cron（分 时 日 月 周）匹配判断；表达式非法返回 False。
 
-    周字段 0/7 均视为周日；日与周同时受限时按「任一命中」语义（与 cron 惯例一致
-    的简化：本实现为 AND，单用户场景以明确写法规避，如仅用其一）。
+    周字段 0/7 均视为周日；日与周同时受限时本实现按 AND 同时命中，
+    需要任一命中时应拆成两个任务，避免歧义。
     """
     now = now or datetime.now()
     parts = (expr or "").split()
@@ -195,13 +202,56 @@ def job_due(job: ScheduledJob, now: datetime | None = None) -> bool:
     return now >= job.last_run_at + timedelta(minutes=interval)
 
 
+def normalize_legacy_jobs(db) -> list[dict]:
+    """禁用无法安全执行的历史任务；二次执行无变化时不提交、不重复告警。"""
+    changes = []
+    for job in db.query(ScheduledJob).all():
+        before = (job.schedule_type, job.interval_minutes, job.enabled)
+        reasons = []
+        if job.schedule_type not in ("interval", "daily", "cron"):
+            job.schedule_type = "interval"
+            job.interval_minutes = 60
+            reasons.append("未知调度类型已按 interval/60 分钟归一化")
+        if job.schedule_type == "interval":
+            interval = job.interval_minutes
+            if isinstance(interval, bool) or not isinstance(interval, int) or not 5 <= interval <= 10080:
+                job.interval_minutes = 60
+                reasons.append("缺失或非法的 interval_minutes 已归一化为 60")
+        elif job.schedule_type == "daily":
+            value = job.daily_at or ""
+            try:
+                valid_daily = len(value) == 5 and value[2] == ":"
+                hour, minute = int(value[:2]), int(value[3:])
+                valid_daily = valid_daily and 0 <= hour <= 23 and 0 <= minute <= 59
+            except ValueError:
+                valid_daily = False
+            if not valid_daily:
+                reasons.append("daily_at 缺失或非法")
+        elif not validate_cron_expr(job.cron_expr or ""):
+            reasons.append("cron_expr 缺失或非法")
+        if not str(job.action or "").strip() and not str(job.prompt or "").strip():
+            reasons.append("提示词与模块动作均为空")
+        if reasons:
+            job.enabled = False
+            after = (job.schedule_type, job.interval_minutes, job.enabled)
+            if after != before:
+                changes.append({"id": job.id, "name": job.name, "reasons": reasons})
+    if changes:
+        db.commit()
+        logger.warning("历史定时任务已禁用并归一化：%s", changes)
+    return changes
+
+
 def _record(db, job: ScheduledJob, status: str, summary: str, note_id: int | None = None,
             update_last_run: bool = True) -> None:
     now = datetime.now()
-    # 手动「立即运行」对 daily/cron 不更新 last_run_at，避免吞掉到点触发（interval 维持顺延）
     if update_last_run:
         job.last_run_at = now
     job.last_status = status
+    if status == "error":
+        job.last_error = summary[:500]
+    elif status == "ok":
+        job.last_error = ""
     runs = list(job.recent_runs or [])
     runs.insert(0, {"at": now.strftime("%Y-%m-%d %H:%M"), "status": status, "summary": summary[:200]})
     job.recent_runs = runs[:RECENT_MAX]
@@ -210,102 +260,175 @@ def _record(db, job: ScheduledJob, status: str, summary: str, note_id: int | Non
     db.commit()
 
 
-async def _run_action_job(db, job: ScheduledJob, update_last_run: bool = True) -> dict:
-    """模块动作任务：线程池执行注册的同步 handler，结果记 recent_runs。"""
+def _load_job(job_id: int) -> SimpleNamespace | None:
+    fields = (
+        "id", "name", "prompt", "agent_name", "mode", "schedule_type",
+        "interval_minutes", "daily_at", "cron_expr", "action", "enabled", "last_run_at", "created_at",
+    )
+    with SessionLocal() as db:
+        job = db.get(ScheduledJob, job_id)
+        if job is None:
+            return None
+        return SimpleNamespace(**{field: getattr(job, field) for field in fields})
+
+
+def _persist_result(job_id: int, status: str, summary: str, update_last_run: bool,
+                    reply: str | None = None, agent_info: dict | None = None) -> int | None:
+    with SessionLocal() as db:
+        job = db.get(ScheduledJob, job_id)
+        if job is None:
+            return None
+        note_id = None
+        if status == "ok" and reply is not None:
+            agent_info = agent_info or {}
+            note = Note(
+                title=f"【定时任务】{job.name} {datetime.now():%Y-%m-%d %H:%M}",
+                content=(
+                    f"任务：{job.name}\n提示词：{job.prompt}\n"
+                    f"执行专家：{agent_info.get('label') or agent_info.get('name', '')}\n\n{reply}"
+                ),
+                tags=["定时任务", job.name],
+            )
+            db.add(note)
+            db.flush()
+            note_id = note.id
+        _record(db, job, status, summary, note_id=note_id, update_last_run=update_last_run)
+        return note_id
+
+
+def _record_exception(job_id: int, message: str, manual: bool, touch: bool | None = None) -> None:
+    with SessionLocal() as db:
+        job = db.get(ScheduledJob, job_id)
+        if job is not None:
+            if touch is None:
+                touch = not manual or job.schedule_type == "interval" or job_due(job, datetime.now())
+            _record(db, job, "error", message[:500], update_last_run=touch)
+
+
+async def _run_action_job(job: SimpleNamespace) -> dict:
     handler = JOB_ACTIONS.get(job.action)
     if handler is None:
-        _record(db, job, "error", f"动作未注册：{job.action}", update_last_run=update_last_run)
         return {"status": "error", "summary": f"动作未注册：{job.action}"}
     try:
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, handler)
+        result = await asyncio.to_thread(handler)
         summary = str(result.get("message") or result.get("summary") or "完成")[:200]
-        status = result.get("status", "ok")
-        _record(db, job, status, summary, update_last_run=update_last_run)
-        return {"status": status, "summary": summary}
+        return {"status": result.get("status", "ok"), "summary": summary}
     except Exception as exc:
         logger.warning("模块动作任务 %s 执行失败", job.id, exc_info=True)
-        _record(db, job, "error", str(exc)[:500], update_last_run=update_last_run)
-        return {"status": "error", "summary": str(exc)[:200]}
+        return {"status": "error", "summary": str(exc)[:500]}
 
 
 async def run_job(job_id: int, manual: bool = False) -> dict:
-    """执行一次定时任务（立即运行按钮与调度循环共用）。返回 {status, summary, note_id?}。
+    """执行一次定时任务；数据库只在执行前后的短会话与 worker 线程中使用。
 
-    job.action 非空 = 模块动作任务：到点调用注册的同步 handler（线程池执行），
-    不走 LLM、不写笔记，结果只记 recent_runs；handler 抛错记 error。
-
-    manual=True（「立即运行」入口）时，daily/cron 任务不更新 last_run_at，
-    不影响下次到点触发；interval 任务维持现状顺延。
+    manual=True 时，未到点的 daily/cron 不占用调度槽位；当前已到点则正常消费。
+    skipped 不消费 daily/cron 槽位，自动调度侧按五分钟节流。
     """
     if job_id in _running:
         return {"status": "skipped", "summary": "上一次执行尚未结束，已跳过"}
     _running.add(job_id)
+    touch: bool | None = None
     try:
-        with SessionLocal() as db:
-            job = db.get(ScheduledJob, job_id)
-            if job is None:
-                return {"status": "error", "summary": "任务不存在"}
-            touch = not manual or job.schedule_type == "interval"
-            if job.action:
-                return await _run_action_job(db, job, update_last_run=touch)
-            if not llm_status()["configured"]:
-                _record(db, job, "skipped", "模型未配置", update_last_run=touch)
-                return {"status": "skipped", "summary": "模型未配置"}
-
+        job = await asyncio.to_thread(_load_job, job_id)
+        if job is None:
+            return {"status": "error", "summary": "任务不存在"}
+        touch = not manual or job.schedule_type == "interval" or job_due(job, datetime.now())
+        if job.action:
+            outcome = await _run_action_job(job)
+        elif not (await asyncio.to_thread(lambda: llm_status()["configured"])):
+            outcome = {"status": "skipped", "summary": "模型未配置"}
+        else:
             result = await orchestrator.chat(
                 session_id=f"{SESSION_PREFIX}{job.id}",
                 message=job.prompt,
                 agent_name=job.agent_name,
                 mode=job.mode,
             )
-            if not result.get("ok"):
-                msg = result.get("message") or "执行失败"
-                _record(db, job, "error", msg, update_last_run=touch)
-                return {"status": "error", "summary": msg[:200]}
-
-            agent_info = result.get("agent") or {}
-            note = Note(
-                title=f"【定时任务】{job.name} {datetime.now():%Y-%m-%d %H:%M}",
-                content=(
-                    f"任务：{job.name}\n提示词：{job.prompt}\n"
-                    f"执行专家：{agent_info.get('label') or agent_info.get('name', '')}\n\n"
-                    f"{result.get('reply', '')}"
-                ),
-                tags=["定时任务", job.name],
-            )
-            db.add(note)
-            db.flush()
-            _record(db, job, "ok", result.get("reply", "")[:200], note_id=note.id, update_last_run=touch)
-            return {"status": "ok", "summary": result.get("reply", "")[:200], "note_id": note.id}
+            if result.get("ok"):
+                reply = str(result.get("reply") or "")
+                outcome = {
+                    "status": "ok", "summary": reply[:200], "reply": reply,
+                    "agent_info": result.get("agent") or {},
+                }
+            else:
+                message = str(result.get("message") or "执行失败")
+                outcome = {"status": "error", "summary": message[:500]}
+        status = outcome["status"]
+        update_last_run = touch and not (status == "skipped" and job.schedule_type in ("daily", "cron"))
+        note_id = await asyncio.to_thread(
+            _persist_result, job_id, status, outcome["summary"], update_last_run,
+            outcome.get("reply"), outcome.get("agent_info"),
+        )
+        if status == "skipped" and job.schedule_type in ("daily", "cron"):
+            _skipped_at[job_id] = datetime.now()
+        else:
+            _skipped_at.pop(job_id, None)
+        response = {"status": status, "summary": outcome["summary"][:200]}
+        if note_id is not None:
+            response["note_id"] = note_id
+        return response
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         logger.warning("定时任务 %s 执行失败", job_id, exc_info=True)
-        with SessionLocal() as db:
-            job = db.get(ScheduledJob, job_id)
-            if job is not None:
-                _record(db, job, "error", str(exc)[:500],
-                        update_last_run=not manual or job.schedule_type == "interval")
+        try:
+            await asyncio.to_thread(_record_exception, job_id, str(exc), manual, touch)
+        except Exception:
+            logger.warning("定时任务 %s 错误状态落库失败", job_id, exc_info=True)
         return {"status": "error", "summary": str(exc)[:200]}
     finally:
         _running.discard(job_id)
 
 
+def _job_semaphore() -> asyncio.Semaphore:
+    global _semaphore, _semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _semaphore is None or _semaphore_loop is not loop:
+        _semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+        _semaphore_loop = loop
+    return _semaphore
+
+
 def _spawn(job_id: int) -> None:
-    task = asyncio.create_task(run_job(job_id))
+    if job_id in _reserved:
+        return
+    skipped_at = _skipped_at.get(job_id)
+    if skipped_at is not None and datetime.now() - skipped_at < timedelta(seconds=SKIP_THROTTLE_SECONDS):
+        return
+    _reserved.add(job_id)
+
+    async def bounded_run():
+        try:
+            async with _job_semaphore():
+                job = await asyncio.to_thread(_load_job, job_id)
+                if job is None or not job.enabled or not job_due(job, datetime.now()):
+                    return {"status": "skipped", "summary": "任务已不在到期状态，已跳过"}
+                return await run_job(job_id)
+        finally:
+            _reserved.discard(job_id)
+
+    try:
+        task = asyncio.create_task(bounded_run())
+    except Exception:
+        _reserved.discard(job_id)
+        raise
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 
 
+def _scan_due_ids(now: datetime) -> list[int]:
+    with SessionLocal() as db:
+        jobs = db.query(ScheduledJob).filter(ScheduledJob.enabled == True).all()
+        return [job.id for job in jobs if job_due(job, now)]
+
+
 async def scheduler_loop() -> None:
-    """调度主循环：每 TICK_SECONDS 检查一次，到期任务异步执行（同任务串行）。"""
+    """调度主循环：每 TICK_SECONDS 在线程中扫描，到期任务有界异步执行。"""
     logger.info("定时任务调度器已启动（每 %ds 检查一次）", TICK_SECONDS)
     while True:
         try:
             await asyncio.sleep(TICK_SECONDS)
-            now = datetime.now()
-            with SessionLocal() as db:
-                jobs = db.query(ScheduledJob).filter(ScheduledJob.enabled == True).all()
-                due_ids = [j.id for j in jobs if job_due(j, now)]
+            due_ids = await asyncio.to_thread(_scan_due_ids, datetime.now())
             for job_id in due_ids:
                 _spawn(job_id)
         except asyncio.CancelledError:
@@ -313,3 +436,19 @@ async def scheduler_loop() -> None:
             raise
         except Exception:
             logger.warning("调度循环异常（已忽略，继续下一轮）", exc_info=True)
+
+
+async def shutdown() -> None:
+    """取消并等待全部自动调度派生任务，再释放调度器进程内状态。"""
+    global _semaphore, _semaphore_loop
+    tasks = list(_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _tasks.clear()
+    _running.clear()
+    _reserved.clear()
+    _skipped_at.clear()
+    _semaphore = None
+    _semaphore_loop = None

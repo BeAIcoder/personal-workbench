@@ -1,5 +1,5 @@
 <template>
-  <el-drawer :model-value="visible" title="AI 助手设置" size="640px" @update:model-value="emit('update:visible', $event)">
+  <el-drawer :model-value="visible" title="AI 助手设置" size="min(640px, 92vw)" @update:model-value="emit('update:visible', $event)">
     <el-tabs v-model="tab">
       <el-tab-pane label="供应商与模型" name="providers">
         <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
@@ -47,7 +47,7 @@
                 :class="{ active: m.active, off: !m.enabled, 'model-row--deferred': mi >= DEFERRED_ROW_FROM }"
               >
                 <div class="model-row-main">
-                  <span class="model-name" :title="modelTip(m)" @click="activateModel(m)">
+                  <span class="model-name" :title="modelTip(m)" role="button" tabindex="0" :aria-label="`启用模型 ${m.model}`" @click="activateModel(m)" @keydown="onModelKeydown($event, m)">
                     {{ m.active ? '✓ ' : '' }}{{ m.model }}
                   </span>
                   <el-tag
@@ -67,10 +67,10 @@
                 </div>
                 <div class="model-row-ops">
                   <span class="ops-label">能力探测</span>
-                  <el-button size="small" link :loading="probingId === m.id + ':reasoning'" @click="runProbe(m, 'reasoning')">思考级别</el-button>
-                  <el-button size="small" link :loading="probingId === m.id + ':context'" @click="runProbe(m, 'context')">上下文</el-button>
-                  <el-button size="small" link :loading="probingId === m.id + ':output'" @click="runProbe(m, 'output')">输出</el-button>
-                  <el-button size="small" link :loading="probingId === m.id + ':all'" @click="runProbeAll(m)">全部</el-button>
+                  <el-button size="small" link :loading="probingId === m.id + ':reasoning'" :disabled="probeBusy" @click="runProbe(m, 'reasoning')">思考级别</el-button>
+                  <el-button size="small" link :loading="probingId === m.id + ':context'" :disabled="probeBusy" @click="runProbe(m, 'context')">上下文</el-button>
+                  <el-button size="small" link :loading="probingId === m.id + ':output'" :disabled="probeBusy" @click="runProbe(m, 'output')">输出</el-button>
+                  <el-button size="small" link :loading="probingId === m.id + ':all'" :disabled="probeBusy" @click="runProbeAll(m)">全部</el-button>
                   <span class="ops-label">实测</span>
                   <el-button size="small" link :loading="testingId === m.id + ':tools'" @click="testProvider(p, 'tools', m)">工具</el-button>
                   <el-button size="small" link :loading="testingId === m.id + ':image'" @click="testProvider(p, 'image', m)">图片</el-button>
@@ -89,7 +89,7 @@
             </div>
             <div class="prov-ops">
               <el-button size="small" link :loading="testingId === p.id + ':text'" @click="testProvider(p, 'text')">连通</el-button>
-              <el-button size="small" link :loading="probingProviderId === p.id" @click="runProbeAllModels(p)">探测全部模型</el-button>
+              <el-button size="small" link :loading="probingProviderId === p.id" :disabled="probeBusy" @click="runProbeAllModels(p)">探测全部模型</el-button>
               <el-button
                 size="small"
                 link
@@ -129,6 +129,20 @@
           <el-form-item label="最大工具轮次">
             <el-input-number v-model="globalsForm.max_iters" :min="1" :max="20" style="width: 220px" />
             <div class="cfg-hint">单轮对话中 Agent 最多连续调用工具的轮数；调大更会"多步处理"，调小更省钱省时</div>
+          </el-form-item>
+
+          <el-divider content-position="left">路由与记忆预算</el-divider>
+          <el-form-item label="路由轻量模型">
+            <el-select v-model="globalsForm.routing_model_id" clearable filterable
+              placeholder="跟随全局激活模型" style="width: 280px">
+              <el-option v-for="m in routingModelOptions" :key="m.id" :label="m.label" :value="m.id" />
+            </el-select>
+            <div class="cfg-hint">自动路由与滚动摘要使用的模型；留空=跟随全局激活模型</div>
+          </el-form-item>
+          <el-form-item label="记忆注入上限">
+            <el-input-number v-model="globalsForm.memory_inject_max" :min="0" :max="10"
+              :value-on-clear="null" placeholder="留空=默认 3" style="width: 220px" />
+            <div class="cfg-hint">每次注入的记忆条数预算：留空=后端默认 3，0=不注入（与「注入历史条数」是不同来源）</div>
           </el-form-item>
 
           <el-divider content-position="left">本地技能池（SKILL.md 格式，可直接复用 QwenPaw 技能商店）</el-divider>
@@ -179,7 +193,8 @@
             <div class="cfg-hint">每轮带入的最近对话条数（用户+助手）。关闭记忆则不携带上下文</div>
           </el-form-item>
         </el-form>
-        <el-button type="primary" :loading="savingCfg" style="width: 100%" @click="saveGlobals">保存工作参数</el-button>
+        <el-button type="primary" :loading="savingCfg" :disabled="!configReady" style="width: 100%" @click="saveGlobals">保存工作参数</el-button>
+        <div v-if="!configReady" class="cfg-hint">配置尚未加载完成，暂不能保存</div>
       </el-tab-pane>
     </el-tabs>
 
@@ -464,6 +479,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Close, Loading, Plus } from '@element-plus/icons-vue'
 import { assistantApi, modelProbeApi, providerPresetsApi } from '../../api'
+import { activationKeydown } from '../../utils/a11y'
 import AgentTeamPanel from './AgentTeamPanel.vue'
 
 const props = defineProps({
@@ -477,26 +493,46 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'refresh', 'team-changed'])
 
 const tab = ref(props.initialTab)
+// 配置尚未从 /assistant/config 加载（teamConfig 为空对象）时保存会用默认值覆盖真实配置
+const configReady = computed(() => Object.keys(props.teamConfig || {}).length > 0)
+// 本次抽屉打开期间是否已用 teamConfig 回填过：只有「未就绪→就绪」这一次回填，
+// 之后的配置刷新不得覆盖用户尚未保存的工作参数编辑。
+let configAppliedThisOpen = false
 
 watch(
   () => props.visible,
   (v) => {
-    if (!v) return
+    if (!v) {
+      configAppliedThisOpen = false
+      return
+    }
     tab.value = props.initialTab
-    // 打开抽屉时用最新 teamConfig 回填工作参数表单
-    Object.assign(globalsForm, {
-      max_iters: props.teamConfig.max_iters ?? 5,
-      enable_memory: props.teamConfig.enable_memory !== false,
-      history_inject: props.teamConfig.history_inject ?? 12,
-      enable_skills: !!props.teamConfig.enable_skills,
-      skills_dir: props.teamConfig.skills_dir || '',
-      enable_bash: !!props.teamConfig.enable_bash,
-      enable_plugins: !!props.teamConfig.enable_plugins,
-      plugins_dir: props.teamConfig.plugins_dir || '',
-    })
+    // 打开时配置已就绪才回填；未就绪时保留当前表单，等 teamConfig 到达后再回填，
+    // 避免先写入默认值、配置到达后保存反而覆盖真实配置。
+    if (configReady.value) {
+      applyTeamConfig()
+      configAppliedThisOpen = true
+    } else {
+      configAppliedThisOpen = false
+    }
     skillsFound.value = null
     pluginsFound.value = null
     if (!presetsLoaded.value) loadPresets()
+  },
+)
+
+// 抽屉已打开时配置从「未就绪→就绪」：只回填这一次；已回填后的刷新不覆盖用户编辑
+watch(
+  () => props.teamConfig,
+  (cfg) => {
+    if (!props.visible) return
+    if (!cfg || Object.keys(cfg).length === 0) {
+      configAppliedThisOpen = false
+      return
+    }
+    if (configAppliedThisOpen) return
+    applyTeamConfig()
+    configAppliedThisOpen = true
   },
 )
 
@@ -506,12 +542,46 @@ const globalsForm = reactive({
   max_iters: 5,
   enable_memory: true,
   history_inject: 12,
+  memory_inject_max: 3,
+  routing_model_id: null,
   enable_skills: false,
   skills_dir: '',
   enable_bash: false,
   enable_plugins: false,
   plugins_dir: '',
 })
+
+// 打开抽屉/测试时统一回填：0 是合法的记忆预算，不能用 || 兜底
+function applyTeamConfig() {
+  const cfg = props.teamConfig || {}
+  Object.assign(globalsForm, {
+    max_iters: cfg.max_iters ?? 5,
+    enable_memory: cfg.enable_memory !== false,
+    history_inject: cfg.history_inject ?? 12,
+    memory_inject_max: cfg.memory_inject_max ?? 3,
+    routing_model_id: cfg.routing_model_id ?? null,
+    enable_skills: !!cfg.enable_skills,
+    skills_dir: cfg.skills_dir || '',
+    enable_bash: !!cfg.enable_bash,
+    enable_plugins: !!cfg.enable_plugins,
+    plugins_dir: cfg.plugins_dir || '',
+  })
+}
+
+// 路由模型候选：只列启用供应商的启用模型（与 /assistant/models 同口径，无需额外请求）
+const routingModelOptions = computed(() => (props.providers || [])
+  .filter((p) => p.enabled !== false)
+  .flatMap((p) => (p.models || [])
+    .filter((m) => m.enabled !== false)
+    .map((m) => ({ id: m.id, label: `${p.name} · ${m.model}` }))))
+
+// 保存前归一：清空路由模型发送 null（后端 Optional[int]），避免空串 422
+function globalsPayload() {
+  return {
+    ...globalsForm,
+    routing_model_id: globalsForm.routing_model_id || null,
+  }
+}
 
 const discoveringSkills = ref(false)
 const skillsFound = ref(null)
@@ -523,6 +593,10 @@ const pluginsFound = ref(null)
 // 弹确认「先保存再检测」；用户取消则放弃检测（不发任何请求），
 // 保存成功才继续检测；保存失败（拦截器已提示）同样不再检测。
 async function ensureDirSaved(dir, savedDir, label) {
+  if (!configReady.value) {
+    ElMessage.warning('配置尚未加载完成，请稍后重试')
+    return false
+  }
   if (dir === String(savedDir || '').trim()) return true
   try {
     await ElMessageBox.confirm(
@@ -535,7 +609,7 @@ async function ensureDirSaved(dir, savedDir, label) {
   }
   savingCfg.value = true
   try {
-    await assistantApi.config.saveGlobals({ ...globalsForm })
+    await assistantApi.config.saveGlobals(globalsPayload())
     ElMessage.success('工作参数已保存并生效')
     emit('refresh')
     return true
@@ -586,10 +660,14 @@ async function discoverPluginsCount() {
 }
 
 async function saveGlobals() {
+  if (!configReady.value) {
+    ElMessage.warning('配置尚未加载完成，请稍后重试')
+    return
+  }
   if (savingCfg.value) return  // 忙态防连点
   savingCfg.value = true
   try {
-    await assistantApi.config.saveGlobals({ ...globalsForm })
+    await assistantApi.config.saveGlobals(globalsPayload())
     ElMessage.success('工作参数已保存并生效')
     emit('refresh')
     emit('update:visible', false)
@@ -731,6 +809,19 @@ async function reloadPresets() {
 
 // ---------------- 模型能力探测 ----------------
 const probingId = ref(null)
+const probingProviderId = ref(null)
+// 单模型与批量探测共用同一把锁：任一在跑时其它入口一律拒绝（I-1）
+const probeBusy = computed(() => Boolean(probingId.value || probingProviderId.value))
+
+function probeBusyMessage({ batch = false } = {}) {
+  if (probingProviderId.value) return '批量探测正在进行，请等待完成后再试'
+  if (probingId.value) {
+    return batch
+      ? '单模型探测正在进行，请等待完成后再批量探测'
+      : '单模型探测正在进行，请等待完成后再试'
+  }
+  return '已有探测正在进行，请等待完成后再试'
+}
 
 const PROBE_FN = {
   reasoning: modelProbeApi.probeReasoning,
@@ -759,6 +850,10 @@ function showProbeMessage(msg) {
 }
 
 async function runProbe(m, kind) {
+  if (probeBusy.value) {
+    ElMessage.warning(probeBusyMessage())
+    return
+  }
   probingId.value = m.id + ':' + kind
   try {
     const { data } = await PROBE_FN[kind](m.id)
@@ -775,6 +870,10 @@ async function runProbe(m, kind) {
 }
 
 async function runProbeAll(m) {
+  if (probeBusy.value) {
+    ElMessage.warning(probeBusyMessage())
+    return
+  }
   try {
     await ElMessageBox.confirm(
       '将发起约 15 次小型 API 请求（每次 max_tokens≤64 或上下文探测），消耗少量 token，约 1-2 分钟。确定开始？',
@@ -783,6 +882,11 @@ async function runProbeAll(m) {
     )
   } catch {
     return  // 用户取消
+  }
+  // 确认框打开期间可能有单模型探测启动：确认后再检查一次，避免两个入口并行
+  if (probeBusy.value) {
+    ElMessage.warning(probeBusyMessage())
+    return
   }
   probingId.value = m.id + ':all'
   try {
@@ -798,10 +902,12 @@ async function runProbeAll(m) {
 }
 
 // 批量入口：对某供应商下全部启用中的模型依次全量探测（只确认一次，失败容错不中断）
-const probingProviderId = ref(null)
 
 async function runProbeAllModels(p) {
-  if (probingProviderId.value) return  // 忙态防连点
+  if (probeBusy.value) {
+    ElMessage.warning(probeBusyMessage({ batch: true }))
+    return
+  }
   const targets = (p.models || []).filter((m) => m.enabled !== false)
   if (!targets.length) {
     ElMessage.warning(`供应商「${p.name}」下没有启用中的模型`)
@@ -815,6 +921,11 @@ async function runProbeAllModels(p) {
     )
   } catch {
     return  // 用户取消
+  }
+  // 确认框打开期间可能有单模型探测启动：确认后再检查一次
+  if (probeBusy.value) {
+    ElMessage.warning(probeBusyMessage({ batch: true }))
+    return
   }
   probingProviderId.value = p.id
   const failed = []
@@ -914,6 +1025,8 @@ function openProviderForm() {
   Object.assign(provDialog, { visible: true, id: null, preset: null, presetFill: null, presetModels: [], name: '', protocol: 'openai', base_url: '', api_key: '', preset_key: '', models_url: '', sync_access_key: '', sync_secret_key: '', enabled: true, saving: false })
   presetCandidateModels.value = []
   presetFillInfo.value = null
+  presetAutoFill.preset_key = ''
+  presetAutoFill.models_url = ''
 }
 
 function editProvider(p) {
@@ -937,13 +1050,30 @@ function editProvider(p) {
   })
   presetCandidateModels.value = []
   presetFillInfo.value = null
+  presetAutoFill.preset_key = ''
+  presetAutoFill.models_url = ''
 }
 
-// 快速预设与「从预设填充」共用：填 base_url/协议，并带出候选模型多选
+// 快速预设与「从预设填充」共用：填 base_url/协议，并带出候选模型多选。
+// preset_key/models_url 是同步适配器定位字段：只回填「空值或上次自动填充值」，
+// 用户手工填写的内容不被预设覆盖。
+const presetAutoFill = reactive({ preset_key: '', models_url: '' })
+
+function fillPresetField(field, value) {
+  if (!value) return
+  const current = provDialog[field]
+  if (!current || current === presetAutoFill[field]) {
+    provDialog[field] = value
+    presetAutoFill[field] = value
+  }
+}
+
 function fillProviderFromPreset(p) {
   if (p.base_url) provDialog.base_url = p.base_url
   provDialog.protocol = p.protocol || 'openai'
   if (!provDialog.name) provDialog.name = p.label
+  fillPresetField('preset_key', p.preset_key)
+  fillPresetField('models_url', p.models_url)
   presetCandidateModels.value = [...(p.models || [])]
   provDialog.presetModels = [...(p.models || [])]
 }
@@ -1043,6 +1173,10 @@ async function activateModel(m) {
   } catch {
     /* 拦截器已提示 */
   }
+}
+
+function onModelKeydown(event, model) {
+  activationKeydown(() => activateModel(model))(event)
 }
 
 // ---- 模型表单 ----
@@ -1214,7 +1348,10 @@ async function removeModel(p, m) {
 //  verdict 三态（supported/rejected/unknown）：401/403/404/408/429/网络错误 = unknown，
 //  不显示成「❌ 不支持」，只如实说明未获得结论
 async function testProvider(p, kind, model) {
-  if (testingId.value) return  // 忙态防连点
+  if (testingId.value) {
+    ElMessage.warning('已有实测正在进行，请等待完成后再试')
+    return
+  }
   const key = model ? model.id + ':' + kind : p.id + ':' + kind
   testingId.value = key
   try {

@@ -123,7 +123,10 @@ def repair_upload_mojibake(name: str) -> str:
     if not name or not any("\u0080" <= c <= "\u00ff" for c in name):
         return name
     try:
-        fixed = name.encode("latin-1").decode("gbk")
+        raw = name.encode("latin-1")
+        fixed = raw.decode("gbk")
+        if raw != fixed.encode("gbk"):
+            return name
     except (UnicodeEncodeError, UnicodeDecodeError):
         return name
     if any("\u4e00" <= c <= "\u9fff" for c in fixed):

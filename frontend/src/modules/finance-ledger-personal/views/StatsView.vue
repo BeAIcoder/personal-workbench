@@ -45,6 +45,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { bindChartResize } from '../../../utils/chartResize.js'
 import * as echarts from 'echarts'
 import api from '../../../api'
 import { localMonth } from '../../_shared/dates'
@@ -113,8 +114,14 @@ function renderCharts(trend) {
   })
 }
 
-onMounted(load)
+let detachResize = () => {}
+
+onMounted(() => {
+  detachResize = bindChartResize(() => [trendInst, pieInst])
+  load()
+})
 onUnmounted(() => {
+  detachResize()
   trendInst?.dispose()
   pieInst?.dispose()
 })

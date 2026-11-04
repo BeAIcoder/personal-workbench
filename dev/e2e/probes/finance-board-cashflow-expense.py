@@ -99,7 +99,14 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = RESULTS / "finance-bce-data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["FINANCE_BOARD_PIPELINE_PATH"] = str(BOARD_PIPE)
+# C1（Task 11 复核）：必须显式指向不存在的隔离任务名，保证 _scheduled_task_available=False，
+# 走直接执行合成 fixture；否则本机会触发真实「微信报表监控」计划任务并污染外部管线。
+env["FINANCE_BOARD_TASK_NAME"] = "__task11_probe_no_such_task__"
 env["PYTHONIOENCODING"] = "utf-8"
 env["SEED_ON_STARTUP"] = "0"
 

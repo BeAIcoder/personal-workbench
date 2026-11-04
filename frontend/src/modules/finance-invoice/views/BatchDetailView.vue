@@ -84,7 +84,7 @@
         <el-table-column prop="tax_amount" label="税额" width="100" align="right" />
         <el-table-column label="项目" min-width="120">
           <template #default="{ row }">
-            <el-input v-model="row.project_name" size="small" @blur="patchItem(row)" placeholder="未归类" />
+            <el-input v-model="row.project_name" size="small" @blur="patchItemField(row, 'project_name')" placeholder="未归类" />
           </template>
         </el-table-column>
         <el-table-column label="状态" width="90">
@@ -96,13 +96,18 @@
         </el-table-column>
         <el-table-column label="备注" min-width="120">
           <template #default="{ row }">
-            <el-input v-model="row.remark" size="small" @blur="patchItem(row)" />
+            <el-input v-model="row.remark" size="small" @blur="patchItemField(row, 'remark')" />
           </template>
         </el-table-column>
       </el-table>
     </el-card>
     </template>
-    <el-result v-else icon="error" title="批次不存在或加载失败" sub-title="请返回批次列表查看最新批次" />
+    <el-result v-else icon="error" title="批次加载失败" :sub-title="failureText">
+      <template #extra>
+        <el-button type="primary" @click="load">重新加载</el-button>
+        <el-button @click="$router.back()">返回列表</el-button>
+      </template>
+    </el-result>
   </div>
 </template>
 
@@ -112,6 +117,8 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import { isRedInvoice } from '../itemDisplay'
+import { createItemPatcher } from '../itemPatch'
+import { saveBlob } from '../../../utils/download.js'
 
 const UNCLASSIFIED = '未归类'
 const route = useRoute()
@@ -119,9 +126,12 @@ const loading = ref(false)
 const exporting = ref(false)
 const reclassifying = ref(false)
 const failed = ref(false)
+const failureText = ref('批次不存在或加载失败')
 const keyword = ref('')
 const batch = ref({ items: [] })
 const projects = ref([])
+// 最近一次服务端确认值：patch 失败时只回滚该行该字段，不整体重载覆盖其它行
+const serverValues = new Map()
 
 // 金额合计可能为 null（解析未完成/失败批次）：直接 toLocaleString 会得到空白，
 // 统一用「—」占位；合法值保持既有千分位 + 两位小数口径
@@ -156,12 +166,22 @@ async function load() {
   try {
     const { data } = await api.get(`/finance/invoice/batches/${route.params.id}`)
     batch.value = data
+    rememberServerValues(data.items)
     await loadProjects()
   } catch {
     // 加载失败：切到错误态，不再渲染详情壳（否则标题显示「批次详情 #undefined」）
+    failureText.value = '批次不存在或加载失败'
     failed.value = true
   } finally {
     loading.value = false
+  }
+}
+
+function rememberServerValues(items) {
+  serverValues.clear()
+  for (const item of items || []) {
+    serverValues.set(`${item.id}:project_name`, item.project_name ?? '')
+    serverValues.set(`${item.id}:remark`, item.remark ?? '')
   }
 }
 
@@ -174,17 +194,33 @@ async function loadProjects() {
   }
 }
 
-async function patchItem(row) {
-  try {
-    await api.patch(`/finance/invoice/items/${row.id}`, {
-      project_name: row.project_name || null,
-      remark: row.remark || null,
-    })
+async function patchItemField(row, field) {
+  // 清空必须发空串：后端把 null 当作「未提供」，只有 "" 才是真正清空字段
+  const value = row[field] == null ? '' : String(row[field])
+  const outcome = await patcher.patch(row.id, field, value)
+  if (outcome.applied && outcome.result && Object.prototype.hasOwnProperty.call(outcome.result, field)) {
+    row[field] = outcome.result[field]
+    serverValues.set(`${row.id}:${field}`, row[field] ?? '')
     await loadProjects()
-  } catch {
-    /* 拦截器已统一提示 */
   }
 }
+
+const patcher = createItemPatcher({
+  send: async (itemId, payload) => {
+    try {
+      const { data } = await api.patch(`/finance/invoice/items/${itemId}`, payload)
+      return data
+    } catch (error) {
+      throw error
+    }
+  },
+  onError: (itemId, field) => {
+    // 止损：只回滚失败行该字段，不整体重载（否则会丢其它行尚未提交的编辑）
+    const row = (batch.value.items || []).find((item) => item.id === itemId)
+    if (row) row[field] = serverValues.get(`${itemId}:${field}`) ?? ''
+    ElMessage.warning('保存失败，已恢复该字段；其它行的未提交修改保持不动')
+  },
+})
 
 async function doReclassify() {
   if (batch.value.status === 'exported') {
@@ -214,7 +250,8 @@ async function doReclassify() {
 async function doExport() {
   exporting.value = true
   try {
-    const { data } = await api.post(`/finance/invoice/batches/${batch.value.id}/export`)
+    // 大批次重命名 + 打包全部 PDF 可能超 10s，放宽到 5 分钟
+    const { data } = await api.post(`/finance/invoice/batches/${batch.value.id}/export`, {}, { timeout: 300000 })
     const zips = Object.keys(data.project_zips || {}).length
     ElMessage.success(`导出完成：${data.projects} 个项目，拆分 ZIP ${zips} 个，${(data.zip_size / 1024).toFixed(1)} KB`)
     await load()
@@ -246,17 +283,9 @@ function downloadProject(project, zipFile) {
 async function saveZip(url, filename) {
   try {
     const { data } = await api.get(url, { responseType: 'blob', timeout: 300000 })
-    const blobUrl = URL.createObjectURL(data)
-    const link = document.createElement('a')
-    link.href = blobUrl
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    // 稍后回收对象 URL，避免过早 revoke 打断下载
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000)
+    saveBlob(data, filename)
   } catch {
-    /* 拦截器已统一提示 */
+    /* 拦截器已统一提示（Blob 错误体已解析出后端 detail） */
   }
 }
 

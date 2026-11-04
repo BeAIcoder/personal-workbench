@@ -39,10 +39,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 OUT = ROOT / "dev" / "e2e" / "probe_results" / "perf"
+DATA_ROOT = OUT / "app-data"
 DB = OUT / "perf.db"
 FIN_DIR = OUT / "finance-data"
 DEBUG_DIR = OUT / "debug-data"
-UPLOAD_DIR = OUT / "uploads"
+UPLOAD_DIR = DATA_ROOT / "uploads"
 LOG = OUT / "server.log"
 SEED_LOG = OUT / "seed.log"
 PORT = 8230
@@ -57,6 +58,7 @@ def env_for_seed() -> dict[str, str]:
             "DATABASE_URL": f"sqlite:///{DB.as_posix()}",
             "FINANCE_DATA_DIR": str(FIN_DIR),
             "DEBUG_DATA_DIR": str(DEBUG_DIR),
+            "WORKBENCH_DATA_DIR": str(DATA_ROOT),
             "UPLOAD_DIR": str(UPLOAD_DIR),
             "SEED_ON_STARTUP": "0",
             "PYTHONIOENCODING": "utf-8",
@@ -245,13 +247,15 @@ finally:
 def prepare_dirs(clear: bool) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     if clear:
+        if DATA_ROOT.exists():
+            shutil.rmtree(DATA_ROOT)
         for p in (DB, LOG, SEED_LOG):
             if p.exists():
                 p.unlink()
         for d in (FIN_DIR, DEBUG_DIR, UPLOAD_DIR):
             if d.exists():
                 shutil.rmtree(d)
-    for d in (FIN_DIR, DEBUG_DIR, UPLOAD_DIR):
+    for d in (FIN_DIR, DEBUG_DIR, DATA_ROOT, UPLOAD_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

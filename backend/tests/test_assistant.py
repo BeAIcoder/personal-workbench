@@ -139,6 +139,13 @@ def test_generic_label_is_specific_when_keyword_has_same_text():
     assert team_mod.keyword_hit("安排", team) == "coordinator"
 
 
+def test_label_weight_uses_strongest_keyword_for_same_matched_text():
+    team = {"operations": _route_agent("operations", "收缴率", ["收缴", "收缴率"])}
+    match = team_mod.route_scores("收缴", team)[0]
+    assert match["score"] == 6
+    assert match["hits"] == ["收缴", "收缴率"]
+
+
 def test_english_keywords_match_nfkc_terms_next_to_chinese():
     team = {"investment": _route_agent("investment", "投资测算", ["ROI", "IRR"])}
     matches = team_mod.route_scores("测算ＲＯＩ和IRR", team)
@@ -228,6 +235,13 @@ def test_session_id_charset_enforced(client):
         resp = client.post(path, json={"session_id": "bad id!", "message": "hi"})
         assert resp.status_code == 400, f"{path} 未校验 session_id: {resp.status_code}"
         assert "非法的 session_id" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("session_id", ["job-user-01", "memory-extract"])
+def test_internal_session_prefixes_are_rejected_at_api_boundary(client, session_id):
+    resp = client.post("/api/assistant/sessions", json={"session_id": session_id})
+    assert resp.status_code == 400
+    assert "内部会话" in resp.json()["detail"]
 
 
 # ---------- 业务工具（直接读写测试库）----------
@@ -339,12 +353,14 @@ def test_config_test_model_id_writes_probe_verdicts(client, monkeypatch):
     monkeypatch.setattr(config_store, "test_connection", fake_text)
     monkeypatch.setattr(config_store, "test_tool_calling", fake_tools)
     monkeypatch.setattr(config_store, "test_multimodal", fake_image)
+    orchestrator._models[mid] = object()
 
     resp = client.post(
         "/api/assistant/config/test",
         json={"model_id": mid, "test_tools": True, "include_image": True},
     )
     assert resp.status_code == 200, resp.text
+    assert orchestrator._models == {}
     prov = next(p for p in client.get("/api/assistant/providers").json()["providers"] if p["id"] == pid)
     m = next(x for x in prov["models"] if x["id"] == mid)
     assert m["supports_tools"] == 1 and m["supports_vision"] is True

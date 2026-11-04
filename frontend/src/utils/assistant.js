@@ -83,6 +83,13 @@ export function sendBlockHint(content, attachments) {
 
 // 切换会话/清空消息时拆分缩略图 objectURL：只回收不再使用的（已入气泡的），
 // 待发送附件的 previewUrl 必须保留——上传响应无 url 时它是输入区缩略图的唯一显示源
+// 助手落库结果 → 用户可见的非终止告警：只在明确 persisted=false 时提示，
+// 未知形状（旧后端/缺字段）不猜，返回空串；流式 done 与非流式完整结果同口径。
+export function persistenceNotice(payload) {
+  if (!payload || payload.persisted !== false) return ''
+  return String(payload.persistence_warning || '').trim()
+}
+
 export function splitPreviewUrls(urls, keepUrls) {
   const keepSet = new Set((keepUrls || []).filter(Boolean))
   const revoke = []

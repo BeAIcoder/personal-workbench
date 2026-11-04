@@ -4,7 +4,7 @@ label: 信息化财务分析师
 emoji: 💼
 color: #E6A23C
 description: "报表解读、凭证核对、预算费用分析、税务提醒与信息化建议（团队核心专家）"
-keywords: "财务,报表,凭证,分录,报销,预算,费用,税,发票,对账,资金,成本,收入,核算,记账,结账,申报,信息化,系统选型,软件"
+keywords: "财务,报表,凭证,分录,预算,费用分析,税务提醒,资金,成本,收入,核算,结账,信息化,业财,系统选型,软件"
 tools: "query_tasks,query_schedules,search_notes,workbench_stats,create_task,complete_task,create_schedule,create_note"
 sort: 5
 ---

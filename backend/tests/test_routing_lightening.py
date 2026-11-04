@@ -154,3 +154,74 @@ def test_invalidate_clears_route_cache():
     orchestrator._route_cache[("k", "q")] = (0.0, "leasing")
     orchestrator.invalidate()
     assert orchestrator._route_cache == {}
+
+
+def test_route_cache_distinguishes_questions_with_same_200_char_prefix():
+    team = _team()
+    calls = []
+
+    async def _reply(self, msg, **kwargs):
+        text = msg.get_text_content() or ""
+        calls.append(text)
+        return _assistant_msg("招商专员" if text.endswith("选择招商") else "综合管家")
+
+    from agentscope.agent import Agent
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(orchestrator, "_get_routing_model", lambda: object())
+        monkeypatch.setattr(Agent, "reply", _reply)
+        prefix = "相" * 200
+        assert asyncio.run(orchestrator._route_by_llm(prefix + "选择综合", team)) == "realestate"
+        assert asyncio.run(orchestrator._route_by_llm(prefix + "选择招商", team)) == "leasing"
+    finally:
+        monkeypatch.undo()
+    assert len(calls) == 2
+
+
+def test_job_never_uses_interactive_only_routing_model(monkeypatch, client):
+    team = _team()
+    replies = []
+
+    async def _reply(self, msg, **kwargs):
+        replies.append(msg.get_text_content() or "")
+        return _assistant_msg("招商专员")
+
+    from agentscope.agent import Agent
+
+    monkeypatch.setattr(orchestrator.config_store, "load", lambda: {"routing_model_id": 42})
+    monkeypatch.setattr(
+        orchestrator.config_store,
+        "model_cfg_by_id",
+        lambda model_id: {"model": "interactive-plan", "usage_scope": "plan_interactive_only"},
+    )
+    monkeypatch.setattr(orchestrator, "build_model", lambda cfg: object())
+    monkeypatch.setattr(orchestrator, "_get_model", lambda session_id=None: object())
+    monkeypatch.setattr(Agent, "reply", _reply)
+    resolved = asyncio.run(orchestrator._resolve_route("没有关键词", None, "job-route-scope"))
+    assert resolved[0].name == "realestate"
+    assert replies == []
+
+
+def test_job_summary_uses_no_model_and_returns_no_old_summary(monkeypatch, client):
+    from app.database import SessionLocal
+    from app.models import AgentSession
+
+    sid = "job-summary-scope"
+    with SessionLocal() as db:
+        db.add(AgentSession(session_id=sid, summary="不得注入的旧摘要"))
+        db.commit()
+    monkeypatch.setattr(orchestrator.config_store, "load", lambda: {
+        "routing_model_id": 42,
+        "enable_memory": True,
+        "history_inject": 2,
+    })
+    monkeypatch.setattr(orchestrator.config_store, "model_cfg_by_id", lambda model_id: {
+        "usage_scope": "plan_interactive_only",
+    })
+
+    def forbidden(session_id=None):
+        raise AssertionError("job 摘要不得构建或调用交互套餐模型")
+
+    monkeypatch.setattr(orchestrator, "_get_routing_model", forbidden)
+    assert asyncio.run(orchestrator._refresh_session_summary(sid)) == ""

@@ -42,7 +42,23 @@ manifest = ModuleManifest(
             "readonly": True,
         },
     ],
-    column_patches={},
+    column_patches={
+        # 历史库补列：合并来源追踪 + 批次统计 + 余额表账簿/方向无关余额（create_all 不改已有表）
+        "mod_bip_voucher": {"sources": "TEXT DEFAULT ''"},
+        "mod_bip_batch": {
+            "updated_balances": "INTEGER DEFAULT 0",
+            "unchanged_balances": "INTEGER DEFAULT 0",
+            "merged_vouchers": "INTEGER DEFAULT 0",
+            "merged_entries": "INTEGER DEFAULT 0",
+            "ambiguous_entries": "INTEGER DEFAULT 0",
+            "invalid_amount_rows": "INTEGER DEFAULT 0",
+        },
+        "mod_bip_balance": {
+            "ledger": "TEXT DEFAULT ''",
+            "opening_balance": "FLOAT DEFAULT 0",
+            "closing_balance": "FLOAT DEFAULT 0",
+        },
+    },
     requires=[],
     preset_experts=["finance_specialist"],  # 工具自动预置进财税专员白名单
     enabled=True,

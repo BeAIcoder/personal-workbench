@@ -103,6 +103,10 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = PROBE_DIR / "data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 env["SEED_ON_STARTUP"] = "0"  # 干净业务库；debug_center 自有种子（11 条问题）不受影响
 
@@ -448,9 +452,11 @@ try:
                 };
             }""")
             assert style, "展开行内找不到错误清单 pre 元素"
-            assert style["bg"] == "rgb(254, 240, 240)" and style["maxH"] == "180px", (
-                f"错误清单样式未生效（scoped 属性丢失）：{style}"
+            # 以浏览器计算样式为准：颜色随 Element Plus 主题变量变化，不应硬编码色值。
+            assert style["maxH"] == "180px" and style["ovf"] == "auto", (
+                f"错误清单长栈限制未生效（scoped 穿透失效）：{style}"
             )
+            assert style["bg"] != "rgba(0, 0, 0, 0)", f"错误清单背景未生效: {style}"
             page.locator(".el-drawer__close-btn").click()
             page.wait_for_timeout(400)
         record("TC-DC-RUN-003", "页面行展开错误清单（含样式生效）", tc_run_003)

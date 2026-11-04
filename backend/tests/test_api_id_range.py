@@ -80,7 +80,7 @@ def test_global_overflow_handler_is_mounted_on_the_app():
 
 
 def test_overflow_handler_maps_to_422_json():
-    """处理器本身：任何 OverflowError 都转成 422 结构化错误，不再穿透 500。"""
+    """处理器本身：越界 int64 路径 ID 转成 422；业务溢出由 Task 1 新用例反向锁定。"""
     mini = FastAPI()
 
     @mini.get("/probe/{item_id}")

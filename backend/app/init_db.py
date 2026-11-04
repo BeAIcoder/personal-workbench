@@ -6,8 +6,12 @@
 """
 import argparse
 
+from fastapi import FastAPI
+
 from .database import Base, SessionLocal, engine
-from .seed import seed_if_empty
+from .modules import apply_pending_presets, load_modules
+from .modules.registry import apply_loaded_presets
+from .seed import seed_agent_specs, seed_if_empty
 
 
 def main() -> None:
@@ -15,13 +19,17 @@ def main() -> None:
     parser.add_argument("--reset", action="store_true", help="清空已有数据并重建")
     args = parser.parse_args()
 
+    load_modules(FastAPI())
     if args.reset:
         Base.metadata.drop_all(bind=engine)
         print("已清空原有数据。")
 
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
+        seed_agent_specs(db)
         counts = seed_if_empty(db)
+    apply_pending_presets()
+    apply_loaded_presets()
 
     if counts:
         print(f"已写入示例数据：任务 {counts['tasks']} 条、日程 {counts['schedules']} 条、笔记 {counts['notes']} 条。")

@@ -351,7 +351,7 @@ def test_column_patches_migration_is_idempotent(tmp_path, monkeypatch):
             assert "opened_at" in unit_columns
             assert {
                 "unit_id", "rent_form", "free_rent_months", "escalation_rate",
-                "fitout_subsidy", "lease_term_months",
+                "fitout_subsidy", "lease_term_months", "released_at",
             } <= lead_columns
             first_schema = conn.execute(text(
                 "SELECT name, sql FROM sqlite_master WHERE name IN "

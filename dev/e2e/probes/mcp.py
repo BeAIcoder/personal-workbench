@@ -129,6 +129,10 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = RESULTS / "data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 env["SEED_ON_STARTUP"] = "0"
 

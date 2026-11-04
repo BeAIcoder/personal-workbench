@@ -149,6 +149,40 @@ def test_summary_failure_keeps_old_summary():
     _cleanup(sid)
 
 
+def test_summary_failure_backoff_avoids_repeated_model_calls():
+    sid = "sess-sum-retry"
+    _cleanup(sid)
+    config_store.save_globals({"history_inject": 2})
+    _persist_msgs(sid, [f"退避{i}" for i in range(1, 17)])
+    with SessionLocal() as db:
+        r = db.get(AgentSession, sid)
+        r.summary = "旧摘要"
+        r.summary_until = 0
+        db.commit()
+
+    calls = []
+
+    async def _reply(self, msg, **kwargs):
+        calls.append(1)
+        raise RuntimeError("summarize boom")
+
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(orchestrator, "_get_routing_model", lambda: object())
+        mp.setattr(Agent, "reply", _reply)
+        assert asyncio.run(orchestrator._refresh_session_summary(sid)) == "旧摘要"
+        assert asyncio.run(orchestrator._refresh_session_summary(sid)) == "旧摘要"
+        assert len(calls) == 1
+        orchestrator._summary_retry_until[sid] = 0
+        assert asyncio.run(orchestrator._refresh_session_summary(sid)) == "旧摘要"
+        assert len(calls) == 2
+    finally:
+        mp.undo()
+        orchestrator._summary_retry_until.pop(sid, None)
+    assert _row(sid).summary_until == 0
+    _cleanup(sid)
+
+
 def test_ensure_agent_injects_summary_and_history(monkeypatch):
     sid = "sess-sum-inject"
     _cleanup(sid)
@@ -165,7 +199,9 @@ def test_ensure_agent_injects_summary_and_history(monkeypatch):
     observed = []
 
     class _FakeAgent:
-        def observe(self, msgs):
+        # 真实 agentscope Agent.observe 是 async：调用方若漏了 await，协程不会执行，
+        # observed 保持为空——本用例因此能抓住「历史注入静默失效」的回归。
+        async def observe(self, msgs):
             observed.extend(msgs)
 
     async def fake_build(spec, mode, session_id=None):
@@ -178,6 +214,7 @@ def test_ensure_agent_injects_summary_and_history(monkeypatch):
     asyncio.run(orchestrator._ensure_agent(sid, spec, "standard"))
     texts = [m.get_text_content() or "" for m in observed]
     assert texts[0].startswith("【此前对话摘要】历史摘要文本")
-    assert texts[1] == "问1" and texts[2] == "答1" and texts[3] == "问2"
+    assert texts[1:] == ["问1", "答1"]
+    assert "问2" not in texts  # 末尾用户消息是本轮输入，由 reply 接收，不能重复 observe
     _cleanup(sid)
     orchestrator.invalidate()

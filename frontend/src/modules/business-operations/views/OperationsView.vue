@@ -161,7 +161,7 @@
         <el-row :gutter="12">
           <el-col :span="12"><el-form-item label="合同编号" required><el-input v-model="contractForm.contract_no" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="租户" required><el-input v-model="contractForm.tenant" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="关联铺位"><el-select v-model="contractForm.unit_id" clearable filterable placeholder="从招商铺位选择（可选）" style="width: 100%"><el-option v-for="u in unitOptions" :key="u.id" :label="u.label" :value="u.id" /></el-select></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="关联铺位"><el-select v-model="contractForm.unit_id" clearable filterable remote :remote-method="searchUnitOptions" :loading="unitOptionsLoading" placeholder="从招商铺位选择（可选）" style="width: 100%"><el-option v-for="u in unitOptions" :key="u.id" :label="u.label" :value="u.id" /><el-option v-if="unitOptionsHint" :value="null" disabled :label="unitOptionsHint" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="铺位号(手填)"><el-input v-model="contractForm.unit_no" placeholder="未关联铺位时手工填写" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="面积(㎡)"><el-input-number v-model="contractForm.area" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="开始日期" required><el-date-picker v-model="contractForm.start_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item></el-col>
@@ -214,8 +214,8 @@
           <el-col :span="12"><el-form-item label="状态"><el-select v-model="orderForm.status"><el-option v-for="s in orderStatuses" :key="s.value" :label="s.label" :value="s.value" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="责任人"><el-input v-model="orderForm.assignee" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="要求完成"><el-date-picker v-model="orderForm.due_at" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width: 100%" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="父工单"><el-select v-model="orderForm.parent_id" clearable filterable style="width: 100%"><el-option v-for="item in orderOptions.filter(o => o.id !== orderForm.id)" :key="item.id" :label="`${item.code} · ${item.description}`" :value="item.id" /></el-select></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="关联设备"><el-select v-model="orderForm.equipment_id" clearable filterable placeholder="可选" style="width: 100%"><el-option v-for="item in equipmentOptions" :key="item.id" :label="`${item.code} · ${item.name}`" :value="item.id" /></el-select></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="父工单"><el-select v-model="orderForm.parent_id" clearable filterable remote :remote-method="searchOrderOptions" :loading="orderOptionsLoading" style="width: 100%"><el-option v-for="item in orderOptions.filter(o => o.id !== orderForm.id)" :key="item.id" :label="orderOptionLabel(item)" :value="item.id" /><el-option v-if="orderOptionsHint" :value="null" disabled :label="orderOptionsHint" /></el-select></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="关联设备"><el-select v-model="orderForm.equipment_id" clearable filterable remote :remote-method="searchEquipmentOptions" :loading="equipmentOptionsLoading" placeholder="可选" style="width: 100%"><el-option v-for="item in equipmentOptions" :key="item.id" :label="equipmentOptionLabel(item)" :value="item.id" /><el-option v-if="equipmentOptionsHint" :value="null" disabled :label="equipmentOptionsHint" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="关联合同"><el-select v-model="orderForm.contract_id" clearable filterable placeholder="可选" style="width: 100%"><el-option v-for="item in contracts" :key="item.id" :label="`${item.contract_no} · ${item.tenant}`" :value="item.id" /></el-select></el-form-item></el-col>
         </el-row>
         <el-form-item label="描述" required><el-input v-model="orderForm.description" type="textarea" :rows="3" /></el-form-item>
@@ -250,9 +250,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import { optionCapHint, optionParams, ensureOption, createRemoteOptionSearch } from '../../../utils/remoteOptions.js'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const aiPrompt = computed(() => '请分析营运台账：在租合同与账龄结构、收缴率、超期工单与 SLA 风险，并指出数据质量问题')
@@ -277,7 +278,13 @@ const contracts = ref([])
 const bills = ref([])
 const orders = ref([])
 const orderOptions = ref([])
+const orderOptionsTotal = ref(0)
+const orderOptionsLoading = ref(false)
+const orderOptionsHint = computed(() => optionCapHint(orderOptions.value, orderOptionsTotal.value))
 const equipmentOptions = ref([])
+const equipmentOptionsTotal = ref(0)
+const equipmentOptionsLoading = ref(false)
+const equipmentOptionsHint = computed(() => optionCapHint(equipmentOptions.value, equipmentOptionsTotal.value))
 const expiring = ref([])
 const contractTotal = ref(0)
 const billTotal = ref(0)
@@ -306,6 +313,9 @@ const agingWarning = computed(() => {
 
 const contractDialog = ref(false)
 const unitOptions = ref([])
+const unitOptionsTotal = ref(0)
+const unitOptionsLoading = ref(false)
+const unitOptionsHint = computed(() => optionCapHint(unitOptions.value, unitOptionsTotal.value))
 const contractForm = reactive({
   id: null, contract_no: '', tenant: '', unit_no: '', unit_id: null, area: 0,
   start_date: '', end_date: '', rent_monthly: 0, property_fee_monthly: 0,
@@ -437,22 +447,64 @@ function searchOrders() {
   return loadOrders()
 }
 
-async function loadOrderOptions() {
+async function loadOrderOptions(keyword = '', token = null) {
+  orderOptionsLoading.value = true
   try {
     const { data } = await api.get('/business/operations/work-orders', {
-      params: { page: 1, page_size: 200 },
+      params: optionParams(keyword),
     })
+    if (token !== null && !orderSearch.isCurrent(token)) return
     orderOptions.value = data.items || []
-  } catch { /* 拦截器已提示 */ }
+    orderOptionsTotal.value = data.total ?? orderOptions.value.length
+  } catch {
+    if (token !== null && !orderSearch.isCurrent(token)) return
+    orderOptions.value = []
+    orderOptionsTotal.value = 0
+    /* 拦截器已提示 */
+  } finally {
+    if (token === null || orderSearch.isCurrent(token)) orderOptionsLoading.value = false
+  }
 }
 
-async function loadEquipmentOptions() {
+const orderSearch = createRemoteOptionSearch((keyword, token) => loadOrderOptions(keyword, token))
+
+function searchOrderOptions(keyword) {
+  return orderSearch.search(keyword)
+}
+
+async function loadEquipmentOptions(keyword = '', token = null) {
+  equipmentOptionsLoading.value = true
   try {
     const { data } = await api.get('/business/facility/equipment', {
-      params: { page: 1, page_size: 200 },
+      params: optionParams(keyword),
     })
+    if (token !== null && !equipmentSearch.isCurrent(token)) return
     equipmentOptions.value = data.items || []
-  } catch { /* 拦截器已提示 */ }
+    equipmentOptionsTotal.value = data.total ?? equipmentOptions.value.length
+  } catch {
+    if (token !== null && !equipmentSearch.isCurrent(token)) return
+    equipmentOptions.value = []
+    equipmentOptionsTotal.value = 0
+    /* 拦截器已提示 */
+  } finally {
+    if (token === null || equipmentSearch.isCurrent(token)) equipmentOptionsLoading.value = false
+  }
+}
+
+const equipmentSearch = createRemoteOptionSearch((keyword, token) => loadEquipmentOptions(keyword, token))
+
+function searchEquipmentOptions(keyword) {
+  return equipmentSearch.search(keyword)
+}
+
+function orderOptionLabel(item) {
+  if (!item) return ''
+  return item.description ? `${item.code} · ${item.description}` : (item.code || `#${item.id}`)
+}
+
+function equipmentOptionLabel(item) {
+  if (!item) return ''
+  return item.name ? `${item.code} · ${item.name}` : (item.code || `#${item.id}`)
 }
 
 async function loadAll() {
@@ -463,17 +515,30 @@ async function loadAll() {
   ])
 }
 
-async function loadUnitOptions() {
+async function loadUnitOptions(keyword = '', token = null) {
+  unitOptionsLoading.value = true
   try {
-    const { data } = await api.get('/business/leasing/units', { params: { page: 1, page_size: 500 } })
+    const { data } = await api.get('/business/leasing/units', { params: optionParams(keyword) })
+    if (token !== null && !unitSearch.isCurrent(token)) return
     unitOptions.value = (data.items || []).map((u) => ({
       id: u.id,
       label: `${u.building || ''}${u.floor ? '/' + u.floor : ''} ${u.unit_no}`.trim() || `#${u.id}`,
       unit_no: u.unit_no,
     }))
+    unitOptionsTotal.value = data.total ?? unitOptions.value.length
   } catch {
+    if (token !== null && !unitSearch.isCurrent(token)) return
     unitOptions.value = [] // 招商模块不可用时退化为纯手填
+    unitOptionsTotal.value = 0
+  } finally {
+    if (token === null || unitSearch.isCurrent(token)) unitOptionsLoading.value = false
   }
+}
+
+const unitSearch = createRemoteOptionSearch((keyword, token) => loadUnitOptions(keyword, token))
+
+function searchUnitOptions(keyword) {
+  return unitSearch.search(keyword)
 }
 
 function openContract(row) {
@@ -488,6 +553,13 @@ function openContract(row) {
     start_date: '', end_date: '', rent_monthly: 0, property_fee_monthly: 0,
     deposit: 0, status: 'active', note: '',
   })
+  if (row?.unit_id != null) {
+    unitOptions.value = ensureOption(unitOptions.value, {
+      id: row.unit_id,
+      label: row.unit_no || `#${row.unit_id}`,
+      unit_no: row.unit_no || '',
+    })
+  }
   contractDialog.value = true
 }
 
@@ -590,6 +662,20 @@ function openOrder(row) {
     tenant: '', assignee: '', description: '', due_at: null, parent_id: null,
     equipment_id: null, contract_id: null,
   })
+  if (row?.parent_id != null) {
+    orderOptions.value = ensureOption(orderOptions.value, {
+      id: row.parent_id,
+      code: row.parent_code || `#${row.parent_id}`,
+      description: '',
+    })
+  }
+  if (row?.equipment_id != null) {
+    equipmentOptions.value = ensureOption(equipmentOptions.value, {
+      id: row.equipment_id,
+      code: row.equipment_code || `#${row.equipment_id}`,
+      name: '',
+    })
+  }
   orderDialog.value = true
 }
 
@@ -676,6 +762,11 @@ function exportOrders() {
 }
 
 onMounted(loadAll)
+onBeforeUnmount(() => {
+  orderSearch.cancel()
+  equipmentSearch.cancel()
+  unitSearch.cancel()
+})
 </script>
 
 <style scoped>

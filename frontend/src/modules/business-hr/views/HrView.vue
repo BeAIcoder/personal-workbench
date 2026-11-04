@@ -22,12 +22,12 @@
       <el-tabs v-model="tab" class="mt8">
         <el-tab-pane label="员工花名册" name="employees">
           <div class="filters">
-            <el-input v-model="empQuery.keyword" placeholder="姓名" size="small" clearable style="width: 130px" @keyup.enter="loadEmployees" />
+            <el-input v-model="empQuery.keyword" placeholder="姓名" size="small" clearable style="width: 130px" @keyup.enter="onEmployeeFilterEnter" />
             <el-input v-model="empQuery.department" placeholder="部门" size="small" clearable style="width: 130px" />
             <el-select v-model="empQuery.status" placeholder="状态" size="small" clearable style="width: 110px">
               <el-option label="在职" value="active" /><el-option label="试用" value="probation" /><el-option label="离职" value="left" />
             </el-select>
-            <el-button size="small" type="primary" @click="loadEmployees">筛选</el-button>
+            <el-button size="small" type="primary" @click="searchEmployees">筛选</el-button>
             <el-button size="small" type="success" @click="openEmployee()">新建员工</el-button>
             <el-button size="small" @click="loadExpiring">查 30 天到期</el-button>
           </div>
@@ -54,6 +54,17 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination
+            class="pager"
+            background
+            layout="total, sizes, prev, pager, next"
+            :total="empTotal"
+            :page-size="pageSize"
+            :current-page="page"
+            :page-sizes="[20, 50, 100]"
+            @current-change="onPageChange"
+            @size-change="onSizeChange"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="月度考勤" name="attendance">
@@ -128,7 +139,7 @@
           <el-col :span="12"><el-form-item label="状态"><el-select v-model="employeeForm.status"><el-option label="在职" value="active" /><el-option label="试用" value="probation" /><el-option label="离职" value="left" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="手机"><el-input v-model="employeeForm.phone" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="基本工资"><el-input-number v-model="employeeForm.base_salary" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="社保基数"><el-input-number v-model="employeeForm.social_base" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="社保基数"><el-input-number v-model="employeeForm.social_base" :min="0" :controls="false" :value-on-clear="null" placeholder="留空=按基本工资" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="专项附加扣除(元/月)"><el-input-number v-model="employeeForm.special_additional" :min="0" :controls="false" style="width: 100%" /></el-form-item></el-col>
         </el-row>
         <el-form-item label="备注"><el-input v-model="employeeForm.note" type="textarea" :rows="2" /></el-form-item>
@@ -146,6 +157,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+import { employeeDeleteConfirmText, emptyEmployeeForm } from '../employeeForm.js'
+import { nextPageAfterDelete, pageState, toPageParams } from '../../_shared/pagedList.js'
 
 const aiPrompt = computed(() => '请分析人事台账：花名册与试用期/合同到期分布、考勤完整性、薪资核算口径与个税累计预扣的一致性')
 
@@ -160,17 +173,16 @@ const expiring = ref([])
 const attendance = ref([])
 const payroll = ref([])
 const empQuery = reactive({ keyword: '', department: '', status: '' })
+const page = ref(1)
+const pageSize = ref(20)
+const empTotal = ref(0)
 const attMonth = ref(currentMonth)
 const payMonth = ref(currentMonth)
 const attForm = reactive({ emp_id: null, actual_days: 21.75, leave_days: 0, overtime_hours: 0 })
 const payForm = reactive({ allowance: 0 })
 
 const employeeDialog = ref(false)
-const employeeForm = reactive({
-  id: null, emp_no: '', name: '', department: '', position: '',
-  hire_date: '', probation_end: '', contract_end: '', status: 'active',
-  phone: '', base_salary: 0, social_base: 0, special_additional: 0, note: '',
-})
+const employeeForm = reactive(emptyEmployeeForm())
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '—'
@@ -191,9 +203,36 @@ async function loadSummary() {
 async function loadEmployees() {
   loading.value = true
   try {
-    const { data } = await api.get('/business/hr/employees', { params: empQuery })
-    employees.value = data.items || []
+    const { data } = await api.get('/business/hr/employees', {
+      params: toPageParams(empQuery, page.value, pageSize.value),
+    })
+    const state = pageState(data, { page: page.value, pageSize: pageSize.value })
+    employees.value = state.items
+    empTotal.value = state.total
+    page.value = state.page
+    pageSize.value = state.pageSize
   } catch { /* 拦截器已提示 */ } finally { loading.value = false }
+}
+
+function searchEmployees() {
+  page.value = 1
+  return loadEmployees()
+}
+
+// Enter 与「筛选」按钮共用同一路径（避免回车仍带旧页码/旧条件）
+function onEmployeeFilterEnter() {
+  return searchEmployees()
+}
+
+function onPageChange(next) {
+  page.value = next
+  return loadEmployees()
+}
+
+function onSizeChange(size) {
+  pageSize.value = size
+  page.value = 1
+  return loadEmployees()
 }
 
 async function loadExpiring() {
@@ -224,16 +263,13 @@ async function loadAll() {
 
 function openEmployee(row) {
   Object.assign(employeeForm, row ? {
+    ...emptyEmployeeForm(),
     id: row.id, emp_no: row.emp_no, name: row.name, department: row.department,
     position: row.position, hire_date: row.hire_date || '', probation_end: row.probation_end || '',
     contract_end: row.contract_end || '', status: row.status, phone: row.phone,
-    base_salary: row.base_salary, social_base: row.social_base,
+    base_salary: row.base_salary, social_base: row.social_base ?? null,
     special_additional: row.special_additional ?? 0, note: row.note,
-  } : {
-    id: null, emp_no: '', name: '', department: '', position: '',
-    hire_date: '', probation_end: '', contract_end: '', status: 'active',
-    phone: '', base_salary: 0, social_base: 0, special_additional: 0, note: '',
-  })
+  } : emptyEmployeeForm())
   employeeDialog.value = true
 }
 
@@ -261,10 +297,12 @@ async function saveEmployee() {
 
 async function removeEmployee(row) {
   try {
-    await ElMessageBox.confirm(`删除员工「${row.name}」会同时删除其考勤与薪资，确认？`, '删除确认', { type: 'warning' })
+    await ElMessageBox.confirm(employeeDeleteConfirmText(row.name), '删除确认', { type: 'warning' })
   } catch { return }
+  const targetPage = nextPageAfterDelete(page.value, empTotal.value, pageSize.value)
   try {
     await api.delete(`/business/hr/employees/${row.id}`)
+    page.value = targetPage
     await loadAll()
   } catch { /* 拦截器已提示 */ }
 }
@@ -335,6 +373,7 @@ onMounted(loadAll)
 
 <style scoped>
 .kpi { margin-bottom: 8px; }
+.pager { margin-top: 10px; justify-content: flex-end; }
 .muted { font-size: 12px; color: var(--el-text-color-secondary); }
 .expire-item { margin-right: 12px; }
 </style>

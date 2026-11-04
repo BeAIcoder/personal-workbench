@@ -255,6 +255,14 @@ def campaign_save(db: Session, data: dict, campaign_id: int | None = None) -> di
         raise ValueError("活动结束日期不能早于开始日期")
     if c.year is None:
         c.year = c.start_date.year
+    elif any(key in data for key in ("year", "start_date", "end_date")) and not (
+            c.start_date.year <= c.year <= c.end_date.year):
+        # 年度决定预算归属与汇总口径，必须落在档期覆盖的年份内（日历按年度取数）。
+        # 只有本次提交触及年度/档期时才校验，避免历史库里的错位行连备注都改不了。
+        raise ValueError(
+            f"活动年度 {c.year} 与档期 {c.start_date.isoformat()}~{c.end_date.isoformat()} 不一致；"
+            "年度需落在档期覆盖年份内（如跨年活动填结束年份）"
+        )
     if c.status != "cancelled" and data.get("allow_conflict") is not True:
         q = db.query(PlanCampaign).filter(
             PlanCampaign.status != "cancelled",
@@ -286,7 +294,9 @@ def campaign_delete(db: Session, campaign_id: int) -> None:
 def calendar(db: Session, year: int) -> dict:
     year_start = date(year, 1, 1)
     year_end = date(year, 12, 31)
+    # 与 summary(year) 同口径：按活动年度取数，避免跨年活动在日历里出现、汇总里缺席
     rows = (db.query(PlanCampaign).filter(
+        PlanCampaign.year == year,
         PlanCampaign.start_date <= year_end,
         PlanCampaign.end_date >= year_start,
     ).order_by(PlanCampaign.start_date, PlanCampaign.id).all())

@@ -100,6 +100,12 @@ def test_b3_manual_run_now_does_not_touch_last_run_for_daily(client, monkeypatch
     monkeypatch.setattr(scheduler, "llm_status", lambda: {"configured": True})
     monkeypatch.setattr(scheduler.orchestrator, "chat", _mock_llm_ok(scheduler))
 
+    class BeforeNine(datetime):
+        @classmethod
+        def now(cls):
+            return datetime.now().replace(hour=8, minute=30, second=0, microsecond=0)
+
+    monkeypatch.setattr(scheduler, "datetime", BeforeNine)
     job = client.post("/api/jobs", json={
         "name": "每日简报", "prompt": "汇总", "schedule_type": "daily", "daily_at": "09:00",
     }).json()

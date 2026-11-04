@@ -60,7 +60,10 @@ vi.mock('../src/api', async (importOriginal) => {
   }
 })
 
-function mountDrawer(teamConfig = {}) {
+// SettingsDrawer 在 teamConfig 为空时判定「配置未就绪」并禁用保存；抽屉打开后仅在
+// 「未就绪→就绪」时回填一次，后续 teamConfig 刷新不覆盖用户未保存编辑（Task 7 fix round 3）。
+// 这里给已加载的最小配置，保留本文件「未保存路径先保存再检测」的测试语义。
+function mountDrawer(teamConfig = { max_iters: 5, history_inject: 12 }) {
   const emit = vi.fn()
   const ctx = SettingsDrawer.setup(
     { visible: false, providers: [], presets: [], teamConfig, initialTab: 'providers' },

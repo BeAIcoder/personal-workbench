@@ -18,6 +18,7 @@ class ExpenseRun(Base):
     matched_rows: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="running")  # running / success / failed
     duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    bad_amount_rows: Mapped[int] = mapped_column(Integer, default=0)  # 金额不可解析、按 0 入账的行数（告警用）
     artifact_path: Mapped[str] = mapped_column(String(500), default="")  # 相对财务数据目录的路径
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 

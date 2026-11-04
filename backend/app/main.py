@@ -39,7 +39,7 @@ from .routers import (
     workbuddy,
 )
 from .seed import seed_agent_specs, seed_if_empty
-from .scheduler import scheduler_loop
+from .scheduler import normalize_legacy_jobs, scheduler_loop, shutdown as scheduler_shutdown
 from .upload import UploadTooLargeError
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,9 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     _ensure_sqlite_columns()
     _ensure_sqlite_indexes()
-    # 专家团队定义：仅表为空时灌入一次（属于配置数据，不受 seed_on_startup 控制）
+    # 历史脏任务先禁用/归一化；内置专家增量补齐但尊重删除墓碑。
     with SessionLocal() as db:
+        normalize_legacy_jobs(db)
         seed_agent_specs(db)
     # 专家团文件化：确保专家包目录存在并完成种子复制（失败仅记日志，不影响启动）
     try:
@@ -118,9 +119,13 @@ async def lifespan(_: FastAPI):
             logger.info("MCP 服务器 %s：%s", name, status)
     except Exception:
         logger.warning("MCP 服务器批量启动跳过", exc_info=True)
-    yield
-    scheduler_task.cancel()
-    mcp_manager.stop_all()
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        await asyncio.gather(scheduler_task, return_exceptions=True)
+        await scheduler_shutdown()
+        mcp_manager.stop_all()
 
 
 def _ensure_sqlite_columns() -> None:
@@ -173,17 +178,132 @@ def _ensure_sqlite_columns() -> None:
     }
     for table, columns in collect_column_patches().items():
         patches.setdefault(table, {}).update(columns)
-    try:
-        with engine.begin() as conn:
-            for table, columns in patches.items():
+    if engine.dialect.name != "sqlite":
+        return
+    for table, columns in patches.items():
+        try:
+            with engine.connect() as conn:
                 existing = [row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))]
-                if not existing:
-                    continue
-                for col, ddl in columns.items():
-                    if col not in existing:
-                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+        except Exception:
+            logger.warning("SQLite 表 %s 的列信息读取失败，已跳过该表", table, exc_info=True)
+            continue
+        for col, ddl in columns.items():
+            if col in existing:
+                continue
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+            except Exception:
+                logger.warning("SQLite 列迁移失败：%s.%s（其余列继续）", table, col, exc_info=True)
+
+
+def _duplicate_sample(bind, table, column_names: list[str]) -> tuple | None:
+    """返回唯一索引列上的第一条重复键样本（无重复返回 None）。
+
+    仅用于「建唯一索引前先查历史重复」：动态列名全部来自 ORM 元数据常量，
+    不接收任何用户输入。检查失败时返回 None（交由建索引时的数据库报错兜底并告警）。
+    """
+    from sqlalchemy import func, select
+
+    cols = [table.c[name] for name in column_names]
+    stmt = (
+        select(*cols, func.count().label("cnt"))
+        .group_by(*cols)
+        .having(func.count() > 1)
+        .limit(1)
+    )
+    try:
+        with bind.connect() as conn:
+            row = conn.execute(stmt).first()
     except Exception:
-        logger.warning("SQLite 轻量迁移跳过（非 SQLite 或已迁移过）", exc_info=True)
+        logger.warning("重复键检查失败：%s", table.name, exc_info=True)
+        return None
+    return tuple(row) if row is not None else None
+
+
+# 历史索引清理：旧名 -> 新名。仅当「新名索引已存在且列/唯一性与模型一致」时才删除
+# 旧名；新名未建成（重复/失败）时保留旧索引。标识符均为模块迁移常量，不接收用户输入。
+_OBSOLETE_INDEXES: dict[str, dict[str, str]] = {
+    "mod_bip_balance": {"uq_bip_balance_period_subject": "uq_bip_balance_scope"},
+}
+
+
+def _drop_obsolete_indexes(bind, metadata) -> list[str]:
+    """新索引建成功后再清理历史索引名；建新失败/跳过时旧索引原样保留。"""
+    from sqlalchemy import inspect as sa_inspect
+
+    inspector = sa_inspect(bind)
+    dropped: list[str] = []
+    for table_name, mapping in _OBSOLETE_INDEXES.items():
+        table = metadata.tables.get(table_name)
+        if table is None or not inspector.has_table(table_name):
+            continue
+        live = {i["name"]: i for i in inspector.get_indexes(table_name)}
+        model_indexes = {i.name: i for i in table.indexes}
+        for old_name, new_name in mapping.items():
+            if old_name not in live:
+                continue
+            new_index = model_indexes.get(new_name)
+            new_live = live.get(new_name)
+            if new_index is None or new_live is None:
+                continue  # 新索引未建成：保留旧索引，下次启动重试
+            wanted = [c.name for c in new_index.columns]
+            if list(new_live.get("column_names") or []) != wanted:
+                continue
+            if bool(new_live.get("unique")) != bool(new_index.unique):
+                continue
+            try:
+                with bind.begin() as conn:
+                    # 索引名来自上方常量表，不接收用户输入
+                    conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{old_name}"')
+                dropped.append(f"{table_name}.{old_name}(dropped)")
+            except Exception:
+                logger.warning(
+                    "历史索引 %s 清理失败（新索引已存在；两者并存不会放宽唯一约束，下次启动重试）",
+                    old_name, exc_info=True,
+                )
+    if dropped:
+        logger.info("SQLite 历史索引清理：%s", ", ".join(dropped))
+    return dropped
+
+
+def _ensure_indexes_on(bind, metadata) -> list[str]:
+    """为已有表补齐缺失索引（幂等）；唯一索引遇历史重复时跳过并告警。
+
+    - 只创建缺失索引，不改/不删已有同名索引——避免「DROP 后 CREATE 失败」丢索引；
+    - 唯一索引建前先查重复，有重复只告警、不建、不删任何数据；
+    - 历史索引名由 _drop_obsolete_indexes 在**新索引确认存在后**清理；
+    - 新索引创建失败时旧索引保持原样，下次启动重试。
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    inspector = sa_inspect(bind)
+    created: list[str] = []
+    for table in metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        existing = {i["name"] for i in inspector.get_indexes(table.name)}
+        for index in table.indexes:
+            if index.name in existing:
+                continue
+            if index.unique:
+                cols = [c.name for c in index.columns]
+                dup = _duplicate_sample(bind, table, cols)
+                if dup:
+                    logger.warning(
+                        "表 %s 存在重复键 %s（样本 %s），已跳过唯一索引 %s 的自动迁移"
+                        "（已有索引保持原样；不会自动删除任何数据；请人工核对并清理重复后再重启）",
+                        table.name, tuple(cols), dup, index.name,
+                    )
+                    continue
+            try:
+                # 逐条 try：某张表建失败只跳过它，不能连带丢掉后面的索引
+                index.create(bind=bind, checkfirst=True)
+                created.append(f"{table.name}.{index.name}")
+            except Exception:
+                logger.warning("索引 %s 补齐失败（不影响启动）", index.name, exc_info=True)
+    _drop_obsolete_indexes(bind, metadata)
+    return created
 
 
 def _ensure_sqlite_indexes() -> None:
@@ -192,26 +312,11 @@ def _ensure_sqlite_indexes() -> None:
     create_all 只会建新表，不会给「已存在的表」补索引；所以模型里后加的 index=True / Index()
     在老库上永远不生效——排序仍走全表扫描 + 临时 B 树。本函数按元数据逐条建缺失索引
     （checkfirst=True，等价于 CREATE INDEX IF NOT EXISTS），对新库/老库都幂等。
+    唯一索引在历史重复未清理前不会创建（见 _ensure_indexes_on）。
     """
     if not settings.database_url.startswith("sqlite"):
         return
-    from sqlalchemy import inspect as sa_inspect
-
-    inspector = sa_inspect(engine)
-    created = []
-    for table in Base.metadata.sorted_tables:
-        if not inspector.has_table(table.name):
-            continue
-        existing = {i["name"] for i in inspector.get_indexes(table.name)}
-        for index in table.indexes:
-            if index.name in existing:
-                continue
-            try:
-                # 逐条 try：某张表建失败只跳过它，不能连带丢掉后面的索引
-                index.create(bind=engine, checkfirst=True)
-                created.append(f"{table.name}.{index.name}")
-            except Exception:
-                logger.warning("索引 %s 补齐失败（不影响启动）", index.name, exc_info=True)
+    created = _ensure_indexes_on(engine, Base.metadata)
     if created:
         logger.info("SQLite 索引补齐：新建 %d 个（历史库升级后首次启动）：%s", len(created), ", ".join(created))
 
@@ -331,15 +436,6 @@ def _split_origin(origin: str) -> tuple[str, str, int | None]:
     return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
 
 
-def _split_host_header(host: str) -> tuple[str, int | None]:
-    parsed = urlsplit("//" + host)
-    try:
-        port = parsed.port
-    except ValueError:
-        port = None
-    return (parsed.hostname or "").lower(), port
-
-
 def _origin_allowed(origin: str, host_header: str) -> bool:
     """来源可信判定：显式 CORS 配置 / 回环开发来源 / 运维配置的 HOST 同源。
 
@@ -392,7 +488,9 @@ class OriginGuardMiddleware:
                 origin = (headers.get("origin") or "").strip()
                 if origin and not _origin_allowed(origin, headers.get("host") or ""):
                     logger.warning("Origin 校验拒绝：%s %s（Origin: %s）", method, path, origin)
-                    response = JSONResponse(status_code=403, content={"detail": "请求来源不被信任"})
+                    response = JSONResponse(status_code=403, content={
+                        "detail": "请求来源不被信任；如确需局域网访问，请将前端完整来源加入 backend/.env 的 CORS_ORIGINS"
+                    })
                     await response(scope, receive, send)
                     return
         await self.app(scope, receive, send)
@@ -452,6 +550,18 @@ def _overflow_error_as_422(request, exc):
     CRUD 路由已在入口用 utils.DbId 拦下；财务/调试等模块路由由各自 manifest 挂载、
     数量多，这里做全局兜底，保证任何一条 /{id} 路径都不会因为越界 ID 而 500。
     """
+    path_params = getattr(request, "path_params", {}) or {}
+    is_db_id_overflow = False
+    for value in path_params.values():
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if not -(2**63) <= number <= 2**63 - 1:
+            is_db_id_overflow = True
+            break
+    if not is_db_id_overflow:
+        raise exc
     logger.warning("参数超出整数范围：%s %s", request.method, request.url.path)
     return JSONResponse(status_code=422, content={"detail": "ID 超出可接受范围"})
 

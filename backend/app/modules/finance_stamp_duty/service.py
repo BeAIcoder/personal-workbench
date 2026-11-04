@@ -7,6 +7,7 @@ from pathlib import Path
 from ...config import get_finance_data_dir
 from ...database import SessionLocal
 from ...utils_money import money
+from ...utils_xlsx import safe_cell
 
 # ---------- 税目税率表（印花税法 2022-07-01 施行，rate 为千分比） ----------
 
@@ -120,13 +121,13 @@ def export_filing_xlsx(filing) -> Path:
     ws = wb.active
     ws.title = "印花税申报底稿"
     ws.append(["印花税纳税申报表（底稿）"])
-    ws.append([f"所属期：{filing.period}    纳税人：{filing.taxpayer_name or '—'}"])
+    ws.append([safe_cell(f"所属期：{filing.period}    纳税人：{filing.taxpayer_name or '—'}")])
     ws.append([f"六税两费减半：{'是' if filing.half_discount else '否'}"])
     ws.append([])
     ws.append(["税目", "计税金额", "税率(‰)", "免税", "应纳税额"])
     calc = filing.calc_result or {}
     for d in calc.get("details", []):
-        ws.append([d["tax_item"], d["amount"], d["rate_permille"],
+        ws.append([safe_cell(d["tax_item"]), d["amount"], d["rate_permille"],
                    "是" if d["exempt"] else "否", d["tax"]])
     ws.append([])
     ws.append(["减半前合计", calc.get("raw_total", 0)])

@@ -95,7 +95,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import dayjs from 'dayjs'
 import { gmApi } from '../../../api'
@@ -131,10 +131,11 @@ const MONEY_KEYS = new Set([
 ])
 
 const route = useRoute()
-const routePeriod = typeof route.query.period === 'string'
-  && /^\d{4}-(?:0[1-9]|1[0-2])$/.test(route.query.period)
-  ? route.query.period
-  : ''
+const PERIOD_RE = /^\d{4}-(?:0[1-9]|1[0-2])$/
+function validPeriod(value) {
+  return typeof value === 'string' && PERIOD_RE.test(value)
+}
+const routePeriod = validPeriod(route.query.period) ? route.query.period : ''
 const period = ref(routePeriod || dayjs().format('YYYY-MM'))
 const summary = ref(null)
 const loading = ref(false)
@@ -190,6 +191,24 @@ async function load() {
     loading.value = false
   }
 }
+
+// 从 Dashboard/搜索等入口带 period 跳转时，应用内路由变化也要生效（旧实现只在 setup 读一次）
+function applyRoutePeriod(query, { reloadSame = false } = {}) {
+  const next = validPeriod(query?.period) ? query.period : ''
+  if (!next) return false
+  if (next === period.value) {
+    if (!reloadSame) return false
+    load() // 同值再入（例如从首页带同一 period 跳回）也刷新一次
+    return true
+  }
+  period.value = next
+  load()
+  return true
+}
+
+watch(() => route.query.period, (value) => {
+  applyRoutePeriod({ period: value }, { reloadSame: true })
+})
 
 onMounted(load)
 </script>

@@ -6,8 +6,8 @@
           <span>工程物业</span>
           <div>
             <el-button size="small" @click="loadAll">刷新</el-button>
-            <el-button size="small" @click="exportEquipment">导出设备</el-button>
-            <el-button size="small" @click="exportCompliance">导出合规台账</el-button>
+            <el-button size="small" :loading="exportingEquipment" @click="exportEquipment">导出设备</el-button>
+            <el-button size="small" :loading="exportingCompliance" @click="exportCompliance">导出合规台账</el-button>
             <AskAiButton :prompt="aiPrompt" />
           </div>
         </div>
@@ -60,8 +60,10 @@
             <el-select v-model="complianceQuery.status" placeholder="状态" size="small" clearable style="width: 110px">
               <el-option label="待办" value="pending" /><el-option label="已完成" value="done" /><el-option label="已逾期" value="overdue" />
             </el-select>
-            <el-select v-model="complianceQuery.equipment_id" placeholder="关联设备" size="small" clearable filterable style="width: 170px">
-              <el-option v-for="item in equipmentOptions" :key="item.id" :label="`${item.code} · ${item.name}`" :value="item.id" />
+            <el-select v-model="complianceQuery.equipment_id" placeholder="关联设备" size="small" clearable filterable remote
+                       :remote-method="searchEquipmentOptions" :loading="equipmentOptionsLoading" style="width: 170px">
+              <el-option v-for="item in equipmentOptions" :key="item.id" :label="equipmentLabel(item)" :value="item.id" />
+              <el-option v-if="equipmentOptionsHint" :value="null" disabled :label="equipmentOptionsHint" />
             </el-select>
             <el-button size="small" type="primary" @click="searchCompliance">筛选</el-button>
             <el-button size="small" type="success" @click="openCompliance()">新增事项</el-button>
@@ -130,14 +132,18 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
+import { saveBlob } from '../../../utils/download.js'
+import { optionCapHint, optionParams, ensureOption, createRemoteOptionSearch } from '../../../utils/remoteOptions.js'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const aiPrompt = computed(() => '请分析工程物业台账：设备状态分布、合规事项到期与逾期、楼宇级检查安排与工单关联')
 
 const loading = ref(false)
+const exportingEquipment = ref(false)
+const exportingCompliance = ref(false)
 const saving = ref(false)
 const tab = ref('equipment')
 const today = new Date().toLocaleDateString('sv-SE')
@@ -145,6 +151,9 @@ const summary = ref({ equipment_count: 0, category_a: 0, compliance_30: 0, overd
 const equipment = ref([])
 const equipmentTotal = ref(0)
 const equipmentOptions = ref([])
+const equipmentOptionsTotal = ref(0)
+const equipmentOptionsLoading = ref(false)
+const equipmentOptionsHint = computed(() => optionCapHint(equipmentOptions.value, equipmentOptionsTotal.value))
 const compliance = ref([])
 const complianceTotal = ref(0)
 const equipmentQuery = reactive({ keyword: '', category: '', status: '', page: 1, page_size: 20 })
@@ -188,11 +197,32 @@ async function loadCompliance() {
   } catch { /* 拦截器已提示 */ }
 }
 
-async function loadEquipmentOptions() {
+async function loadEquipmentOptions(keyword = '', token = null) {
+  equipmentOptionsLoading.value = true
   try {
-    const { data } = await api.get('/business/facility/equipment', { params: { page: 1, page_size: 200 } })
+    const { data } = await api.get('/business/facility/equipment', { params: optionParams(keyword) })
+    if (token !== null && !equipmentSearch.isCurrent(token)) return
     equipmentOptions.value = data.items || []
-  } catch { /* 拦截器已提示 */ }
+    equipmentOptionsTotal.value = data.total ?? equipmentOptions.value.length
+  } catch {
+    if (token !== null && !equipmentSearch.isCurrent(token)) return
+    equipmentOptions.value = []
+    equipmentOptionsTotal.value = 0
+    /* 拦截器已提示 */
+  } finally {
+    if (token === null || equipmentSearch.isCurrent(token)) equipmentOptionsLoading.value = false
+  }
+}
+
+const equipmentSearch = createRemoteOptionSearch((keyword, token) => loadEquipmentOptions(keyword, token))
+
+function searchEquipmentOptions(keyword) {
+  return equipmentSearch.search(keyword)
+}
+
+function equipmentLabel(item) {
+  if (!item) return ''
+  return item.name ? `${item.code} · ${item.name}` : (item.code || `#${item.id}`)
 }
 
 async function loadAll() {
@@ -275,6 +305,14 @@ function openCompliance(row) {
     id: null, equipment_id: null, kind: 'other', title: '',
     due_date: '', done_date: '', note: '',
   })
+  // 当前设备可能不在最近一次 50 条搜索结果里：补一条已选项，避免下拉显示数字 id
+  if (row?.equipment_id != null) {
+    equipmentOptions.value = ensureOption(equipmentOptions.value, {
+      id: row.equipment_id,
+      code: row.equipment_code || `#${row.equipment_id}`,
+      name: '',
+    })
+  }
   complianceDialog.value = true
 }
 
@@ -310,23 +348,44 @@ async function removeCompliance(row) {
   } catch { /* 拦截器已提示 */ }
 }
 
-function complianceExportUrl() {
+function complianceExportPath() {
   const params = new URLSearchParams()
   for (const key of ['kind', 'status', 'as_of', 'equipment_id']) {
     if (complianceQuery[key]) params.append(key, complianceQuery[key])
   }
-  return `${api.defaults.baseURL}/business/facility/export/compliance.xlsx?${params.toString()}`
+  const query = params.toString()
+  return `/business/facility/export/compliance.xlsx${query ? `?${query}` : ''}`
+}
+
+// 兼容展示/测试用的完整地址（实际下载走 api.get 的相对路径）
+function complianceExportUrl() {
+  return `${api.defaults.baseURL}${complianceExportPath()}`
+}
+
+// 导出走 Blob：失败只 toast，不再用 window.location 整页导航到 JSON 错误页
+async function downloadExport(path, filename, busy) {
+  if (busy.value) return
+  busy.value = true
+  try {
+    const { data } = await api.get(path, { responseType: 'blob', timeout: 120000 })
+    saveBlob(data, filename)
+  } catch {
+    /* 拦截器已统一提示（含 Blob 错误体的后端 detail） */
+  } finally {
+    busy.value = false
+  }
 }
 
 function exportEquipment() {
-  window.location.href = `${api.defaults.baseURL}/business/facility/export/equipment.xlsx`
+  return downloadExport('/business/facility/export/equipment.xlsx', '设备台账.xlsx', exportingEquipment)
 }
 
 function exportCompliance() {
-  window.location.href = complianceExportUrl()
+  return downloadExport(complianceExportPath(), '合规事项.xlsx', exportingCompliance)
 }
 
 onMounted(loadAll)
+onBeforeUnmount(() => equipmentSearch.cancel())
 </script>
 
 <style scoped>

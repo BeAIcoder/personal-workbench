@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from ....database import get_db
 from ..models import Enterprise
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from datetime import datetime
 
 router = APIRouter(prefix="/enterprises", tags=["企业信息"])
@@ -27,6 +27,8 @@ class EnterpriseCreate(BaseModel):
     employee_count: int | None = None
     total_assets: float | None = None
     is_restricted_industry: bool | None = None
+    # 高新技术企业资格（台账 L-050）：与计算/导出共用同一属性
+    is_high_tech: bool | None = None
 
 class EnterpriseUpdate(BaseModel):
     name: str | None = None
@@ -39,6 +41,7 @@ class EnterpriseUpdate(BaseModel):
     employee_count: int | None = None
     total_assets: float | None = None
     is_restricted_industry: bool | None = None
+    is_high_tech: bool | None = None
 
 class EnterpriseResponse(BaseModel):
     id: int
@@ -51,12 +54,19 @@ class EnterpriseResponse(BaseModel):
     tax_type: str | None = None
     employee_count: int | None
     total_assets: float | None
-    # 历史行可能为 NULL：给默认值避免响应校验 500
+    # 历史行可能为 NULL：默认值与清洗器双保险，避免响应校验 500（复核 M-3）
     is_restricted_industry: bool = False
+    is_high_tech: bool = False
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("is_restricted_industry", "is_high_tech", mode="before")
+    @classmethod
+    def _flag_none_to_false(cls, v):
+        """库中历史 NULL 按「否」展示（布尔标记不存在「未知即真」的语义）。"""
+        return bool(v) if v is not None else False
 
 @router.get("/", response_model=List[EnterpriseResponse])
 async def get_enterprises(skip: int = Query(0, ge=0, description="跳过记录数"),
@@ -95,6 +105,7 @@ async def create_enterprise(enterprise: EnterpriseCreate, db: Session = Depends(
         employee_count=enterprise_data.get("employee_count"),
         total_assets=enterprise_data.get("total_assets"),
         is_restricted_industry=enterprise_data.get("is_restricted_industry"),
+        is_high_tech=bool(enterprise_data.get("is_high_tech") or False),
     )
     db.add(db_enterprise)
     db.commit()
@@ -118,9 +129,14 @@ async def update_enterprise(
         "industry": "industry_type",
         "industry_type": "industry_type",
     }
+    # 布尔标记显式传 null 视为「否」：直接写 NULL 会让响应 schema 校验失败 → 自伤 500，
+    # 且模型中该列本就有 DEFAULT 0（复核 M-3）。
+    boolean_flags = {"is_high_tech", "is_restricted_industry"}
     for key, value in update_data.items():
         db_key = field_map.get(key, key)
         if hasattr(db_enterprise, db_key):
+            if db_key in boolean_flags and value is None:
+                value = False
             setattr(db_enterprise, db_key, value)
 
     db.commit()

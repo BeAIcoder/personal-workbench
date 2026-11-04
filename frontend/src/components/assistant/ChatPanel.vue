@@ -40,6 +40,12 @@
 
           <div v-if="m.role === 'assistant' && !m.error" class="ai-text md-body" v-html="renderMd(m.content)"></div>
           <div v-else-if="m.role === 'assistant'" class="ai-text">{{ m.content }}</div>
+
+          <div v-if="m.persistWarning" class="persist-warning" role="status">
+            <el-icon><WarningFilled /></el-icon>
+            <span>{{ m.persistWarning }}</span>
+          </div>
+
           <div v-if="m.streaming" class="cursor">▍</div>
 
           <div v-if="m.toolFlow && m.toolFlow.length && m.streaming" class="tool-live">
@@ -148,9 +154,9 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
-import { ArrowDown, Close, Paperclip } from '@element-plus/icons-vue'
+import { ArrowDown, Close, Paperclip, WarningFilled } from '@element-plus/icons-vue'
 import { assistantApi, API_BASE } from '../../api'
-import { ASSISTANT_ACCEPT, attachmentImageSrc, canSend, isImageAttachment, isImageFile, isSupportedAttachmentFile, sendBlockHint, splitPreviewUrls } from '../../utils/assistant'
+import { ASSISTANT_ACCEPT, attachmentImageSrc, canSend, isImageAttachment, isImageFile, isSupportedAttachmentFile, persistenceNotice, sendBlockHint, splitPreviewUrls } from '../../utils/assistant'
 import { CANONICAL_LEVELS, reasoningOptions } from '../../utils/modelCapabilities'
 
 const props = defineProps({
@@ -202,11 +208,16 @@ const loading = ref(false)
 const chatBox = ref(null)
 const workMode = ref('standard')
 const reasoningEffort = ref(props.reasoning || 'default')
+// 上一次确认保存成功的档位：保存失败回滚用（不能让界面显示未生效的值）
+let lastSavedReasoning = reasoningEffort.value
+// 保存序号：并发保存时只让最后一次响应生效（含失败回滚）
+let reasoningSaveSeq = 0
 
 // team 接口异步返回后，父组件回填已保存的思考深度；
 // 旧版 off / 其它非法存档值在此归一（迁移规则见 normalizeEffort）
 watch(() => props.reasoning, (v) => {
   reasoningEffort.value = v || 'default'
+  lastSavedReasoning = reasoningEffort.value
   normalizeEffort()
 })
 const attachments = ref([])
@@ -377,6 +388,8 @@ async function send(text) {
     time: nowTime(),
     streaming: true,
     error: false,
+    // 回复已生成但落库失败时的非终止提示：独立于 error 气泡，不覆盖正文
+    persistWarning: '',
   })
   messages.value.push(aiMsg)
   loading.value = true
@@ -411,6 +424,12 @@ async function send(text) {
         /* 保留默认提示 */
       }
       throw new Error(msg)
+    }
+    // 非流式兜底：服务端（或代理）以完整 JSON 结果返回时，按与 done 相同的结果契约渲染，
+    // 避免把 JSON 当 SSE 逐行解析导致气泡空白
+    if (String(resp.headers?.get?.('content-type') || '').includes('application/json')) {
+      applyAssistantResult(aiMsg, await resp.json())
+      return
     }
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
@@ -488,12 +507,19 @@ function handleEvent(m, ev) {
       m.content = ev.message || '执行失败，请重试'
     }
   } else if (ev.type === 'done') {
-    // done.reply 是后端剥离 <think> 后的正文，以它为准
-    m.content = ev.reply || m.content
-    m.thinking = ev.thinking || m.thinking
-    m.trace = Array.isArray(ev.trace) ? ev.trace : []
-    m.routedBy = m.routedBy || ev.routed_by || ''
+    applyAssistantResult(m, ev)
   }
+}
+
+// 一轮成功结果的落地（流式 done 与非流式 JSON 同形）：done.reply 是后端剥离 <think>
+// 后的正文，以它为准；落库失败只作为气泡下方的持久化提示，不进入 error 态、不覆盖正文。
+function applyAssistantResult(m, data) {
+  if (!data || typeof data !== 'object') return
+  m.content = data.reply || m.content
+  m.thinking = data.thinking || m.thinking
+  m.trace = Array.isArray(data.trace) ? data.trace : []
+  m.routedBy = m.routedBy || data.routed_by || ''
+  m.persistWarning = persistenceNotice(data)
 }
 
 const selectedAgentLabel = computed(() => {
@@ -583,13 +609,23 @@ function normalizeEffort() {
 normalizeEffort()
 
 async function saveReasoning() {
+  const seq = ++reasoningSaveSeq
+  const attempted = reasoningEffort.value
+  const previous = lastSavedReasoning
   try {
-    const v = reasoningEffort.value === 'default' ? '' : reasoningEffort.value
+    const v = attempted === 'default' ? '' : attempted
     const { data } = await assistantApi.config.saveGlobals({ reasoning_effort: v })
-    reasoningEffort.value = data.config.reasoning_effort || 'default'
+    if (seq !== reasoningSaveSeq) return // 旧响应晚到：不得覆盖后发的保存结果
+    const saved = data.config.reasoning_effort || 'default'
+    reasoningEffort.value = saved
+    lastSavedReasoning = saved
     emit('reasoning-saved', data.config)
     ElMessage.success(data.config.reasoning_effort ? '思考深度已生效' : '思考深度已恢复为跟随模型')
   } catch {
+    // 保存失败回滚（旧请求/用户已切到新档位则不回滚，避免覆盖后续操作）
+    if (seq === reasoningSaveSeq && reasoningEffort.value === attempted) {
+      reasoningEffort.value = previous
+    }
     /* 拦截器已提示 */
   }
 }
@@ -794,6 +830,27 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
 
 .error-bubble {
   background: var(--el-color-danger-light-9);
+}
+
+/* 持久化告警：回复本身成功，只是未入历史；与错误气泡区分（暖色提示、不整块变红） */
+.persist-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--el-color-warning-light-5);
+  border-left: 3px solid var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+  color: var(--el-color-warning-dark-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.persist-warning .el-icon {
+  margin-top: 2px;
+  flex: none;
 }
 
 .ai-meta {

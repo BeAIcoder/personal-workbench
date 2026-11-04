@@ -40,6 +40,19 @@ manifest = ModuleManifest(
             "contact_phone": "VARCHAR(50)",
             "address": "VARCHAR(300)",
             "tax_type": "VARCHAR(50)",
+            # 高新资格属性：计算/保存/导出统一取该列（台账 L-050）
+            "is_high_tech": "BOOLEAN DEFAULT 0",
+        },
+        # 申报记录补齐真实利润表与计税口径列（台账 L-051/L-067）
+        "mod_tax_return": {
+            "operating_revenue": "FLOAT DEFAULT 0",
+            "other_income": "FLOAT DEFAULT 0",
+            "operating_cost": "FLOAT DEFAULT 0",
+            "total_expenses": "FLOAT DEFAULT 0",
+            "total_profit": "FLOAT DEFAULT 0",
+            "tax_adjustments": "FLOAT DEFAULT 0",
+            "tax_preferential": "FLOAT DEFAULT 0",
+            "tax_type": "VARCHAR(20) DEFAULT ''",
         },
     },
     requires=[],

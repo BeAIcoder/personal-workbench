@@ -96,7 +96,10 @@ def _build_index(db: Session) -> dict:
         chunks.extend(_chunk_note(note.id, note.title or "", note.content or ""))
     df: Counter = Counter()
     for chunk in chunks:
-        for token in set(_bigrams(chunk["text"])):
+        tokens = _bigrams(chunk["text"])
+        # 词频随索引缓存，检索时不再逐 chunk 重新分词（只对查询分词一次）。
+        chunk["tf"] = Counter(tokens)
+        for token in set(tokens):
             df[token] += 1
     total_len = sum(len(c["text"]) for c in chunks) or 1
     return {"stamp": stamp, "chunks": chunks, "df": df, "avgdl": total_len / max(len(chunks), 1)}
@@ -159,7 +162,7 @@ def search(query: str, top_k: int = TOP_K_DEFAULT) -> list[dict]:
         return []
     scores: list[tuple[float, dict]] = []
     for chunk in chunks:
-        tf = Counter(_bigrams(chunk["text"]))
+        tf = chunk.get("tf") or Counter(_bigrams(chunk["text"]))
         dl = len(chunk["text"]) or 1
         score = 0.0
         for token in q_tokens:

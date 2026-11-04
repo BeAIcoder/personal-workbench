@@ -26,6 +26,10 @@
         <el-form-item label="是否限制行业">
           <el-switch v-model="form.is_restricted_industry" />
         </el-form-item>
+        <el-form-item label="高新技术企业">
+          <el-switch v-model="form.is_high_tech" />
+          <span class="hint">开启后按 15% 优惠税率计算与导出；与小微优惠不得叠加</span>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="submitting" @click="submit">保存</el-button>
         </el-form-item>
@@ -50,6 +54,7 @@ const formRef = ref(null)
 const form = reactive({
   name: '', tax_number: '', industry_type: '',
   employee_count: undefined, total_assets: undefined, is_restricted_industry: false,
+  is_high_tech: false,
 })
 
 const rules = {
@@ -97,4 +102,10 @@ async function submit() {
 onMounted(load)
 </script>
 
-<style scoped></style>
+<style scoped>
+.hint {
+  margin-left: 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+</style>

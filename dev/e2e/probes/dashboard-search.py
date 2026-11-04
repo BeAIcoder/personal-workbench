@@ -60,6 +60,10 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = RESULTS / f"{AREA}-data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 env["SEED_ON_STARTUP"] = "0"  # 空库起点，计数/列表断言可完全由播种数据推导
 
@@ -722,8 +726,9 @@ try:
                 f"日程应按开始时间升序: {[s['title'] for s in body['schedules']]}"
             assert [n["title"] for n in body["notes"]] == ["DS上限笔记1", "DS上限笔记2"], \
                 f"笔记应按更新时间倒序: {[n['title'] for n in body['notes']]}"
-            assert body["total"] == 5 + 2 + 2, f"total 应等于各类返回条数之和: {body['total']}"
-            return "每类最多 5 条；任务/笔记更新时间倒序、日程开始升序；total=各分类条数之和"
+            assert body["total"] == 6 + 2 + 2, (
+                f"total 应为真实命中总数（6 任务 + 2 日程 + 2 笔记），不是截断后条数: {body['total']}")
+            return "每类最多 5 条；任务/笔记更新时间倒序、日程开始升序；total=真实命中总数"
 
         record("SEARCH-API-006", "每类上限与组内排序", probe_search_limit_and_order)
 

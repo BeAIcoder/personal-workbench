@@ -2,6 +2,11 @@
 附加税费计算服务
 包含城市维护建设税、教育费附加、地方教育附加、印花税计算，
 以及六税两费减半政策的支持。
+
+定位（台账 L-066）：本模块是附加税费的**唯一实现**，当前由真实申报对拍测试
+（`test_tax_real_case_regression.py`）校验增值税应纳税额对应的附加税金额。
+它没有对外接口——附加税是否要接入四填报属于产品决策，依据不足不擅自新增
+（台账 L-068 外部阻断）；在此之前保留为单一引擎，不再新增第二份附加税实现。
 """
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP

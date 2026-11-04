@@ -251,6 +251,42 @@ def _pack_dir(name: str) -> Path:
     return pack_dir
 
 
+def install_pack(src: Path, name: str, *, disable_new: bool = True, prepare=None) -> dict:
+    """原子安装/替换技能包；拷贝、预处理或新包停用失败时保留旧包。"""
+    dest = _pack_dir(name)
+    tmp = dest.with_name(f".{dest.name}.installing")
+    backup = dest.with_name(f".{dest.name}.bak")
+    shutil.rmtree(tmp, ignore_errors=True)
+    if backup.exists():
+        if dest.exists():
+            shutil.rmtree(backup)
+        else:
+            backup.rename(dest)
+    existed = dest.exists()
+    switched = False
+    try:
+        shutil.copytree(src, tmp)
+        if prepare is not None:
+            prepare(tmp)
+        if dest.exists():
+            dest.rename(backup)
+        tmp.rename(dest)
+        switched = True
+        if disable_new and not existed:
+            set_enabled(dest.name, False)
+    except Exception:
+        if switched:
+            shutil.rmtree(dest, ignore_errors=True)
+        if backup.exists() and not dest.exists():
+            backup.rename(dest)
+        raise
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if dest.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+    return {"name": dest.name, "updated": existed, "enabled": dest.name not in _load_disabled()}
+
+
 def set_enabled(name: str, enabled: bool) -> dict:
     """启用/停用技能包（写 _store.json）；包不存在抛 LookupError。
 

@@ -10,6 +10,14 @@
           </div>
         </div>
       </template>
+      <el-alert
+        v-if="data.note"
+        :title="data.note"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="summary-note"
+      />
       <el-table :data="data.items" size="small" border empty-text="选择期间后点汇总">
         <el-table-column prop="subject_code" label="科目编码" width="120" />
         <el-table-column prop="subject_name" label="科目名称" min-width="180" />
@@ -36,7 +44,10 @@ import { localMonth } from '../../_shared/dates'
 
 const loading = ref(false)
 const period = ref(localMonth())
-const data = reactive({ period: '', items: [], subject_count: 0, debit_total: 0, credit_total: 0 })
+const data = reactive({
+  period: '', items: [], subject_count: 0, debit_total: 0, credit_total: 0,
+  entries_without_subject: 0, note: '',
+})
 
 async function load() {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period.value)) {
@@ -49,6 +60,11 @@ async function load() {
     Object.assign(data, resp)
   } catch {
     data.items = []
+    data.subject_count = 0
+    data.debit_total = 0
+    data.credit_total = 0
+    data.entries_without_subject = 0
+    data.note = ''
     /* 拦截器已统一提示 */
   } finally {
     loading.value = false
@@ -68,5 +84,9 @@ onMounted(load)
 .total-line {
   margin-top: 12px;
   color: var(--el-text-color-regular);
+}
+
+.summary-note {
+  margin-bottom: 12px;
 }
 </style>

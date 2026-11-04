@@ -36,6 +36,8 @@ STALE_RUN_SECONDS = 2 * 3600   # 崩溃/重启后 running 超过此时长自动�
 ENGINE_SCRIPT = "cashflow_autofill.py"
 STEP_TIMEOUT = 1800           # 引擎单次运行超时（秒）
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_BATCH_BYTES = 100 * 1024 * 1024  # 单次上传批次（多文件合计）上限
+MAX_FILES_PER_BATCH = 200            # 单批次文件数上限（与发票/POS 同口径）
 MAX_UNZIP_BYTES = 200 * 1024 * 1024  # ZIP 解压后总量上限（防解压炸弹）
 ALLOWED_SUFFIXES = (".xlsx", ".xls", ".csv", ".zip")
 ALLOWED_MEMBER_SUFFIXES = (".xlsx", ".xls", ".csv")  # ZIP 成员仅限业务数据格式（拒 .py/plugin.json 等）
@@ -88,9 +90,11 @@ def _safe_member_segment(part: str) -> str:
 
 def engine_dir() -> Path:
     """V1 引擎目录：配置优先，否则按资产锚点目录推导（settings.finance_asset_anchor）。"""
-    if settings.finance_cashflow_engine_path:
-        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
-        return resolve_engine_root(settings.finance_cashflow_engine_path)
+    configured = (settings.finance_cashflow_engine_path or "").strip()
+    if configured:
+        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root；
+        # configured 已判非空，resolve_engine_root 此处不会返回 None。
+        return resolve_engine_root(configured)
     found = find_sibling_project("现金流滚动预测/现金流滚动预测表自动化填报/V1", Path(__file__))
     if found is None:
         raise EngineUnavailableError("无法定位现金流引擎目录，请配置 finance_cashflow_engine_path")
@@ -101,6 +105,51 @@ def _runs_root() -> Path:
     d = get_finance_data_dir() / "finance_cashflow" / "runs"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _resolve_run_dir(run: CashflowRun) -> Path:
+    """运行工作目录必须落在本模块 runs 根目录内（空值/越界/缺失一律拒绝）。
+
+    旧实现直接 `Path(run.run_dir)`：空值会退化成 CWD，篡改值可让引擎把产物
+    写到任意目录（L-095）。
+    """
+    root = _runs_root().resolve()
+    raw = (run.run_dir or "").strip()
+    if not raw:
+        raise EngineUnavailableError("运行工作目录缺失，请删除该运行并重新创建")
+    path = Path(raw).resolve()
+    if path == root or not path.is_relative_to(root) or not path.is_dir():
+        raise EngineUnavailableError("运行工作目录无效（不在本模块 runs 目录内），请删除该运行并重新创建")
+    return path
+
+
+def _mark_failed(
+    db: Session,
+    run_id: int,
+    message: str,
+    elapsed: float,
+    log_tail: str | None = None,
+) -> None:
+    """把运行记录置 failed（先 rollback，兼容会话已处于失败事务的状态）。
+
+    原实现直接 commit：若原异常来自 DB 层，会话处于 PendingRollbackError，
+    再 commit 会二次抛错，运行永久卡在 running（L-094/L-095）。
+    """
+    try:
+        db.rollback()
+    except Exception:  # rollback 本身失败不阻断后续落库尝试
+        logger.warning("现金流运行 %s 失败回滚异常", run_id, exc_info=True)
+    try:
+        row = db.get(CashflowRun, run_id)
+        if row is not None:
+            row.status = "failed"
+            row.error = message[:500]
+            row.elapsed_sec = round(elapsed, 2)
+            if log_tail is not None:
+                row.log_tail = log_tail[-4000:]
+        db.commit()
+    except Exception:  # 落库失败只记日志，不掩盖原始异常
+        logger.warning("现金流运行 %s 失败状态落库失败", run_id, exc_info=True)
 
 
 def _unique_path(target: Path) -> Path:
@@ -200,6 +249,13 @@ def create_run(db: Session, files: list[tuple[str, bytes]], actual_month: int) -
         raise ValueError("actual_month 需在 1-12 之间")
     if not files:
         raise ValueError("请上传输入文件（银行辅助明细账 + 模板等，或一个 ZIP）")
+    if len(files) > MAX_FILES_PER_BATCH:
+        raise ValueError(f"单批次文件数超过 {MAX_FILES_PER_BATCH} 上限，请拆分后上传")
+    total_bytes = sum(len(content) for _, content in files)
+    if total_bytes > MAX_BATCH_BYTES:
+        raise ValueError(
+            f"上传批次总大小超过 {MAX_BATCH_BYTES // 1024 // 1024}MB 上限，请拆分后上传"
+        )
     # fail-fast：引擎缺失直接拒绝创建（避免建了跑不了的运行）
     script = engine_dir() / ENGINE_SCRIPT
     if not script.is_file():
@@ -246,10 +302,11 @@ def _execute_run_locked(db: Session, run_id: int) -> dict:
     if not script.is_file():
         raise EngineUnavailableError(f"现金流引擎不存在：{script}（配置 finance_cashflow_engine_path 可指定）")
 
-    run_dir = Path(run.run_dir)
+    run_dir = _resolve_run_dir(run)
     out_dir = run_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     run.status = "running"
+    run.error = ""
     db.commit()
 
     args = [
@@ -269,43 +326,48 @@ def _execute_run_locked(db: Session, run_id: int) -> dict:
         run.elapsed_sec = round(time.perf_counter() - t0, 2)
         run.log_tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
         if proc.returncode != 0:
-            run.status = "failed"
-            run.error = f"引擎退出码 {proc.returncode}"
-            db.commit()
+            _mark_failed(db, run.id, f"引擎退出码 {proc.returncode}", run.elapsed_sec, run.log_tail)
             raise EngineUnavailableError(f"引擎执行失败（退出码 {proc.returncode}），详见运行记录日志")
 
-        # 产物归档：output 下所有文件复制到 run_dir/artifacts 并登记
+        # 产物归档：output 下所有文件按相对路径复制到 run_dir/artifacts 并登记。
+        # 保留子目录结构：同名文件（不同子目录）不再互相覆盖，下载名也带子路径（L-095）。
         art_dir = run_dir / "artifacts"
+        if art_dir.exists():
+            shutil.rmtree(art_dir, ignore_errors=True)  # 重跑不累积上次残留
         art_dir.mkdir(parents=True, exist_ok=True)
         artifacts: list[dict] = []
         for f in sorted(out_dir.rglob("*")):
             if f.is_file() and not f.name.startswith("~$"):
-                dest = art_dir / f.name
+                rel = f.relative_to(out_dir)
+                dest = art_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(f.read_bytes())
-                artifacts.append({"name": f.name, "size": dest.stat().st_size, "path": str(dest)})
+                artifacts.append({"name": rel.as_posix(), "size": dest.stat().st_size, "path": str(dest)})
         run.artifacts = artifacts
         run.status = "ok" if artifacts else "failed"
-        if not artifacts:
-            run.error = "引擎执行完成但未产生产物"
+        run.error = "" if artifacts else "引擎执行完成但未产生产物"
         db.commit()
         db.refresh(run)
         return _out(run)
-    except subprocess.TimeoutExpired:
-        run.status = "failed"
-        run.error = f"引擎执行超时（>{STEP_TIMEOUT}s）"
-        run.elapsed_sec = round(time.perf_counter() - t0, 2)
-        db.commit()
-        raise EngineUnavailableError(run.error) from None
+    except subprocess.TimeoutExpired as exc:
+        message = f"引擎执行超时（>{STEP_TIMEOUT}s）"
+        parts = []
+        for value in (getattr(exc, "stdout", None), getattr(exc, "stderr", None)):
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            if value:
+                parts.append(value)
+        tail = "\n".join(parts)[-4000:] or message
+        _mark_failed(db, run.id, message, time.perf_counter() - t0, tail)
+        raise EngineUnavailableError(message) from None
     except EngineUnavailableError:
         raise
     except Exception as exc:
         # 兜底：归档等任何异常都回写 failed，避免运行记录永久卡在 running 无法重试
-        run.status = "failed"
-        run.error = f"执行异常：{type(exc).__name__}: {exc}"[:500]
-        run.elapsed_sec = round(time.perf_counter() - t0, 2)
-        db.commit()
+        message = f"执行异常：{type(exc).__name__}: {exc}"[:500]
+        _mark_failed(db, run.id, message, time.perf_counter() - t0, run.log_tail)
         logger.exception("现金流运行 %s 执行异常", run.id)
-        raise EngineUnavailableError(run.error) from exc
+        raise EngineUnavailableError(message) from exc
 
 
 def _out(r: CashflowRun) -> dict:
@@ -351,10 +413,15 @@ def get_run(db: Session, run_id: int) -> CashflowRun:
 
 
 def artifact_path(run: CashflowRun, name: str) -> Path:
-    """按名字取产物文件（防穿越：只允许 artifacts 清单内的文件名）。"""
-    safe = Path(name or "").name
+    """按名字取产物文件（防穿越：只允许 artifacts 清单内、且不含上跳段的相对名）。"""
+    rel_text = (name or "").replace("\\", "/").strip("/")
+    rel = Path(rel_text)
+    if not rel_text or rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail=f"产物不存在：{name}")
     for a in run.artifacts or []:
-        if a["name"] == safe:
+        if a["name"] == rel.as_posix():
             p = Path(a["path"])
             if p.is_file():
                 return p

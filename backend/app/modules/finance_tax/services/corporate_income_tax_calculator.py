@@ -28,6 +28,7 @@ from ..config.tax_rates import (
     get_high_tech_cit_rate,
     get_small_micro_cit_rate,
 )
+from ....utils_money import money
 
 
 # ============================================================
@@ -66,6 +67,8 @@ class TaxAdjustmentInput:
     penalties: float = 0.0
     # 设备购置金额（用于500万以下一次性扣除判断）
     equipment_purchase: float = 0.0
+    # 设备当年已提折旧（万元）：一次性扣除为税会差异，调减只取「购置额 − 当年折旧」
+    equipment_depreciation: float = 0.0
 
 
 @dataclass
@@ -78,7 +81,9 @@ class EnterpriseInfo:
     is_high_tech: bool = False           # 是否高新技术企业
     enterprise_type: str = "一般企业"     # 企业类型（用于研发加计扣除）
     advertising_industry: IndustryType = IndustryType.GENERAL  # 广告费行业类型
-    tax_year: str = ""                   # 所属年度（可选）：小微优惠政策有效期校验用
+    tax_year: str = ""                   # 所属年度（可选）：小微/研发加计政策有效期校验用
+    # 高新与小微同时符合时的显式选择："high_tech" / "small_micro" / ""（不选=阻断）
+    preferential_choice: str = ""
 
 
 @dataclass
@@ -115,6 +120,7 @@ class CalculationResult:
 
     # 弥补亏损
     loss_carry_forward_used: float = 0.0    # 本期弥补的以前年度亏损（万元）
+    loss_used_by_year: Dict[int, float] = field(default_factory=dict)  # 各年度实际弥补额
     loss_carry_forward_remaining: Dict[int, float] = field(default_factory=dict)
     loss_carry_forward_expired: Dict[int, float] = field(default_factory=dict)  # 已过期不可弥补
 
@@ -131,6 +137,16 @@ class CalculationResult:
 # ============================================================
 # 单位转换工具
 # ============================================================
+
+def _money_wan(amount_wan: float) -> float:
+    """万元金额按「元」取整到分后折回万元（复核 I-3）。
+
+    旧实现统一用 round(万元, 2)，等于 100 元粒度：10.70 元应税会被截成 0，
+    计算页与落库/导出因此差到元级。这里改为先折元、按分 HALF_UP，再折回万元。
+    """
+    return money(float(amount_wan or 0) * 10000.0) / 10000.0
+
+
 
 def wan_to_yuan(amount_wan: float) -> float:
     """万元转元"""
@@ -200,19 +216,35 @@ class CorporateIncomeTaxCalculator:
     def determine_enterprise_tax_type(
         is_high_tech: bool,
         small_micro_result: Dict[str, Any],
+        preferential_choice: str = "",
     ) -> EnterpriseTaxType:
         """
         确定企业适用的所得税类型
 
-        优先级：高新技术企业 > 小型微利企业 > 一般企业
+        优先级：高新技术企业 > 小型微利企业 > 一般企业。
+        两类优惠**不得叠加**（台账 L-056）：同时符合且未显式选择时抛 ValueError
+        阻断，由用户明确选择后再计税——本引擎不代为选择，也不臆造叠加口径。
 
         Args:
             is_high_tech: 是否高新技术企业
             small_micro_result: 小型微利企业判定结果
+            preferential_choice: 同时符合时的选择："high_tech" / "small_micro"
 
         Returns:
             企业类型
         """
+        both = bool(is_high_tech) and bool(small_micro_result.get("qualified", False))
+        if both:
+            choice = (preferential_choice or "").strip()
+            if choice == "small_micro":
+                return EnterpriseTaxType.SMALL_MICRO
+            if choice == "high_tech":
+                return EnterpriseTaxType.HIGH_TECH
+            raise ValueError(
+                "该企业同时符合高新技术企业（15%）与小型微利企业（5%）条件，两项优惠不得叠加。"
+                "请明确选择其一（preferential_choice=high_tech 或 small_micro）后重试；"
+                "本系统不代为选择，适用哪一项请按主管税务机关口径确认"
+            )
         if is_high_tech:
             return EnterpriseTaxType.HIGH_TECH
         elif small_micro_result.get("qualified", False):
@@ -430,6 +462,7 @@ class CorporateIncomeTaxCalculator:
     def calculate_rd_expense_super_deduction(
         actual_rd_expense_wan: float,
         enterprise_type: str = "一般企业",
+        tax_year: str | int | None = None,
     ) -> Dict[str, Any]:
         """
         计算研发费用加计扣除（纳税调减项）
@@ -437,6 +470,7 @@ class CorporateIncomeTaxCalculator:
         Args:
             actual_rd_expense_wan: 实际发生的研发费用（万元）
             enterprise_type: 企业类型
+            tax_year: 所属年度（可选）；120% 档按 44 号公告校验有效期（台账 L-055）
 
         Returns:
             加计扣除明细
@@ -444,6 +478,7 @@ class CorporateIncomeTaxCalculator:
         result = calculate_rd_expense_deduction(
             actual_rd_expense=wan_to_yuan(actual_rd_expense_wan),
             enterprise_type=enterprise_type,
+            tax_year=tax_year,
         )
         return {
             "category": DeductionCategory.RD_EXPENSE.value,
@@ -459,25 +494,33 @@ class CorporateIncomeTaxCalculator:
     @staticmethod
     def calculate_equipment_one_time_deduction(
         equipment_purchase_wan: float,
+        equipment_depreciation_wan: float = 0.0,
     ) -> Dict[str, Any]:
         """
         计算设备器具一次性扣除
 
         规则：企业在2018年1月1日至2027年12月31日期间新购进的设备、器具，
-        单位价值不超过500万元的，允许一次性计入当期成本费用在计算应纳税所得额时扣除
+        单位价值不超过500万元的，允许一次性计入当期成本费用在计算应纳税所得额时扣除。
+
+        税会差异（台账 L-057）：会计上已按当年折旧计入成本费用，一次性扣除属于
+        税会差异，纳税调减只取「购置额 − 当年已提折旧」，不能整额再扣一次。
 
         Args:
             equipment_purchase_wan: 设备购置金额（万元）
+            equipment_depreciation_wan: 当年已计入损益的折旧（万元）
 
         Returns:
             扣除明细
         """
         threshold_wan = 500.0  # 500万元
+        purchase = float(equipment_purchase_wan or 0.0)
+        depreciation = min(max(0.0, float(equipment_depreciation_wan or 0.0)), max(0.0, purchase))
 
-        if equipment_purchase_wan <= 0:
+        if purchase <= 0:
             return {
                 "category": "设备一次性扣除",
-                "equipment_purchase_wan": equipment_purchase_wan,
+                "equipment_purchase_wan": purchase,
+                "current_year_depreciation_wan": 0.0,
                 "threshold_wan": threshold_wan,
                 "eligible": False,
                 "one_time_deduction_wan": 0.0,
@@ -485,26 +528,31 @@ class CorporateIncomeTaxCalculator:
                 "reason": "设备购置金额为零",
             }
 
-        if equipment_purchase_wan <= threshold_wan:
+        if purchase <= threshold_wan:
             return {
                 "category": "设备一次性扣除",
-                "equipment_purchase_wan": equipment_purchase_wan,
+                "equipment_purchase_wan": purchase,
+                "current_year_depreciation_wan": _money_wan(depreciation),
                 "threshold_wan": threshold_wan,
                 "eligible": True,
-                "one_time_deduction_wan": equipment_purchase_wan,
-                "tax_adjustment_decrease_wan": equipment_purchase_wan,
-                "reason": f"设备价值{equipment_purchase_wan}万元不超过{threshold_wan}万元限额，可一次性扣除",
+                "one_time_deduction_wan": purchase,
+                "tax_adjustment_decrease_wan": _money_wan(purchase - depreciation),
+                "reason": (
+                    f"设备价值{purchase}万元不超过{threshold_wan}万元限额，可一次性扣除；"
+                    f"当年已提折旧 {depreciation:.2f} 万元不再重复调减"
+                ),
             }
         else:
             # 超过500万需按折旧年限分期扣除，不做一次性扣除调整
             return {
                 "category": "设备一次性扣除",
-                "equipment_purchase_wan": equipment_purchase_wan,
+                "equipment_purchase_wan": purchase,
+                "current_year_depreciation_wan": _money_wan(depreciation),
                 "threshold_wan": threshold_wan,
                 "eligible": False,
                 "one_time_deduction_wan": 0.0,
                 "tax_adjustment_decrease_wan": 0.0,
-                "reason": f"设备价值{equipment_purchase_wan}万元超过{threshold_wan}万元限额，需分期扣除",
+                "reason": f"设备价值{purchase}万元超过{threshold_wan}万元限额，需分期扣除",
             }
 
     @staticmethod
@@ -515,6 +563,7 @@ class CorporateIncomeTaxCalculator:
         total_salary_wan: float,
         enterprise_type: str = "一般企业",
         advertising_industry: IndustryType = IndustryType.GENERAL,
+        tax_year: str | int | None = None,
     ) -> Dict[str, Any]:
         """
         计算所有纳税调整项
@@ -526,6 +575,7 @@ class CorporateIncomeTaxCalculator:
             total_salary_wan: 工资薪金总额（万元）
             enterprise_type: 企业类型
             advertising_industry: 广告费行业类型
+            tax_year: 所属年度（可选）；研发加计等高比例档按年度校验政策有效期
 
         Returns:
             包含所有调整明细和合计的字典
@@ -576,12 +626,12 @@ class CorporateIncomeTaxCalculator:
 
         # 8. 研发费用加计扣除
         details["rd_expense"] = CorporateIncomeTaxCalculator.calculate_rd_expense_super_deduction(
-            adjustments.rnd_expense, enterprise_type
+            adjustments.rnd_expense, enterprise_type, tax_year
         )
 
-        # 9. 设备一次性扣除
+        # 9. 设备一次性扣除（调减＝购置额 − 当年已提折旧）
         details["equipment_one_time"] = CorporateIncomeTaxCalculator.calculate_equipment_one_time_deduction(
-            adjustments.equipment_purchase
+            adjustments.equipment_purchase, adjustments.equipment_depreciation
         )
 
         # --- 计算合计 ---
@@ -596,9 +646,9 @@ class CorporateIncomeTaxCalculator:
 
         return {
             "details": details,
-            "total_adjustment_increase_wan": round(total_increase, 2),
-            "total_adjustment_decrease_wan": round(total_decrease, 2),
-            "net_adjustment_wan": round(total_increase - total_decrease, 2),
+            "total_adjustment_increase_wan": _money_wan(total_increase),
+            "total_adjustment_decrease_wan": _money_wan(total_decrease),
+            "net_adjustment_wan": _money_wan(total_increase - total_decrease),
         }
 
     # --- 3. 应纳税所得额计算 ---
@@ -627,7 +677,7 @@ class CorporateIncomeTaxCalculator:
             + total_adjustment_increase_wan
             - total_adjustment_decrease_wan
         )
-        return round(taxable_income, 2)
+        return _money_wan(taxable_income)
 
     # --- 4. 弥补亏损计算 ---
 
@@ -676,21 +726,21 @@ class CorporateIncomeTaxCalculator:
             if available_loss <= 0:
                 continue
             if current_year is not None and (int(current_year) - int(year)) > max_years:
-                expired_losses[int(year)] = round(available_loss, 2)
+                expired_losses[int(year)] = _money_wan(available_loss)
                 remaining_losses[year] = 0.0
                 continue
 
             used = min(remaining_income, available_loss)
-            used_by_year[year] = round(used, 2)
+            used_by_year[year] = _money_wan(used)
             remaining_income -= used
-            remaining_losses[year] = round(available_loss - used, 2)
+            remaining_losses[year] = _money_wan(available_loss - used)
 
         total_used = sum(used_by_year.values())
 
         return {
             "taxable_income_before_loss_wan": taxable_income_before_loss_wan,
-            "loss_used_wan": round(total_used, 2),
-            "taxable_income_after_loss_wan": round(max(0, remaining_income), 2),
+            "loss_used_wan": _money_wan(total_used),
+            "taxable_income_after_loss_wan": _money_wan(max(0, remaining_income)),
             "remaining_losses": {
                 y: v for y, v in remaining_losses.items()
             },
@@ -712,7 +762,7 @@ class CorporateIncomeTaxCalculator:
         """
         if tax_year is None or enterprise_tax_type == EnterpriseTaxType.SMALL_MICRO:
             return
-        year = str(tax_year)[:4]
+        year = str(tax_year).strip()
         if not (year.isdigit() and len(year) == 4):
             return
         item_name = {
@@ -786,7 +836,9 @@ class CorporateIncomeTaxCalculator:
             "taxable_income_wan": taxable_income_wan,
             "enterprise_tax_type": enterprise_tax_type.value,
             "applicable_rate": rate,
-            "tax_amount_wan": round(tax_amount_wan := taxable_income_wan * rate, 2),
+            # 税额按「元」取整到分后折回万元（复核 I-3）：旧实现 round(万元, 2)
+            # 等于 100 元粒度，计算页与落库/导出会差到元级。
+            "tax_amount_wan": money(taxable_income_wan * 10000.0 * rate) / 10000.0,
             "reason": reason,
             "policy_status": policy_status_value,
         }
@@ -836,6 +888,7 @@ class CorporateIncomeTaxCalculator:
             total_salary_wan=total_salary_wan,
             enterprise_type=enterprise_info.enterprise_type,
             advertising_industry=enterprise_info.advertising_industry,
+            tax_year=enterprise_info.tax_year or None,
         )
 
         result.adjustments_detail = adj_result["details"]
@@ -857,11 +910,13 @@ class CorporateIncomeTaxCalculator:
                 losses=losses,
             )
             result.loss_carry_forward_used = loss_result["loss_used_wan"]
+            result.loss_used_by_year = dict(loss_result.get("used_by_year") or {})
             result.loss_carry_forward_remaining = loss_result["remaining_losses"]
             result.loss_carry_forward_expired = loss_result.get("expired_losses", {})
             result.taxable_income_after_loss = loss_result["taxable_income_after_loss_wan"]
         else:
             result.loss_carry_forward_used = 0.0
+            result.loss_used_by_year = {}
             result.taxable_income_after_loss = taxable_income_before_loss
 
         # 第4步：小型微利企业判定（使用弥补亏损后的应纳税所得额）
@@ -877,10 +932,11 @@ class CorporateIncomeTaxCalculator:
         result.is_small_micro = small_micro_result["qualified"]
         result.small_micro_details = small_micro_result
 
-        # 第5步：确定企业类型和适用税率
+        # 第5步：确定企业类型和适用税率（高新与小微并存须显式选择，不叠加）
         enterprise_tax_type = CorporateIncomeTaxCalculator.determine_enterprise_tax_type(
             is_high_tech=enterprise_info.is_high_tech,
             small_micro_result=small_micro_result,
+            preferential_choice=enterprise_info.preferential_choice,
         )
         result.enterprise_tax_type = enterprise_tax_type
         result.applicable_tax_rate = CorporateIncomeTaxCalculator.get_applicable_tax_rate(enterprise_tax_type)

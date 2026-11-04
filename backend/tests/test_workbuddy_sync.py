@@ -122,6 +122,46 @@ def test_settings_roundtrip(env):
     assert wb.load_settings()["home"] == str(env["home"])
 
 
+def test_skill_copy_failure_preserves_old_pack_and_cleans_temp(env, monkeypatch):
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        wb.import_all(db, home=str(env["home"]), memories=False, identity=False)
+    dest = env["store"] / "wb-demo-skill"
+    original = (dest / "SKILL.md").read_bytes()
+
+    def fail_copy(src, dst, **kwargs):
+        from pathlib import Path
+
+        partial = Path(dst)
+        partial.mkdir(parents=True)
+        (partial / "SKILL.md").write_text("半成品", encoding="utf-8")
+        raise OSError("synthetic workbuddy copy failure")
+
+    monkeypatch.setattr(skill_store.shutil, "copytree", fail_copy)
+    with SessionLocal() as db:
+        result = wb.import_all(db, home=str(env["home"]), memories=False, identity=False)
+    assert result["skills"]["failed"][0]["name"] == "wb-demo-skill"
+    assert (dest / "SKILL.md").read_bytes() == original
+    assert not list(env["store"].glob(".*.installing"))
+    assert not list(env["store"].glob(".*.bak"))
+
+
+def test_new_skill_disable_failure_rolls_back_and_cleans_temp(env, monkeypatch):
+    from app.database import SessionLocal
+
+    def fail_disable(*args, **kwargs):
+        raise RuntimeError("synthetic disable failure")
+
+    monkeypatch.setattr(skill_store, "set_enabled", fail_disable)
+    with SessionLocal() as db:
+        result = wb.import_all(db, home=str(env["home"]), memories=False, identity=False)
+    assert result["skills"]["failed"][0]["name"] == "wb-demo-skill"
+    assert not (env["store"] / "wb-demo-skill").exists()
+    assert not list(env["store"].glob(".*.installing"))
+    assert not list(env["store"].glob(".*.bak"))
+
+
 # ---------- API ----------
 
 def test_api_scan_and_import(client, env):

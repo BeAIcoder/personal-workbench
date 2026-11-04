@@ -24,7 +24,7 @@ manifest = ModuleManifest(
         }
     ],
     column_patches={
-        "mod_hr_employee": {"special_additional": "FLOAT"},
+        "mod_hr_employee": {"special_additional": "FLOAT", "social_base_set": "INTEGER"},
         "mod_hr_payroll": {"special_additional": "FLOAT"},
     },
     requires=[],

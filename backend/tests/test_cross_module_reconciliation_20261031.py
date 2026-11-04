@@ -26,10 +26,10 @@ def _make_unit(client, unit_no="U-1001"):
     return resp.json()["id"]
 
 
-def _make_signed_lead(unit_id: int, **terms) -> None:
+def _make_signed_lead(unit_id: int, company: str = "勾稽商户", **terms) -> None:
     with SessionLocal() as db:
         db.add(LeasingLead(
-            company="勾稽测试商户", stage="signed", unit_id=unit_id, **terms))
+            company=company, stage="signed", unit_id=unit_id, **terms))
         db.commit()
 
 

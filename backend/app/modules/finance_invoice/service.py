@@ -61,12 +61,21 @@ _YM_PATTERNS = [
     re.compile(r"(\d{4})/(\d{1,2})/\d{1,2}"),
 ]
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
+# Windows 落盘安全：非法字符 / 设备保留名（ZIP 成员与导出文件同口径）
+_WIN_ILLEGAL_CHARS = set('<>:"/\\|?*')
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
+    f"{prefix}{i}" for prefix in ("COM", "LPT") for i in range(1, 10)
+}
 # 同引擎口径：保留中英文、数字、连字符与下划线（一-鿿 即 CJK 统一表意区间 4E00-9FFF）
 _NON_WORD_CHARS = re.compile(r"[^\w一-鿿\-_]")
 _AMOUNT_NUMBER_FORMAT = "#,##0.00"
 
 # 可参与导出 / 冲红配对的明细状态
 _ACTIVE_ITEM_STATUS = (InvoiceItem.STATUS_PARSED, InvoiceItem.STATUS_INCOMPLETE)
+
+
+class ExportBusyError(RuntimeError):
+    """导出文件/目录被占用（Windows 文件锁），由路由层映射 409。"""
 
 
 @dataclass
@@ -374,10 +383,15 @@ def reclassify_batch(db: Session, batch: InvoiceBatch) -> dict:
             item.project_name = project[:100]
             changed += 1
     if batch.status == InvoiceBatch.STATUS_EXPORTED:
+        export_file = batch.export_file or ""
         batch.status = InvoiceBatch.STATUS_PARSED
         batch.export_file = ""
+    else:
+        export_file = ""
     db.commit()
     db.refresh(batch)
+    if export_file:
+        _remove_export_artifacts(batch.id, export_file)
     summary = project_summary(db, batch)
     unclassified = sum(
         1 for item in items if (item.project_name or "").strip() in ("", project_rules.UNCLASSIFIED)
@@ -460,13 +474,41 @@ def project_zip_path(batch: InvoiceBatch, project: str) -> Optional[Path]:
 # ---------------- 去重与冲红配对 ----------------
 
 def existing_dedup_keys(db: Session, exclude_batch_id: Optional[int] = None) -> set[str]:
-    """库内既有有效发票的幂等键集合（跨批次去重用）。"""
-    query = db.query(InvoiceItem.invoice_number, InvoiceItem.check_code).filter(
-        InvoiceItem.status.in_(_ACTIVE_ITEM_STATUS)
+    """库内既有有效发票的幂等键集合（跨批次去重用）。
+
+    failed 批次不参与：批次解析流程失败时已落库的 parsed 明细不构成「已入账」，
+    否则用户重传同一批文件会被全部判重、永远无法重试（L-093）。
+    """
+    query = (
+        db.query(InvoiceItem.invoice_number, InvoiceItem.check_code)
+        .join(InvoiceBatch, InvoiceBatch.id == InvoiceItem.batch_id)
+        .filter(
+            InvoiceItem.status.in_(_ACTIVE_ITEM_STATUS),
+            InvoiceBatch.status != InvoiceBatch.STATUS_FAILED,
+        )
     )
     if exclude_batch_id is not None:
         query = query.filter(InvoiceItem.batch_id != exclude_batch_id)
     return {k for k in (dedup_key(n, c) for n, c in query.all()) if k}
+
+
+def amount_warnings(items: list[InvoiceItem]) -> list[dict]:
+    """不可解析金额的明细（parse_amount 会按 0 计入统计，必须显式告警）。"""
+    warnings: list[dict] = []
+    for item in items:
+        if item.status not in _ACTIVE_ITEM_STATUS:
+            continue
+        raw = (item.amount or "").strip()
+        if not raw or _parse_amount_strict(raw) is None:
+            warnings.append(
+                {
+                    "item_id": item.id,
+                    "invoice_number": item.invoice_number,
+                    "source_file": item.source_file,
+                    "amount": item.amount,
+                }
+            )
+    return warnings
 
 
 def mark_duplicates(items: list[InvoiceItem], existing_keys: Optional[set[str]] = None) -> int:
@@ -570,7 +612,8 @@ def _unique_path(path: Path) -> Path:
 
 def _save_pdf(inbox: Path, source_name: str, content: bytes) -> Path:
     """保存单个 PDF 到批次 inbox（文件名净化 + 防路径穿越 + 同名去重）。"""
-    safe = Path(source_name).name
+    raw_name = str(source_name or "").replace("\\", "/").split("/")[-1]
+    safe = _windows_safe_member_name(raw_name, context="上传文件名")
     if safe in ("", ".", ".."):
         raise ValueError("非法的文件名")
     dest = _unique_path(inbox / safe)
@@ -580,8 +623,28 @@ def _save_pdf(inbox: Path, source_name: str, content: bytes) -> Path:
     return dest
 
 
+def _windows_safe_member_name(name: str, context: str = "ZIP 内") -> str:
+    """ZIP 成员/上传文件名必须是 Windows 可落盘的单段名。
+
+    context 用于区分「ZIP 内」与「上传文件名」文案（M4）。设备保留名按第一个点
+    前的基名判定：CON.foo.bar 同样保留（M3）。
+    """
+    if not name or name.strip(" .") == "":
+        raise ValueError(f"{context}存在非法文件名")
+    if any(ch in _WIN_ILLEGAL_CHARS or ord(ch) < 32 for ch in name):
+        raise ValueError(f"{context}存在非法文件名：{name}")
+    if name.endswith((" ", ".")):
+        raise ValueError(f"{context}存在非法文件名：{name}")
+    base = name.split(".", 1)[0].strip(" .").upper()
+    if base in _RESERVED_NAMES:
+        raise ValueError(f"{context}存在非法文件名：{name}（Windows 设备保留名）")
+    if len(name) > 200:
+        raise ValueError(f"{context}存在超长文件名：{name[:30]}…")
+    return name
+
+
 def _extract_zip_pdfs(inbox: Path, zip_name: str, content: bytes) -> list[tuple[str, Path]]:
-    """解包 ZIP 中的 PDF（拍平目录只保留文件名）；路径穿越成员直接整包拒绝。"""
+    """解包 ZIP 中的 PDF（拍平目录只保留文件名）；路径穿越/非法成员名直接整包拒绝。"""
     try:
         zf = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile:
@@ -599,11 +662,12 @@ def _extract_zip_pdfs(inbox: Path, zip_name: str, content: bytes) -> list[tuple[
             parts = [p for p in norm.split("/") if p not in ("", ".")]
             if not parts or any(p == ".." for p in parts) or norm.startswith("/") or re.match(r"^[A-Za-z]:", norm):
                 raise ValueError(f"ZIP 内存在非法路径：{member.filename}")
+            safe_name = _windows_safe_member_name(parts[-1])
             total_unc += member.file_size
             if total_unc > MAX_BATCH_BYTES:
                 raise ValueError("ZIP 解压后总大小超过 100MB 上限")
             data = zf.read(member)
-            stored = _save_pdf(inbox, parts[-1], data)
+            stored = _save_pdf(inbox, safe_name, data)
             results.append((f"{zip_name}:{member.filename}"[:255], stored))
     return results
 
@@ -718,10 +782,17 @@ def create_batch(db: Session, uploads: list[tuple[str, bytes]], name: str = "") 
 
 # ---------------- 查询与人工修正 ----------------
 
-def list_batches(db: Session, limit: int = 50) -> list[InvoiceBatch]:
-    """批次列表（按 id 倒序）。"""
-    limit = max(1, min(int(limit), 200))
-    return db.query(InvoiceBatch).order_by(InvoiceBatch.id.desc()).limit(limit).all()
+def list_batches(db: Session, page: int = 1, page_size: int = 50) -> dict:
+    """批次列表（按 id 倒序，返回 total 供前端分页）。"""
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+    q = db.query(InvoiceBatch)
+    total = q.count()
+    rows = (q.order_by(InvoiceBatch.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all())
+    return {"total": total, "items": rows, "page": page, "page_size": page_size}
 
 
 def delete_batch(db: Session, batch_id: int) -> None:
@@ -753,24 +824,80 @@ def get_item(db: Session, item_id: int) -> Optional[InvoiceItem]:
     return db.query(InvoiceItem).filter(InvoiceItem.id == item_id).first()
 
 
+def _remove_export_artifacts(batch_id: int, export_file: str) -> None:
+    """删除批次旧导出产物（best-effort；只对存在的目录告警，文件占用不阻断修正）。"""
+    dirs = _ensure_dirs()
+    batch_dir = dirs["outbox"] / f"batch_{batch_id}"
+    if batch_dir.exists():
+        try:
+            shutil.rmtree(batch_dir, ignore_errors=False)
+        except OSError as exc:
+            logger.warning("批次 %s 旧导出目录清理失败：%s", batch_id, exc)
+    project_zips = _project_zips_dir(batch_id)
+    if project_zips.exists():
+        try:
+            shutil.rmtree(project_zips, ignore_errors=False)
+        except OSError as exc:
+            logger.warning("批次 %s 旧项目 ZIP 清理失败：%s", batch_id, exc)
+    try:
+        _project_manifest_path(batch_id).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("批次 %s 旧项目清单清理失败：%s", batch_id, exc)
+    if export_file:
+        zip_path = dirs["outbox"] / Path(export_file).name
+        if zip_path.exists():
+            try:
+                zip_path.unlink()
+            except OSError as exc:
+                logger.warning("批次 %s 旧导出 ZIP 清理失败：%s", batch_id, exc)
+
+
+def invalidate_export(db: Session, batch: InvoiceBatch) -> bool:
+    """明细变更后作废旧导出：回落 parsed、清 export_file、删旧产物。
+
+    返回是否确实作废了已导出批次。旧实现只改明细不退状态，前端仍能下载
+    与当前归类/备注不一致的旧 ZIP（L-083）。
+    """
+    if batch.status != InvoiceBatch.STATUS_EXPORTED:
+        return False
+    export_file = batch.export_file or ""
+    batch.status = InvoiceBatch.STATUS_PARSED
+    batch.export_file = ""
+    db.commit()
+    db.refresh(batch)
+    _remove_export_artifacts(batch.id, export_file)
+    return True
+
+
 def patch_item(
     db: Session,
     item: InvoiceItem,
     project_name: Optional[str] = None,
     remark: Optional[str] = None,
 ) -> InvoiceItem:
-    """人工修正项目归类 / 备注；有实际改动时打 corrected 标记。"""
+    """人工修正项目归类 / 备注；只有值实际变化才打 corrected 并作废旧导出。
+
+    相同值重复提交（前端 blur 双字段 PATCH 的常见形态）不构成人工修正，
+    不得误标 corrected 或作废已导出 ZIP（M1）。
+    """
     changed = False
     if project_name is not None:
-        item.project_name = project_name.strip()[:100]
-        changed = True
+        new_project = project_name.strip()[:100]
+        if new_project != (item.project_name or ""):
+            item.project_name = new_project
+            changed = True
     if remark is not None:
-        item.remark = remark.strip()[:500]
-        changed = True
+        new_remark = remark.strip()[:500]
+        if new_remark != (item.remark or ""):
+            item.remark = new_remark
+            changed = True
     if changed:
         item.corrected = True
         db.commit()
         db.refresh(item)
+        batch = db.get(InvoiceBatch, item.batch_id)
+        if batch is not None:
+            invalidate_export(db, batch)
     return item
 
 
@@ -841,7 +968,7 @@ def _write_summary_list(batch_dir: Path, groups: dict[str, list[dict]]) -> Path:
         special = sum(1 for e in entries if e["item"].invoice_type == "专票")
         general = sum(1 for e in entries if e["item"].invoice_type == "普票")
         ws.cell(row=row, column=1, value=row - 1)
-        ws.cell(row=row, column=2, value=project)
+        ws.cell(row=row, column=2, value=safe_cell(project))
         ws.cell(row=row, column=3, value=len(entries))
         amount_cell = ws.cell(row=row, column=4, value=round(sum(amounts), 2))
         amount_cell.number_format = _AMOUNT_NUMBER_FORMAT
@@ -884,9 +1011,12 @@ def export_batch(db: Session, batch: InvoiceBatch) -> dict:
     dirs = _ensure_dirs()
     outroot = dirs["outbox"]
     batch_dir = outroot / f"batch_{batch.id}"
-    if batch_dir.exists():
-        shutil.rmtree(batch_dir)  # 仅清理本模块生成的本批次导出目录
-    batch_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if batch_dir.exists():
+            shutil.rmtree(batch_dir)  # 仅清理本模块生成的本批次导出目录
+        batch_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ExportBusyError("导出目录被占用（可能已在资源管理器中打开），请关闭后重试") from exc
 
     # 按项目分组（键为未清洗的项目名，目录/文件名另做清洗，保证项目汇总可精确对应）
     groups: dict[str, list[dict]] = {}
@@ -906,39 +1036,47 @@ def export_batch(db: Session, batch: InvoiceBatch) -> dict:
         used_names.add(name)
         safe_names[project] = name
 
-    for project, entries in groups.items():
-        for entry in entries:
-            item: InvoiceItem = entry["item"]
-            ym = parse_date_to_year_month(item.invoice_date)
-            dir_name = f"{ym}{safe_names[project]}" if ym else safe_names[project]
-            project_dir = batch_dir / dir_name
-            project_dir.mkdir(parents=True, exist_ok=True)
-            src = Path(item.stored_path)
-            if src.is_file():
-                dest = _unique_path(project_dir / build_renamed_filename(item))
-                shutil.copy2(src, dest)
-                entry["dest"] = dest
-            else:
-                logger.warning("批次 %s 明细 %s 的入库文件缺失：%s", batch.id, item.id, src)
+    try:
+        for project, entries in groups.items():
+            for entry in entries:
+                item: InvoiceItem = entry["item"]
+                ym = parse_date_to_year_month(item.invoice_date)
+                dir_name = f"{ym}{safe_names[project]}" if ym else safe_names[project]
+                project_dir = batch_dir / dir_name
+                project_dir.mkdir(parents=True, exist_ok=True)
+                src = Path(item.stored_path)
+                if src.is_file():
+                    dest = _unique_path(project_dir / build_renamed_filename(item))
+                    shutil.copy2(src, dest)
+                    entry["dest"] = dest
+                else:
+                    logger.warning("批次 %s 明细 %s 的入库文件缺失：%s", batch.id, item.id, src)
 
-    for project, entries in groups.items():
-        first_dest = next((e["dest"] for e in entries if e["dest"] is not None), None)
-        if first_dest is not None:
-            _write_project_list(first_dest.parent, project, entries)
-    _write_summary_list(batch_dir, groups)
+        # 跨月项目的清单必须落在各自月份目录且只含本月明细（L-084）
+        for project, entries in groups.items():
+            by_dir: dict[Path, list[dict]] = {}
+            for entry in entries:
+                if entry["dest"] is not None:
+                    by_dir.setdefault(entry["dest"].parent, []).append(entry)
+            for project_dir, dir_entries in by_dir.items():
+                _write_project_list(project_dir, project, dir_entries)
+        _write_summary_list(batch_dir, groups)
 
-    zip_name = f"batch_{batch.id}_export.zip"
-    zip_path = outroot / zip_name
-    if zip_path.exists():
-        zip_path.unlink()  # 重新导出覆盖旧包
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file in sorted(batch_dir.rglob("*")):
-            if file.is_file():
-                zf.write(file, file.relative_to(batch_dir).as_posix())
+        zip_name = f"batch_{batch.id}_export.zip"
+        zip_path = outroot / zip_name
+        if zip_path.exists():
+            zip_path.unlink()  # 重新导出覆盖旧包
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file in sorted(batch_dir.rglob("*")):
+                if file.is_file():
+                    zf.write(file, file.relative_to(batch_dir).as_posix())
 
-    # 按项目拆分打包：每个项目一个 ZIP（内含 {年月}{项目}/ 目录的重命名 PDF + 该项目发票清单）
-    project_zips = _write_project_zips(batch.id, batch_dir, groups, safe_names)
+        # 按项目拆分打包：每个项目一个 ZIP（内含 {年月}{项目}/ 目录的重命名 PDF + 该项目发票清单）
+        project_zips = _write_project_zips(batch.id, batch_dir, groups, safe_names)
+    except PermissionError as exc:
+        raise ExportBusyError("导出文件被占用（可能已在 Excel/资源管理器中打开），请关闭后重试") from exc
 
+    warnings = amount_warnings(items)
     batch.export_file = zip_path.name
     batch.status = InvoiceBatch.STATUS_EXPORTED
     db.commit()
@@ -951,6 +1089,10 @@ def export_batch(db: Session, batch: InvoiceBatch) -> dict:
         "zip_size": zip_path.stat().st_size,
         "projects": len(groups),
         "project_zips": project_zips,
+        "amount_warning_count": len(warnings),
+        "warnings": [
+            f"有 {len(warnings)} 张发票金额无法解析或为空，清单与汇总中按 0 计入，请人工核对"
+        ] if warnings else [],
     }
 
 
@@ -967,9 +1109,12 @@ def _write_project_zips(
 ) -> dict[str, str]:
     """按项目生成独立 ZIP（项目名 → 「项目+月份.zip」），并写清单供下载端点定位。"""
     zips_dir = _project_zips_dir(batch_id)
-    if zips_dir.exists():
-        shutil.rmtree(zips_dir)  # 仅清理本模块生成的本批次项目 ZIP 目录
-    zips_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if zips_dir.exists():
+            shutil.rmtree(zips_dir)  # 仅清理本模块生成的本批次项目 ZIP 目录
+        zips_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ExportBusyError("项目 ZIP 目录被占用，请关闭后重试") from exc
     manifest: dict[str, str] = {}
     used: set[str] = set()
     for project, entries in groups.items():
@@ -1091,6 +1236,9 @@ def batch_detail_dict(db: Session, batch: InvoiceBatch) -> dict:
         }
     data = batch_to_dict(batch)
     data["items"] = [item_to_dict(i, partners.get(i.paired_item_id)) for i in items]
+    warnings = amount_warnings(items)
+    data["amount_warning_count"] = len(warnings)
+    data["amount_warnings"] = warnings
     # 整批下载文件名（项目+月份口径）：仅详情需要，列表页不查明细
     data["download_name"] = batch_download_name([i for i in items if i.status in _ACTIVE_ITEM_STATUS])
     return data

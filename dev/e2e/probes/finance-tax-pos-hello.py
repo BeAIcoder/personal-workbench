@@ -52,6 +52,10 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = RESULTS_DIR / f"{AREA}-data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 _log_fh = open(SERVER_LOG, "w", encoding="utf-8")
@@ -459,10 +463,9 @@ def run_browser():
             row.locator("button", has_text="税额计算").click()
             page.wait_for_timeout(1000)
             assert "calculate" in page.url, f"未进入计算页: {page.url}"
-            # 填营业收入 100、营业成本 40
-            nums = page.locator(".calc-form .el-input-number input")
-            nums.nth(0).fill("100")
-            nums.nth(2).fill("40")
+            # 按标签填营业收入 100、营业成本 40（新增所属年度/季度后不能用固定 nth）
+            page.locator(".calc-form .el-form-item", has_text="营业收入").locator("input").fill("100")
+            page.locator(".calc-form .el-form-item", has_text="营业成本").locator("input").fill("40")
             page.locator("button", has_text="开始计算").click()
             page.wait_for_timeout(1500)
             body = page.content()

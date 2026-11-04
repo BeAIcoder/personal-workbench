@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { getModuleMenus, getModuleRoutes } from '../src/modules'
 import manifest from '../src/modules/finance-ledger-bip/manifest'
+import { mappingFields } from '../src/modules/finance-ledger-bip/importForm'
 
 describe('finance-ledger-bip 模块注册', () => {
   it('manifest 基本字段（name/title/menu）', () => {
@@ -36,5 +37,19 @@ describe('finance-ledger-bip 模块注册', () => {
     expect(item.group).toBe('财务')
     expect(item.icon).toBe('OfficeBuilding')
     expect(item.order).toBe(50)
+  })
+})
+
+describe('finance-ledger-bip 人工映射字段', () => {
+  it('未识别类型时 voucher/aux 可选「科目（编码+名称）」合并列', () => {
+    const preview = { file_type: 'unknown' }
+    expect(mappingFields(preview, 'voucher')).toContain('subject')
+    expect(mappingFields(preview, 'aux')).toContain('subject')
+    expect(mappingFields(preview, 'balance')).not.toContain('subject')
+  })
+
+  it('自动识别类型仍只渲染必填字段（科目由后端自动建议，不强迫手填）', () => {
+    const preview = { file_type: 'voucher', required_fields: ['date', 'ledger', 'voucher_no'] }
+    expect(mappingFields(preview, 'voucher')).toEqual(['date', 'ledger', 'voucher_no'])
   })
 })

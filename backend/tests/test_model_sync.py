@@ -532,6 +532,41 @@ def test_fetch_oversized_response_is_rejected(client, monkeypatch):
     assert "过大" in str(exc.value)
 
 
+def test_fetch_uses_streaming_reader_for_chunked_response_limit(client, monkeypatch):
+    """无 Content-Length 的响应必须流式累计，不得先经 get/post 全量缓冲。"""
+    pid = _mk_provider(models_url="https://api.deepseek.com/models")
+    streamed = []
+    oversized = b"x" * (model_sync.MAX_RESPONSE_BYTES + 1)
+
+    def handler(request):
+        return httpx.Response(200, content=oversized, headers={"content-type": "application/json"})
+
+    class StreamOnlyClient:
+        def __init__(self, **kwargs):
+            self.inner = _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(handler), **kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.inner.close()
+
+        def stream(self, method, url, **kwargs):
+            streamed.append(method)
+            return self.inner.stream(method, url, **kwargs)
+
+        def get(self, *args, **kwargs):
+            raise AssertionError("不得用 get 先缓冲响应")
+
+        def post(self, *args, **kwargs):
+            raise AssertionError("不得用 post 先缓冲响应")
+
+    monkeypatch.setattr(httpx, "Client", StreamOnlyClient)
+    with pytest.raises(RemoteFetchError, match="过大"):
+        model_sync.fetch_remote_models(_provider_row(pid), {"api_key": _SYNTH_KEY})
+    assert streamed == ["GET"]
+
+
 def test_fetch_429_retries_with_bounded_retry_after(client, monkeypatch):
     """429：按 Retry-After 退避重试，但等待时间有界（不得真的等一小时）。"""
     pid = _mk_provider(models_url="https://api.deepseek.com/models")

@@ -28,12 +28,19 @@
           <template #default="{ row }">{{ row.total_amount?.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</template>
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="170" />
-        <el-table-column label="操作" width="80" fixed="right">
+        <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <el-button size="small" link type="primary" @click="goDetail(row.id)">详情</el-button>
+            <el-button size="small" link type="danger" @click="removeBatch(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination
+        class="pager" background layout="total, sizes, prev, pager, next"
+        :total="total" :page-size="pageSize" :current-page="page"
+        :page-sizes="[50, 100, 200]"
+        @current-change="onPageChange" @size-change="onSizeChange"
+      />
     </el-card>
 
     <el-dialog v-model="uploadDialog" title="上传发票（PDF / ZIP）" width="480px">
@@ -45,7 +52,7 @@
           <input type="file" multiple accept=".pdf,.zip" @change="onFiles" />
         </el-form-item>
       </el-form>
-      <p class="hint">仅支持文本型数电发票 PDF；扫描件无法解析。上传后自动建批次并后台解析。</p>
+      <p class="hint">仅支持文本型数电发票 PDF；扫描件无法解析。上传后在本次请求内同步解析，几十张以上可能需要 1-2 分钟，请勿重复提交。</p>
       <template #footer>
         <el-button @click="uploadDialog = false">取消</el-button>
         <el-button type="primary" :loading="submitting" :disabled="!form.files.length" @click="submitUpload">上传并解析</el-button>
@@ -57,15 +64,20 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import { takeFiles } from '../../_shared/fileInput'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
+import { nextPageAfterDelete, pageState, toPageParams } from '../../_shared/pagedList.js'
 
 const router = useRouter()
 const loading = ref(false)
 const items = ref([])
 const engineStatus = ref(null)
+const page = ref(1)
+// 首屏保持改造前的 50 条（旧后端 limit 默认 50），不是 20
+const pageSize = ref(50)
+const total = ref(0)
 
 const uploadDialog = ref(false)
 const submitting = ref(false)
@@ -81,12 +93,51 @@ const statusType = (s) => STATUS_TYPE[s] || 'info'
 async function load() {
   loading.value = true
   try {
-    const { data } = await api.get('/finance/invoice/batches')
-    items.value = data || []
+    const { data } = await api.get('/finance/invoice/batches', {
+      params: toPageParams(null, page.value, pageSize.value),
+    })
+    const state = pageState(data, { page: page.value, pageSize: pageSize.value })
+    items.value = state.items
+    total.value = state.total
+    page.value = state.page
+    pageSize.value = state.pageSize
   } catch {
     items.value = []
+    total.value = 0
   } finally {
     loading.value = false
+  }
+}
+
+function onPageChange(next) {
+  page.value = next
+  return load()
+}
+
+function onSizeChange(size) {
+  pageSize.value = size
+  page.value = 1
+  return load()
+}
+
+async function removeBatch(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除批次「${row.name || '#' + row.id}」？将同时删除全部发票明细、上传留档与已导出 ZIP，且不可恢复。`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  const targetPage = nextPageAfterDelete(page.value, total.value, pageSize.value)
+  try {
+    // 删除要清明细、inbox 留档与导出 ZIP，文件多时 10s 不够
+    await api.delete(`/finance/invoice/batches/${row.id}`, { timeout: 120000 })
+    page.value = targetPage
+    await load()
+  } catch {
+    /* 拦截器已统一提示 */
   }
 }
 
@@ -110,6 +161,7 @@ async function submitUpload() {
     uploadDialog.value = false
     form.name = ''
     form.files = []
+    page.value = 1 // 新批次 id 最大，回第一页才看得到
     await load()
   } catch {
     /* 拦截器已统一提示 */
@@ -136,4 +188,5 @@ onMounted(async () => {
   color: var(--el-text-color-secondary);
   font-size: 13px;
 }
+.pager { margin-top: 10px; justify-content: flex-end; }
 </style>

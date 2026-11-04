@@ -17,6 +17,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from ....config import settings
+from ....utils_money import money
+from ....utils_xlsx import safe_cell
 
 # ============================================================
 # 数据模型定义
@@ -144,12 +146,18 @@ class A200000FormData:
     prior_year_overpaid: float = 0.0  # 第15行 以前年度多缴在本年抵减
 
     # 计算结果（自动生成）
-    actual_profit: float = 0.0  # 第8行 实际利润额
-    tax_rate: float = 0.25  # 第9行 税率
+    actual_profit: float = 0.0  # 第8行 实际利润额（恒等于 行3-行4-行5-行6）
+    tax_rate: float = 0.25  # 第9行 税率（法定税率，优惠体现在第 11 行）
     tax_payable: float = 0.0  # 第10行 应纳所得税额
     tax_reduction: float = 0.0  # 第11行 减免所得税额
     tax_to_pay_or_refund: float = 0.0  # 第14行 应补（退）所得税额
     final_tax_to_pay: float = 0.0  # 第16行 最终应补（退）所得税额
+
+    # 落库税额（第 14 行口径）：传入时第 11 行由其反推，保证导出税额与库 tax_amount
+    # 一分不差，且不因导出时二次判定优惠类型而改变税额（复核 I-1 / I-4）。
+    stored_tax_amount: Optional[float] = None
+    # 未计入季度预缴的纳税调整净额：只写进第 8 行「计算方式」，不参与任何行次计算
+    prepay_excluded_adjustment: float = 0.0
 
     # 纳税调整项目（辅助信息，用于明细表）
     tax_adjustments: List[Dict[str, Any]] = field(default_factory=list)
@@ -169,68 +177,87 @@ class A200000FormData:
 
         计算公式（依据国家税务总局2025年第17号公告）：
         第4行 = 免税收入 + 减计收入 + 其他减计收入
-        第8行（实际利润额）= 第3行 - 第4行 - 第5行 - 第6行
+        第5行 = 所得减免（有总额时以总额为准，明细行仅作拆分）
+        第8行（实际利润额）= 第3行 - 第4行 - 第5行 - 第6行（季度预缴不含纳税调整）
+        第9行 = 法定税率 25%（优惠不体现在税率行）
         第10行（应纳所得税额）= 第8行 * 第9行
+        第11行（减免所得税额）= 第10行 − 落库税额；未传落库税额时按优惠类型推算
         第14行（应补退税额）= 第10行 - 第11行 - 第12行 - 第13行
         第16行（最终应补退税额）= 第14行 - 第15行
+
+        金额一律经 `money()`（Decimal / HALF_UP）取整到分：页面、落库与导出同口径，
+        不允许 1 分差异（复核 I-3）。
 
         Returns:
             所有计算结果字典
         """
         # 第4行 免税收入、减计收入等
-        row4_income_reduction = (
+        row4_income_reduction = money(
             self.tax_exempt_income
             + self.reduced_income
             + self.other_income_reduction
         )
 
-        # 第5行 所得减免
-        row5_income_deduction = (
-            self.income_reduction_amount
-            + self.agriculture_forestry_reduction
+        # 第5行 所得减免：总额字段是明细的合计（台账 L-067，旧实现两者相加重复）
+        details_sum = money(
+            self.agriculture_forestry_reduction
             + self.infrastructure_reduction
             + self.environmental_protection_reduction
             + self.technology_transfer_reduction
         )
+        row5_income_deduction = (
+            money(self.income_reduction_amount) if self.income_reduction_amount else details_sum
+        )
 
-        # 第8行 实际利润额
-        self.actual_profit = (
-            self.total_profit
+        # 第8行 实际利润额：严格 行3-行4-行5-行6（亏损年度按实际负数展示，不截 0）。
+        # 季度预缴不纳入纳税调整（复核 I-1），调整只留痕并在「计算方式」列说明。
+        self.actual_profit = money(
+            money(self.total_profit)
             - row4_income_reduction
             - row5_income_deduction
-            - self.prior_year_loss
+            - money(self.prior_year_loss)
         )
-        self.actual_profit = max(0, self.actual_profit)
 
-        # 第9行 税率
-        if self.enterprise.is_small_micro:
-            # 小型微利企业：25%计入应纳税所得额，20%税率，实际5%
-            self.tax_rate = 0.25
-            # 减免税额 = 实际利润 * (25% - 25% * 20%) = 实际利润 * 20%
-            self.small_micro_reduction = self.actual_profit * 0.20
+        # 第9行 税率：申报表填法定税率 25%，减免额体现在第 11 行
+        self.tax_rate = 0.25
+
+        # 第10行 应纳所得税额（亏损不计负税）
+        relief_base = max(0.0, self.actual_profit)
+        self.tax_payable = money(relief_base * self.tax_rate)
+
+        # 第11行 减免所得税额：优先按落库税额反推（导出 = 库，复核 I-1/I-4），
+        # 否则按优惠类型推算：小微 20 个点（25%×20% 后实际 5%）、高新 10 个点。
+        if self.stored_tax_amount is not None:
+            stored = money(self.stored_tax_amount)
+            reduction = money(self.tax_payable - stored)
+            if reduction < -0.005:
+                raise ValueError(
+                    f"落库税额 {stored:,.2f} 元高于第 8 行实际利润额 "
+                    f"{self.actual_profit:,.2f} 元按法定税率 25% 计算的应纳所得税额 "
+                    f"{self.tax_payable:,.2f} 元，A200000 表内无法表达负的减免额："
+                    "请核对利润表数据与税额后使用「更正」重新计算"
+                )
+            self.tax_reduction = max(0.0, reduction)
+        elif self.enterprise.is_small_micro:
+            self.tax_reduction = money(relief_base * 0.20)
         elif self.enterprise.is_high_tech:
-            self.tax_rate = 0.15
-            self.small_micro_reduction = 0.0
+            self.tax_reduction = money(relief_base * 0.10)
         else:
-            self.tax_rate = 0.25
-            self.small_micro_reduction = 0.0
-
-        # 第10行 应纳所得税额
-        self.tax_payable = self.actual_profit * self.tax_rate
-
-        # 第11行 减免所得税额
-        self.tax_reduction = self.small_micro_reduction
+            self.tax_reduction = 0.0
+        self.small_micro_reduction = (
+            self.tax_reduction if self.enterprise.is_small_micro else 0.0
+        )
 
         # 第14行 应补（退）所得税额
-        self.tax_to_pay_or_refund = (
+        self.tax_to_pay_or_refund = money(
             self.tax_payable
             - self.tax_reduction
-            - self.actual_paid_tax
-            - self.specific_prepaid_tax
+            - money(self.actual_paid_tax)
+            - money(self.specific_prepaid_tax)
         )
 
         # 第16行 最终应补（退）所得税额
-        self.final_tax_to_pay = self.tax_to_pay_or_refund - self.prior_year_overpaid
+        self.final_tax_to_pay = money(self.tax_to_pay_or_refund - money(self.prior_year_overpaid))
 
         return {
             "row4_income_reduction": row4_income_reduction,
@@ -242,6 +269,41 @@ class A200000FormData:
             "row14_tax_to_pay_or_refund": self.tax_to_pay_or_refund,
             "row16_final_tax_to_pay": self.final_tax_to_pay,
         }
+
+    def _row8_calc_method(self) -> str:
+        """第 8 行计算方式：严格行次公式 + 未计入预缴的调整说明。
+
+        季度预缴（A200000）不纳入纳税调整，第 8 行必须等于 行3-行4-行5-行6
+        （复核 I-1/N-1）：调整只留痕并在本列说明「留待年度汇算」，既不占第 8 行，
+        也不得伪装成第 5 行所得减免。
+        """
+        text = "行3-行4-行5-行6"
+        if abs(self.prepay_excluded_adjustment) >= 0.005:
+            text += (
+                f"；纳税调整净额 {self.prepay_excluded_adjustment:,.2f} 元不计入季度预缴"
+                "（A200000 无调整行次，留待年度汇算清缴）"
+            )
+        return text
+
+    def _row11_calc_method(self) -> str:
+        """第 11 行计算方式：有落库税额时按「行10−落库税额」如实描述反推比例。
+
+        导出场景不让优惠类型文案去猜税率（旧 tax_type 缺失、企业后改高新都可能
+        与落库税额不符）：直接按反推出的百分点写，数字与表内一致（复核 I-4）。
+        """
+        if self.stored_tax_amount is not None:
+            if not self.tax_reduction:
+                return ""
+            base = max(0.0, self.actual_profit)
+            if base > 0:
+                pct = self.tax_reduction / base * 100
+                return f"按落库税额反推：减免 {pct:.2f} 个百分点（行10−库税额）"
+            return "按落库税额反推（行10−库税额）"
+        if self.enterprise.is_high_tech and not self.enterprise.is_small_micro:
+            return "高新技术企业减免10个百分点"
+        if self.enterprise.is_small_micro:
+            return "小微企业优惠减免20个百分点"
+        return ""
 
     def to_row_data(self) -> Dict[int, Dict[str, str]]:
         """
@@ -278,7 +340,7 @@ class A200000FormData:
                 "calc_method": ""},
             8: {"item": "二、实际利润额",
                 "amount": _format_amount(self.actual_profit),
-                "calc_method": "行3-行4-行5-行6"},
+                "calc_method": self._row8_calc_method()},
             9: {"item": "    税率",
                 "amount": f"{self.tax_rate * 100:.0f}%",
                 "calc_method": "法定税率25%"},
@@ -287,7 +349,7 @@ class A200000FormData:
                  "calc_method": "行8*行9"},
             11: {"item": "    减：减免所得税额",
                  "amount": _format_amount(self.tax_reduction),
-                 "calc_method": "小微企业优惠减免等"},
+                 "calc_method": self._row11_calc_method()},
             12: {"item": "    减：实际已缴纳的所得税额",
                  "amount": _format_amount(self.actual_paid_tax),
                  "calc_method": ""},
@@ -313,11 +375,11 @@ class A200000FormData:
 # ============================================================
 
 def _format_amount(value: float) -> str:
-    """格式化金额：保留两位小数"""
+    """格式化金额：按分（Decimal / HALF_UP）取整后固定两位小数。"""
     # Handle negative zero: -0.0 == 0.0 is True in Python but format differs
     if value == 0.0:
         return "0.00"
-    return f"{value:.2f}"
+    return f"{money(value):.2f}"
 
 
 def _parse_amount(value_str: str) -> float:
@@ -441,9 +503,9 @@ def export_a200000_excel(
     # ========================================================
     info_rows = [
         ("税款所属期间", f"{form_data.tax_period.start_date} 至 {form_data.tax_period.end_date}"),
-        ("纳税人识别号（统一社会信用代码）", form_data.enterprise.tax_number),
-        ("纳税人名称", form_data.enterprise.name),
-        ("企业所得税征收方式", form_data.enterprise.accounting_method),
+        ("纳税人识别号（统一社会信用代码）", safe_cell(form_data.enterprise.tax_number)),
+        ("纳税人名称", safe_cell(form_data.enterprise.name)),
+        ("企业所得税征收方式", safe_cell(form_data.enterprise.accounting_method)),
     ]
 
     start_row = 3
@@ -480,6 +542,8 @@ def export_a200000_excel(
             info_text = f"行业类型：{form_data.enterprise.industry_type}"
         if form_data.enterprise.tax_authority:
             info_text += f" | 主管税务机关：{form_data.enterprise.tax_authority}"
+        # 用户可控文本（企业名/行业/机关）统一走 safe_cell，防公式注入（台账 L-059）
+        info_text = safe_cell(info_text)
 
         ws.cell(row=row, column=1, value="备注信息").font = small_font
         ws.cell(row=row, column=1).alignment = center_align

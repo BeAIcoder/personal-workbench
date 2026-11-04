@@ -77,7 +77,7 @@ async def preview_import(file: UploadFile = File(...)):
 @router.post(
     "/imports/confirm",
     response_model=ConfirmOut,
-    summary="确认导入（借贷平衡校验记 warning 不阻断；重复凭证跳过计数）",
+    summary="确认导入（同来源重导幂等、跨来源合并补写、并发冲突 409）",
 )
 def confirm_import(payload: ConfirmIn, db: Session = Depends(get_db)):
     try:
@@ -88,6 +88,8 @@ def confirm_import(payload: ConfirmIn, db: Session = Depends(get_db)):
             user_mapping=payload.mapping,
             period=payload.period,
         )
+    except service.BipImportConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

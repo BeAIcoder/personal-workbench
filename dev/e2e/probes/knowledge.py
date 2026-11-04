@@ -49,6 +49,10 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = RESULT_DIR / "data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 log_fp = open(LOG, "w", encoding="utf-8")
@@ -367,7 +371,8 @@ try:
 
         def tc_mem_hit_count():
             row = mem_rows().filter(has_text="报表金额单位统一用万元").first
-            before = int(row.locator("td").nth(3).inner_text())
+            # 列：0 置顶 / 1 内容 / 2 类型 / 3 来源 / 4 命中 / 5 创建时间
+            before = int(row.locator("td").nth(4).inner_text())
             for _ in range(2):
                 r = api_call("POST", "/knowledge/memories/recall", {"query": "万元", "top_k": 3})
                 assert r["items"], "recall 应命中万元记忆"
@@ -379,7 +384,7 @@ try:
             page.wait_for_timeout(900)
             open_memory_tab()
             row2 = mem_rows().filter(has_text="报表金额单位统一用万元").first
-            after = int(row2.locator("td").nth(3).inner_text())
+            after = int(row2.locator("td").nth(4).inner_text())
             assert after == before + 2, f"hit_count 未按预期累计: {before} -> {after}"
         record("TC-KNOW-016", "recall 命中累计 hit_count 且空白查询不累计", tc_mem_hit_count)
 

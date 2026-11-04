@@ -7,10 +7,12 @@ const REQUIRED_FIELDS = {
   balance: ['subject_code', 'subject_name'],
 }
 
-// 人工指定类型时可映射的字段：必填字段在前，金额列与摘要在后（均可留空，由用户自选）
+// 人工指定类型时可映射的字段：必填字段在前，金额列与摘要在后（均可留空，由用户自选）。
+// voucher/aux 额外提供「科目（编码+名称）」合并列：真实凭证列表常以单列「1001 库存现金」
+// 导出，拆成编码+名称后仅导凭证列表也能按科目汇总。
 const MANUAL_FIELDS = {
-  voucher: ['date', 'ledger', 'voucher_no', 'debit', 'credit', 'summary'],
-  aux: ['subject_code', 'subject_name', 'date', 'ledger', 'voucher_no', 'debit', 'credit', 'summary'],
+  voucher: ['date', 'ledger', 'voucher_no', 'debit', 'credit', 'summary', 'subject'],
+  aux: ['subject_code', 'subject_name', 'date', 'ledger', 'voucher_no', 'debit', 'credit', 'summary', 'subject'],
   balance: ['subject_code', 'subject_name'],
 }
 

@@ -68,7 +68,8 @@ def test_tax_calculate_small_micro(client):
     assert d["is_small_micro"] is True
     assert d["taxable_income_after_loss_wan"] == pytest.approx(96.5)
     assert d["applicable_tax_rate"] == pytest.approx(0.05)
-    assert d["tax_amount_wan"] == pytest.approx(4.83)  # 96.5 × 5% = 4.825，引擎保留两位
+    # 96.5 万元 × 5% = 4.825 万元 = 48,250 元；税额按「元」取整到分（复核 I-3），不再按万元两位截成 4.83
+    assert d["tax_amount_wan"] == pytest.approx(4.825)
     assert d["enterprise_tax_type"]  # 非空类型判定文案
     assert d["calculation_steps"]  # 计算过程可追溯
 
@@ -76,7 +77,8 @@ def test_tax_calculate_small_micro(client):
 def test_tax_return_create_and_submit(client):
     eid = _create_enterprise(client, tax_number="91110108TEST0003")
     r = client.post(f"{P}/tax-returns/", json={
-        "enterprise_id": eid, "tax_period": "2026", "report_type": "A类",
+        "enterprise_id": eid, "tax_period": "2026", "quarter": "Q1",
+        "report_type": "A类",
         "total_revenue": 300.0, "total_costs": 150.0, "total_expenses": 50.0,
     })
     assert r.status_code in (200, 201), r.text

@@ -133,11 +133,17 @@ def test_payroll_generate_warns_for_each_employee_without_attendance(client):
     body = generated.json()
     assert body["count"] == 2
     assert len(body["items"]) == 2
-    assert len(body["warnings"]) == 1
-    assert "E002" in body["warnings"][0]
-    assert "合成缺考勤" in body["warnings"][0]
-    assert month in body["warnings"][0]
-    assert "E001" not in body["warnings"][0]
+    # 缺月告警与考勤告警是两类独立提示：这里只断言考勤这一类
+    attendance_warnings = [w for w in body["warnings"] if "缺少考勤记录" in w]
+    assert len(attendance_warnings) == 1
+    assert "E002" in attendance_warnings[0]
+    assert "合成缺考勤" in attendance_warnings[0]
+    assert month in attendance_warnings[0]
+    assert "E001" not in attendance_warnings[0]
+    # 2026-01~03 未生成薪资（入职 2025 年）→ 两名员工聚合成一条缺月告警
+    missing = [w for w in body["warnings"] if "未生成" in w]
+    assert len(missing) == 1
+    assert "2 人" in missing[0] and "E001" in missing[0] and "E002" in missing[0]
 
 
 def test_payroll_mid_year_hire_uses_employment_months_not_payroll_rows(client):

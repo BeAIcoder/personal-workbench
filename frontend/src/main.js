@@ -1,10 +1,18 @@
 import { createApp } from 'vue'
-import ElementPlus from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'element-plus/dist/index.css'
-import * as Icons from '@element-plus/icons-vue'
+import { ElLoading } from 'element-plus'
 import dayjs from 'dayjs'
 import 'dayjs/locale/zh-cn'
+
+// 菜单/统计卡经 <component :is="字符串名"> 渲染的图标：精确注册表。
+// 模板内 PascalCase 图标标签由 vite.config 的 unplugin resolver 构建期解析，不在此列。
+import {
+  Aim, Calendar, ChatDotRound, Clock, Coin, Collection, Connection, CreditCard,
+  DataAnalysis, DataBoard, DataLine, Document, Finished, Folder, Histogram, Monitor,
+  Notebook, Odometer, OfficeBuilding, Promotion, Reading, Setting, Shop, Stamp,
+  Tickets, Timer, Tools, TrendCharts, User, UserFilled, Warning,
+} from '@element-plus/icons-vue'
 
 import App from './App.vue'
 import router from './router'
@@ -17,8 +25,16 @@ dayjs.locale('zh-cn')
 const app = createApp(App)
 installChunkRecovery(window, router)
 app.use(router)
-app.use(ElementPlus, { locale: zhCn })
-for (const [name, component] of Object.entries(Icons)) {
+// EP 按需引入后不再 app.use(ElementPlus)：locale 由 App.vue 的 el-config-provider 提供；
+// v-loading 指令需单独注册；字符串名图标只注册实际用到的 31 个。
+app.use(ElLoading)
+const STRING_ICONS = {
+  Aim, Calendar, ChatDotRound, Clock, Coin, Collection, Connection, CreditCard,
+  DataAnalysis, DataBoard, DataLine, Document, Finished, Folder, Histogram, Monitor,
+  Notebook, Odometer, OfficeBuilding, Promotion, Reading, Setting, Shop, Stamp,
+  Tickets, Timer, Tools, TrendCharts, User, UserFilled, Warning,
+}
+for (const [name, component] of Object.entries(STRING_ICONS)) {
   app.component(name, component)
 }
 

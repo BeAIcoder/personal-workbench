@@ -568,26 +568,40 @@ def _read_json(resp) -> dict:
 
 
 def _send(request_method: str, url: str, headers: dict, content: bytes | None) -> httpx.Response:
-    """发一次目录/管控请求（429 按有界 Retry-After 有限重试）；失败一律抛 RemoteFetchError。"""
+    """流式读取目录响应并边读边限量；429 仅按有界 Retry-After 重试一次。"""
     for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
         try:
             with httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=False) as client:
+                kwargs = {"headers": headers}
                 if request_method == "POST":
-                    resp = client.post(url, headers=headers, content=content or b"")
-                else:
-                    resp = client.get(url, headers=headers)
+                    kwargs["content"] = content or b""
+                with client.stream(request_method, url, **kwargs) as resp:
+                    if resp.status_code == 429:
+                        wait = _parse_retry_after(resp.headers.get("Retry-After"))
+                        if wait is not None and attempt < RATE_LIMIT_MAX_RETRIES:
+                            time.sleep(min(wait, MAX_RETRY_WAIT_SECONDS))
+                            continue
+                        raise RemoteFetchError("模型列表被限流（429），请稍后重试")
+                    _raise_for_status(resp)
+                    raw_len = resp.headers.get("content-length")
+                    if raw_len and raw_len.isdigit() and int(raw_len) > MAX_RESPONSE_BYTES:
+                        raise RemoteFetchError(
+                            f"模型列表响应过大（超过 {MAX_RESPONSE_BYTES // 1024 // 1024}MB），已拒绝解析"
+                        )
+                    body = bytearray()
+                    for chunk in resp.iter_bytes():
+                        body.extend(chunk)
+                        if len(body) > MAX_RESPONSE_BYTES:
+                            raise RemoteFetchError(
+                                f"模型列表响应过大（超过 {MAX_RESPONSE_BYTES // 1024 // 1024}MB），已拒绝解析"
+                            )
+                    return httpx.Response(
+                        resp.status_code, headers=resp.headers, content=bytes(body), request=resp.request
+                    )
         except httpx.TimeoutException as exc:
             raise RemoteFetchError(f"模型列表请求超时（{TIMEOUT_SECONDS:.0f} 秒）") from exc
         except httpx.HTTPError as exc:
             raise RemoteFetchError(f"模型列表请求失败（{type(exc).__name__}）") from exc
-        if resp.status_code == 429:
-            wait = _parse_retry_after(resp.headers.get("Retry-After"))
-            if wait is not None and attempt < RATE_LIMIT_MAX_RETRIES:
-                time.sleep(min(wait, MAX_RETRY_WAIT_SECONDS))
-                continue
-            raise RemoteFetchError("模型列表被限流（429），请稍后重试")
-        _raise_for_status(resp)
-        return resp
     raise RemoteFetchError("模型列表请求失败：重试后仍被限流（429）")
 
 

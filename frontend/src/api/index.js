@@ -20,22 +20,55 @@ const api = axios.create({
   timeout: 10000,
 })
 
-function toMessage(error) {
-  const detail = error?.response?.data?.detail
+function toMessageFallback() {
+  return `网络异常，${BACKEND_HINT}`
+}
+
+function isBlobData(value) {
+  return typeof Blob !== 'undefined' && value instanceof Blob
+}
+
+// 下载类请求（responseType:'blob'）的错误体也是 Blob：后端返回的 JSON detail
+// 藏在 Blob 里，直接读 data.detail 永远是 undefined（旧实现因此误报「后端未启动」）。
+async function readBlobJson(data) {
+  if (!isBlobData(data)) return null
+  try {
+    const text = await data.text()
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+export async function toMessage(error) {
+  let data = error?.response?.data
+  const parsed = await readBlobJson(data)
+  if (parsed) data = parsed
+  const detail = data?.detail
   if (typeof detail === 'string') return detail
   if (Array.isArray(detail) && detail.length) {
     const first = detail[0]
     const field = (first.loc || []).slice(1).join('.')
     return `${field ? field + '：' : ''}${first.msg}`
   }
-  if (error?.code === 'ECONNABORTED') return '请求超时，请确认后端服务已启动'
-  return `网络异常，${BACKEND_HINT}`
+  if (error?.code === 'ECONNABORTED') {
+    // 长任务（导出/打包）超时不等于后端未启动，提示保持中性
+    return '请求超时，请稍后重试（长任务请等待完成后刷新页面）'
+  }
+  return toMessageFallback()
 }
 
 api.interceptors.response.use(
   (resp) => resp,
-  (error) => {
-    ElMessage.error(toMessage(error))
+  async (error) => {
+    let message
+    try {
+      message = await toMessage(error)
+    } catch {
+      message = toMessageFallback()
+    }
+    ElMessage.error(message)
     return Promise.reject(error)
   },
 )

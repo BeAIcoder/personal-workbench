@@ -47,6 +47,70 @@ def test_bip_preview_detects_voucher_aux_balance(client):
         assert out["file_type"] == ftype, (name, out.get("file_type"), out.get("type_label"))
 
 
+def test_bip_three_templates_end_to_end_merge(client, tmp_path, monkeypatch):
+    """三份模板按真实主流程导入：凭证列表 → 辅助明细账合并 → 余额表按期间入库。
+
+    凭证列表模板自带科目列（本次修复）：仅导凭证列表即可按科目汇总；随后同凭证
+    同金额的辅助明细账只做合并补写，不新增凭证；余额表按期间 upsert。
+    """
+    from app.modules.finance_ledger_bip import service as bip_service
+
+    monkeypatch.setattr(bip_service, "module_data_dir", lambda: tmp_path / "bip_data")
+
+    def import_template(name: str, **payload) -> dict:
+        with open(TPL / name, "rb") as f:
+            content = f.read()
+        r = client.post("/api/finance/ledger/bip/imports/preview",
+                        files={"file": (name, content)})
+        assert r.status_code == 200, r.text
+        r2 = client.post("/api/finance/ledger/bip/imports/confirm",
+                         json={"token": r.json()["token"], **payload})
+        assert r2.status_code == 200, r2.text
+        return r2.json()
+
+    voucher = import_template("BIP账簿-凭证列表-模板.xlsx")
+    assert voucher["inserted_vouchers"] == 1 and voucher["inserted_entries"] == 2
+
+    summary = client.get("/api/finance/ledger/bip/balances/summary",
+                         params={"period": "2026-01"}).json()
+    assert summary["subject_count"] == 2  # 凭证列表自带科目同样能汇总
+    assert summary["entries_without_subject"] == 0
+
+    aux = import_template("BIP账簿-辅助明细账-模板.xlsx")
+    assert aux["inserted_vouchers"] == 0 and aux["merged_vouchers"] == 1
+    entries = client.get("/api/finance/ledger/bip/entries", params={"period": "2026-01"}).json()
+    assert entries["total"] == 2  # 合并后仍 2 条，不因两来源翻倍
+
+    with open(TPL / "BIP账簿-辅助余额表-模板.xlsx", "rb") as f:
+        balance_preview = client.post("/api/finance/ledger/bip/imports/preview",
+                                      files={"file": ("BIP账簿-辅助余额表-模板.xlsx", f.read())}).json()
+    assert balance_preview["mapping"]["ledger"] == "核算账簿"
+    assert balance_preview["mapping"]["opening_balance"] == "期初余额"
+    assert balance_preview["mapping"]["closing_balance"] == "期末余额"
+
+    balance = import_template("BIP账簿-辅助余额表-模板.xlsx", period="2026-01")
+    assert balance["inserted_balances"] == 2 and balance["updated_balances"] == 0
+
+    from app.database import SessionLocal
+    from app.modules.finance_ledger_bip.models import BipBalance
+
+    with SessionLocal() as db:
+        rows = db.query(BipBalance).filter(BipBalance.period == "2026-01").all()
+        by_code = {r.subject_code: r for r in rows}
+        assert all(r.ledger == "示例账簿" for r in rows)
+        assert by_code["100201"].opening_balance == 10000.0
+        assert by_code["100201"].closing_balance == 10500.0
+        assert by_code["220201"].opening_balance == 5000.0
+        assert by_code["220201"].closing_balance == 3500.0
+
+    again = import_template("BIP账簿-辅助余额表-模板.xlsx", period="2026-01")
+    assert again["inserted_balances"] == 0
+    assert again["updated_balances"] == 0  # 内容相同不谎报更正
+    assert again["unchanged_balances"] == 2
+
+    assert client.get("/api/finance/ledger/bip/imports").json()["total"] == 4
+
+
 def test_personal_csv_import(client):
     out = _upload(client, "/api/finance/ledger/personal/import/csv", "个人记账-导入模板.csv")
     assert out["imported"] == 2

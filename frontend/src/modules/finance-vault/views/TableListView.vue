@@ -111,7 +111,7 @@ async function submitUpload() {
     const { data } = await api.post(
       `/finance/vault/ingest/file?table=${encodeURIComponent(form.table.trim())}&mode=${form.mode}`,
       fd,
-      { headers: { 'Content-Type': 'multipart/form-data' } },
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 },
     )
     ElMessage.success(`入仓成功：${data.rows} 行`)
     uploadDialog.value = false

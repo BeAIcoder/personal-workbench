@@ -69,6 +69,10 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = RESULTS / "assistant-settings-data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 
 server = subprocess.Popen(
@@ -504,7 +508,7 @@ try:
         record("AS-AGENT-001", "专家团队 tab：内置专家卡片渲染", tc_agents_tab)
 
         def tc_route_test():
-            inp = page.locator(".route-test input")
+            inp = page.locator(".route-test input[type='text']").first
             inp.fill("帮我算一下增值税")
             page.locator(".route-test button", has_text="测试路由").click()
             res = page.locator(".route-result")

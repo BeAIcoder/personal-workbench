@@ -2,23 +2,20 @@
 import logging
 from datetime import datetime, timedelta
 
-from .models import AgentSpecModel, Note, Schedule, Task
+from .models import AgentSpecModel, AgentSpecTombstone, Note, Schedule, Task
 
 logger = logging.getLogger(__name__)
 
 
 def seed_agent_specs(db) -> int:
-    """灌入缺失的内置专家（增量 upsert：只新增 name 不存在的行，绝不覆盖用户改动）。
-
-    表为空时全量灌入；升级后新增的内置专家（如财税专员）在下次启动自动补齐，
-    老专家的修改/删除不被覆盖——与 zcode/WorkBuddy 插件「安装即添加 agent」一致。
-    """
+    """补齐缺失的内置专家，但尊重删除墓碑；reset 清墓碑后才恢复。"""
     from .agents.team import TEAM
 
     existing = {row.name for row in db.query(AgentSpecModel.name).all()}
+    tombstoned = {row.name for row in db.query(AgentSpecTombstone.name).all()}
     inserted = 0
     for spec in sorted(TEAM.values(), key=lambda s: s.sort):
-        if spec.name in existing:
+        if spec.name in existing or spec.name in tombstoned:
             continue
         db.add(
             AgentSpecModel(

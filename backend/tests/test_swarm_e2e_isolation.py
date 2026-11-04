@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
-"""E2E 脚本隔离守护（swarm 任务 e2e-isolation）。
+"""E2E 脚本隔离守护（swarm 任务 e2e-isolation；Task 9 扩展到 19 个区域探针）。
 
 被守护的契约：
 1. dev/e2e 三个旧脚本（e2e_recon / e2e_interactions / e2e_edge）启动服务前必须使用
    各自独立的 DATABASE_URL / FINANCE_DATA_DIR / DEBUG_DATA_DIR；
-2. 隔离路径全部位于 dev/e2e 下，绝不指向 backend/data 真实数据
+2. dev/e2e/probes/ 下 19 个区域探针还必须额外设置 WORKBENCH_DATA_DIR，四域
+   （数据根/库/财务/调试）彼此独立，路径只能落在 dev/e2e 或 .superpowers，
+   绝不指向 backend/data 真实数据（uploads/skills/expert-packs 都挂在数据根下）；
+3. 隔离路径全部位于 dev/e2e 下，绝不指向 backend/data 真实数据
    （recon 曾缺失 FINANCE_DATA_DIR，服务会直接写真实财务目录）；
-3. 归档器 debug_reporter 读与服务相同的调试目录：DEBUG_DATA_DIR 同时进父进程
+4. 归档器 debug_reporter 读与服务相同的调试目录：DEBUG_DATA_DIR 同时进父进程
    os.environ（归档器在本进程读）与子进程 env（服务读）；
-4. 端口沿用 8123/8124；三脚本持同一把运行锁，禁止并行执行；
-5. 每次运行前重置本脚本自有的库/财务/调试目录。
+5. 端口沿用 8123/8124；三脚本持同一把运行锁，禁止并行执行；
+6. 每次运行前重置本脚本自有的库/财务/调试目录（探针还需重置数据根）。
 
-验证方式：静态解析脚本源码（AST 求值路径字面量）+ 临时目录行为测试。
+验证方式：静态解析脚本源码（AST 求值路径字面量，含 env.update 字典）+ 临时目录行为测试。
 不启动服务、不跑 Playwright、不读/不删真实 debug 数据。
 """
 import ast
@@ -132,6 +135,14 @@ def _config(path: Path) -> dict:
         elif isinstance(node, ast.Call):
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if (name == "update" and isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name) and func.value.id == "env"
+                    and node.args and isinstance(node.args[0], ast.Dict)):
+                for key_node, value_node in zip(node.args[0].keys, node.args[0].values):
+                    if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+                        env[key_node.value] = _eval(value_node, values)
+                        env_lines[key_node.value] = node.lineno
+                continue
             if name == "Popen" and popen_line is None:
                 popen_line = node.lineno
             elif name == "acquire_run_lock" and lock_line is None:
@@ -293,3 +304,77 @@ def test_run_lock_is_exclusive_and_released(tmp_path):
     release()  # 幂等
     release2 = debug_reporter.acquire_run_lock(tmp_path)
     release2()
+
+
+# ---------- 19 个区域探针的四域隔离契约（Task 9 / L-152） ----------
+
+PROBES_DIR = E2E_DIR / "probes"
+PROBES = {path.stem: path for path in sorted(PROBES_DIR.glob("*.py"))}
+# M6：perf_probe 不在 probes/ 但同样启动服务，必须纳入四域隔离契约
+PROBES["perf_probe"] = E2E_DIR / "perf_probe.py"
+PROBE_KEYS = ("WORKBENCH_DATA_DIR", "DATABASE_URL", "FINANCE_DATA_DIR", "DEBUG_DATA_DIR")
+# 探针产物只允许落在仓库开发目录（dev/e2e 或 .superpowers 的会话产物目录）
+ALLOWED_ROOTS = (f"{_ROOT}/dev/e2e/", f"{_ROOT}/.superpowers/")
+
+
+def _probe_paths(cfg: dict, name: str) -> dict:
+    missing = [k for k in PROBE_KEYS if k not in cfg["env"]]
+    assert not missing, f"{name} 未设置隔离变量: {missing}（{PROBES[name]}）"
+    paths = {}
+    for key in PROBE_KEYS:
+        value = cfg["env"][key]
+        assert value, f"{name} 的 {key} 无法静态求值（写法变了？请同步本测试）"
+        paths[key] = value
+    assert paths["DATABASE_URL"].startswith("sqlite:///"), \
+        f"{name} DATABASE_URL 不是 sqlite: {paths['DATABASE_URL']}"
+    paths["DATABASE_URL"] = paths["DATABASE_URL"][len("sqlite:///"):]
+    return paths
+
+
+def _reset_covers(cfg: dict, path: str) -> bool:
+    for reset in cfg["resets"]:
+        if path == reset or path.startswith(reset.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def test_probes_are_all_covered():
+    assert len(PROBES) == 20, f"探针数量变了（{len(PROBES)}），请同步四域隔离契约: {sorted(PROBES)}"
+
+
+@pytest.mark.parametrize("name", sorted(PROBES))
+def test_probe_declares_four_isolated_domains(name):
+    cfg = _config(PROBES[name])
+    paths = _probe_paths(cfg, name)
+    assert cfg["popen_line"], f"{name} 未找到服务启动（subprocess.Popen）"
+    for key, path in paths.items():
+        assert path.startswith(ALLOWED_ROOTS), f"{name} 的 {key} 不在开发目录下: {path}"
+        assert "backend/data" not in path, f"{name} 的 {key} 指向真实 backend/data: {path}"
+        assert cfg["env_lines"][key] < cfg["popen_line"], \
+            f"{name} 的 {key} 设置于服务启动之后"
+    # 四个域必须彼此独立：数据根与库/财务/调试目录不能是同一路径
+    assert len(set(paths.values())) == len(paths), f"{name} 的隔离路径互相重叠: {paths}"
+
+
+@pytest.mark.parametrize("name", sorted(PROBES))
+def test_probe_resets_own_data_dir_before_start(name):
+    cfg = _config(PROBES[name])
+    paths = _probe_paths(cfg, name)
+    data_dir = paths["WORKBENCH_DATA_DIR"]
+    assert _reset_covers(cfg, data_dir), (
+        f"{name} 运行前未重置 WORKBENCH_DATA_DIR 目录 {data_dir}："
+        f"上传/技能/专家包会跨次残留"
+    )
+    reset_line = min(
+        line for reset, line in cfg["resets"].items()
+        if data_dir == reset or data_dir.startswith(reset.rstrip("/") + "/")
+    )
+    assert reset_line < cfg["popen_line"], "隔离目录应在启动服务前重置"
+
+
+def test_probe_data_roots_are_unique():
+    data_dirs = {}
+    for name, path in PROBES.items():
+        cfg = _config(path)
+        data_dirs[name] = _probe_paths(cfg, name)["WORKBENCH_DATA_DIR"]
+    assert len(set(data_dirs.values())) == len(data_dirs), data_dirs

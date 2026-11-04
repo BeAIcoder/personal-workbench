@@ -20,7 +20,7 @@ manifest = ModuleManifest(
             "readonly": True,
         }
     ],
-    column_patches={},
+    column_patches={"mod_expense_run": {"bad_amount_rows": "INTEGER DEFAULT 0"}},
     requires=[],
     preset_experts=["finance_specialist"],  # 工具自动预置进财税专员白名单
     enabled=True,

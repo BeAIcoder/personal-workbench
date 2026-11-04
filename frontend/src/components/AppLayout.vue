@@ -1,11 +1,19 @@
 <template>
   <el-container class="layout">
-    <el-aside width="220px" class="aside">
+    <el-aside class="aside">
       <div class="logo">
         <span class="logo-icon"><el-icon><DataBoard /></el-icon></span>
         <span>个人工作台</span>
       </div>
-      <el-menu :default-active="activeMenu" :default-openeds="defaultOpeneds" router class="menu">
+      <el-menu
+        ref="menuRef"
+        :default-active="activeMenu"
+        :default-openeds="defaultOpeneds"
+        router
+        class="menu"
+        @open="onMenuOpen"
+        @close="onMenuClose"
+      >
         <el-menu-item v-for="item in staticMenus" :key="item.path" :index="item.path">
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.title }}</span>
@@ -96,17 +104,21 @@ export function isSearchHotkey(e) {
 </script>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import dayjs from 'dayjs'
 import api from '../api'
 import { getModuleMenuGroups } from '../modules'
+import { createDayClock, todayTextOf } from '../utils/clock'
+import { menuOpenIndices } from '../utils/menuOpen'
 import GlobalSearch from './GlobalSearch.vue'
 
 const route = useRoute()
 const searchRef = ref(null)
+const menuRef = ref(null)
 const activeMenu = computed(() => route.path)
-const todayText = dayjs().format('YYYY年MM月DD日 dddd')
+const now = ref(new Date())
+const todayText = computed(() => todayTextOf(now.value))
+const dayClock = createDayClock()
 const version = ref('')
 const staticMenus = STATIC_MENUS
 const staticMenuGroups = STATIC_MENU_GROUPS
@@ -116,25 +128,31 @@ const tailMenus = TAIL_MENUS
 // 组内支持二级折叠子分组（manifest menu.subgroup，如「税务填报」）与直挂项。
 const menuGroups = computed(() => getModuleMenuGroups())
 
-// 深链/刷新时展开激活项所在的组与子分组（仅初始一次：default-openeds 只在挂载时生效，
-// 做成响应式会在用户手动折叠后又被强行展开）。静态「AI 配置」组同理纳入。
-const defaultOpeneds = (() => {
-  const path = route.path
-  const hit = (items) => items.some((m) => m.path === path)
-  const opened = []
-  for (const g of menuGroups.value) {
-    if (hit(g.items) || g.subgroups.some((sg) => hit(sg.items))) {
-      opened.push(`group-${g.name}`)
-      for (const sg of g.subgroups) {
-        if (hit(sg.items)) opened.push(`subgroup-${g.name}-${sg.name}`)
-      }
-    }
+// 挂载时按当前路由展开（刷新/深链）；挂载后的应用内跳转由 applyRouteOpen 增量展开。
+// 用户手动折叠过的索引记入 userClosed，路由变化不得覆盖用户选择；手动重新展开则清除记录。
+const defaultOpeneds = menuOpenIndices(route.path, menuGroups.value, staticMenuGroups)
+const openedMenus = new Set(defaultOpeneds)
+const userClosed = new Set()
+
+function onMenuOpen(index) {
+  openedMenus.add(index)
+  userClosed.delete(index)
+}
+
+function onMenuClose(index) {
+  openedMenus.delete(index)
+  userClosed.add(index)
+}
+
+function applyRouteOpen(path) {
+  for (const index of menuOpenIndices(path, menuGroups.value, staticMenuGroups)) {
+    if (openedMenus.has(index) || userClosed.has(index)) continue
+    menuRef.value?.open?.(index)
+    openedMenus.add(index)
   }
-  for (const g of staticMenuGroups) {
-    if (g.items.some((m) => m.path === path)) opened.push(`group-${g.name}`)
-  }
-  return opened
-})()
+}
+
+watch(() => route.path, (path) => applyRouteOpen(path))
 
 function onKeydown(e) {
   if (isSearchHotkey(e)) {
@@ -145,10 +163,14 @@ function onKeydown(e) {
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
+  dayClock.start((value) => { now.value = value })
   // 侧栏版本号与后端保持一致，获取失败则静默不显示
   api.get('/health').then(({ data }) => { version.value = data.version || '' }).catch(() => {})
 })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  dayClock.stop()
+})
 </script>
 
 <style scoped>
@@ -157,9 +179,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 
 .aside {
+  width: 220px;
+  flex-shrink: 0;
   background: var(--wb-sidebar-bg);
   display: flex;
   flex-direction: column;
+}
+
+@media (max-width: 1280px) {
+  .aside {
+    width: 184px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .aside {
+    width: 168px;
+  }
 }
 
 .logo {
@@ -240,5 +276,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   background: var(--wb-bg-page);
   overflow: auto;
   padding: 20px;
+}
+
+@media (max-width: 1024px) {
+  .main {
+    padding: 12px;
+  }
 }
 </style>

@@ -141,9 +141,11 @@ def test_backup_and_restore_roundtrip(tmp_path):
     assert "workbuddy_import.json" in names
     assert "uploads/skip.tmp" not in names
 
-    # 恢复到新目录（无 workbench.db，无需 force）
+    # 恢复到新目录（无 workbench.db，无需 force）；显式指定财务目录，避免测试环境
+    # 的 FINANCE_DATA_DIR 把 finance/ 分流到全局临时目录
     target = tmp_path / "restore"
-    restored = restore_mod.restore(zip_path, target)
+    finance_target = target / "finance"
+    restored = restore_mod.restore(zip_path, target, finance_target=finance_target)
     assert set(restored) == names
     got = sqlite3.connect(target / "workbench.db")
     assert got.execute("SELECT x FROM t").fetchone()[0] == 42
@@ -152,10 +154,10 @@ def test_backup_and_restore_roundtrip(tmp_path):
 
     # 已有 workbench.db 且未 force → 拒绝
     with pytest.raises(FileExistsError):
-        restore_mod.restore(zip_path, target)
-    # force → 原子换入，旧数据整体快照为 data.before_restore_*
-    restore_mod.restore(zip_path, target, force=True)
-    snapshots = list(target.parent.glob("data.before_restore_*"))
+        restore_mod.restore(zip_path, target, finance_target=finance_target)
+    # force → 原子换入，旧数据整体快照为 <target>.before_restore_*
+    restore_mod.restore(zip_path, target, force=True, finance_target=finance_target)
+    snapshots = list(target.parent.glob("restore.before_restore_*"))
     assert snapshots, "force 恢复应留下整目录快照"
     # 快照内容与旧库一致（可继续作为回滚点）
     prev = sqlite3.connect(snapshots[-1] / "workbench.db")

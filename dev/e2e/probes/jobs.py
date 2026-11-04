@@ -54,9 +54,15 @@ env = os.environ.copy()
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN_DIR)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+DATA_DIR = PROBE_DIR / "data"
+if DATA_DIR.exists():
+    shutil.rmtree(DATA_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA_DIR)
 env["PYTHONIOENCODING"] = "utf-8"
 # 干净库：不灌演示数据，保证「空库空态」断言确定性
 env["SEED_ON_STARTUP"] = "0"
+# 看板动作任务必须走不可用通道，禁止探针触发本机真实「微信报表监控」。
+env["FINANCE_BOARD_TASK_NAME"] = "__probe_no_such_task__"
 # 探测环境不接入模型：清空 LLM 配置，立即运行走 skipped 确定性路径
 for k in ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
     env[k] = ""
@@ -471,8 +477,9 @@ def main():
         def tc_run_now_action_error():
             # 探测库无管线目录：动作任务运行 → error，界面弹错误提示
             row("探测-动作任务").locator("button", has_text="立即运行").click()
-            # 动作任务要等管线真实失败（本次实测 ~2s+），固定 sleep 会抢在 toast 前读空
-            deadline = time.time() + 10
+            # 看板管线最多尝试 2 次（含 5s 重试间隔），冷启动可能超过 10s；
+            # 固定短等会抢在 error toast 前读空。最多等 45s。
+            deadline = time.time() + 45
             t = ""
             while time.time() < deadline:
                 t = toast_text()

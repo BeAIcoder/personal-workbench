@@ -26,6 +26,8 @@ class Enterprise(Base):
     employee_count = Column(Integer, nullable=True, comment="从业人数")
     total_assets = Column(Float, nullable=True, comment="资产总额（万元）")
     is_restricted_industry = Column(Boolean, default=False, comment="是否限制行业")
+    # 高新技术企业资格：计算页、保存与 A200000 导出共用同一属性（台账 L-050）
+    is_high_tech = Column(Boolean, default=False, comment="是否高新技术企业")
     created_at = Column(DateTime, default=datetime.now, nullable=False, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False, comment="更新时间")
 
@@ -119,6 +121,18 @@ class TaxReturn(Base):
     status = Column(String(20), default="draft", comment="状态：draft-草稿，submitted-已提交")
     taxable_income = Column(Float, default=0.0, comment="应纳税所得额（元）")
     tax_amount = Column(Float, default=0.0, comment="应纳税额（元）")
+    # A200000 第 1/2/3 行来源：真实利润表数据（元），不得用应纳税所得额冒充（台账 L-051）
+    operating_revenue = Column(Float, default=0.0, comment="营业收入（元）")
+    other_income = Column(Float, default=0.0, comment="其他收入（元）")
+    operating_cost = Column(Float, default=0.0, comment="营业成本（元）")
+    total_expenses = Column(Float, default=0.0, comment="期间费用（元）")
+    total_profit = Column(Float, default=0.0, comment="利润总额（元）")
+    # 计税口径留痕：净纳税调整与税收优惠。调整不计入季度预缴（导出「计算方式」列说明，
+    # 台账 L-051 / 复核 N-1），税收优惠经 A200000 第 5 行所得减免体现。
+    tax_adjustments = Column(Float, default=0.0, comment="纳税调整净额（元）")
+    tax_preferential = Column(Float, default=0.0, comment="税收优惠（所得减免，元）")
+    # 实际适用的优惠类型：一般企业/高新技术企业/小型微利企业（页面=服务=库=导出一致）
+    tax_type = Column(String(20), default="", comment="适用企业类型")
     created_at = Column(DateTime, default=datetime.now, nullable=False, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False, comment="更新时间")
 

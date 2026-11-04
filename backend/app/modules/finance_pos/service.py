@@ -93,9 +93,11 @@ def _safe_member_segment(part: str) -> str:
 
 def engine_dir() -> Path:
     """POS 台账项目目录：配置优先，否则按资产锚点目录推导（settings.finance_asset_anchor）。"""
-    if settings.finance_pos_engine_path:
-        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
-        return resolve_engine_root(settings.finance_pos_engine_path)
+    configured = (settings.finance_pos_engine_path or "").strip()
+    if configured:
+        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root；
+        # configured 已判非空，resolve_engine_root 此处不会返回 None。
+        return resolve_engine_root(configured)
     found = find_sibling_project("收款认领POS台账", Path(__file__))
     if found is None:
         raise EngineUnavailableError("无法定位 POS 引擎目录，请配置 finance_pos_engine_path")
@@ -106,6 +108,37 @@ def _runs_root() -> Path:
     d = get_finance_data_dir() / "finance_pos" / "runs"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _resolve_run_dir(run: PosRun) -> Path:
+    """运行工作目录必须落在本模块 runs 根目录内（空值/越界/缺失一律拒绝）。"""
+    root = _runs_root().resolve()
+    raw = (run.run_dir or "").strip()
+    if not raw:
+        raise EngineUnavailableError("运行工作目录缺失，请删除该运行并重新创建")
+    path = Path(raw).resolve()
+    if path == root or not path.is_relative_to(root) or not path.is_dir():
+        raise EngineUnavailableError("运行工作目录无效（不在本模块 runs 目录内），请删除该运行并重新创建")
+    return path
+
+
+def _mark_failed(db: Session, run_id: int, message: str, elapsed: float, log_tail: str | None = None) -> None:
+    """把运行记录置 failed（先 rollback，兼容会话已处于失败事务的状态）。"""
+    try:
+        db.rollback()
+    except Exception:
+        logger.warning("POS 运行 %s 失败回滚异常", run_id, exc_info=True)
+    try:
+        row = db.get(PosRun, run_id)
+        if row is not None:
+            row.status = "failed"
+            row.error = message[:500]
+            row.elapsed_sec = round(elapsed, 2)
+            if log_tail is not None:
+                row.log_tail = log_tail[-4000:]
+        db.commit()
+    except Exception:
+        logger.warning("POS 运行 %s 失败状态落库失败", run_id, exc_info=True)
 
 
 def _unique_path(target: Path) -> Path:
@@ -260,7 +293,7 @@ def _execute_run_locked(db: Session, run_id: int, project: str | None = None) ->
         else:
             raise ValueError("该运行正在执行中")
     edir = engine_dir()
-    run_dir = Path(run.run_dir)
+    run_dir = _resolve_run_dir(run)
     input_dir = run_dir / "input"
     out_dir = run_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -268,6 +301,7 @@ def _execute_run_locked(db: Session, run_id: int, project: str | None = None) ->
     uploaded = {f["name"] for f in (run.input_files or [])}
     before = {p.name for p in input_dir.iterdir() if p.is_file()}
     run.status = "running"
+    run.error = ""
     db.commit()
 
     logs: list[str] = []
@@ -290,6 +324,8 @@ def _execute_run_locked(db: Session, run_id: int, project: str | None = None) ->
 
         # 产物归档：output/* 与 input 下新生成的文件（差集）
         art_dir = run_dir / "artifacts"
+        if art_dir.exists():
+            shutil.rmtree(art_dir, ignore_errors=True)  # 重跑不累积上次残留（避免 _1 副本）
         art_dir.mkdir(parents=True, exist_ok=True)
         artifacts: list[dict] = []
         sources = [p for p in out_dir.iterdir() if p.is_file()]
@@ -298,25 +334,21 @@ def _execute_run_locked(db: Session, run_id: int, project: str | None = None) ->
         for f in sorted(set(sources)):
             if f.name.startswith("~$"):
                 continue
-            dest = art_dir / f.name
+            dest = _unique_path(art_dir / f.name)
             dest.write_bytes(f.read_bytes())
-            artifacts.append({"name": f.name, "size": dest.stat().st_size, "path": str(dest)})
+            artifacts.append({"name": dest.name, "size": dest.stat().st_size, "path": str(dest)})
         run.artifacts = artifacts
         run.status = "ok" if artifacts else "failed"
-        if not artifacts:
-            run.error = "引擎执行完成但未产生产物"
+        run.error = "" if artifacts else "引擎执行完成但未产生产物"
         db.commit()
         db.refresh(run)
         return _out(run)
     except subprocess.TimeoutExpired:
-        run.status = "failed"
-        run.error = f"引擎执行超时（>{STEP_TIMEOUT}s）"
-        run.elapsed_sec = round(time.perf_counter() - t0, 2)
-        db.commit()
-        raise EngineUnavailableError(run.error) from None
+        message = f"引擎执行超时（>{STEP_TIMEOUT}s）"
+        _mark_failed(db, run.id, message, time.perf_counter() - t0, "\n".join(logs))
+        raise EngineUnavailableError(message) from None
     except subprocess.CalledProcessError as exc:
-        run.status = "failed"
-        run.error = f"引擎步骤失败：{exc.cmd}"
+        message = f"引擎步骤失败：{exc.cmd}"
         stderr_text = exc.stderr or ""
         run.log_tail = "\n".join(logs) + "\n" + stderr_text[-2000:]
         # 引擎项目识别/匹配失败时，把「需指定项目 + 可用项目名」并入 error/503 detail：
@@ -331,21 +363,18 @@ def _execute_run_locked(db: Session, run_id: int, project: str | None = None) ->
                     for part in re.split(r"[/／|]", m.group(1))
                     if part.split(":", 1)[0].strip()
                 )
-            run.error += "（引擎无法自动识别项目，需指定项目名后重试"
-            run.error += f"；可用项目名：{names}）" if names else "）"
-        run.elapsed_sec = round(time.perf_counter() - t0, 2)
-        db.commit()
-        raise EngineUnavailableError(run.error) from None
+            message += "（引擎无法自动识别项目，需指定项目名后重试"
+            message += f"；可用项目名：{names}）" if names else "）"
+        _mark_failed(db, run.id, message, time.perf_counter() - t0, run.log_tail)
+        raise EngineUnavailableError(message) from None
     except EngineUnavailableError:
         raise
     except Exception as exc:
         # 兜底：归档等任何异常都回写 failed，避免运行记录永久卡在 running 无法重试
-        run.status = "failed"
-        run.error = f"执行异常：{type(exc).__name__}: {exc}"[:500]
-        run.elapsed_sec = round(time.perf_counter() - t0, 2)
-        db.commit()
+        message = f"执行异常：{type(exc).__name__}: {exc}"[:500]
+        _mark_failed(db, run.id, message, time.perf_counter() - t0, run.log_tail)
         logger.exception("POS 运行 %s 执行异常", run.id)
-        raise EngineUnavailableError(run.error) from exc
+        raise EngineUnavailableError(message) from exc
 
 
 def _out(r: PosRun) -> dict:

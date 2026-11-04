@@ -70,7 +70,7 @@ beforeEach(() => {
       return Promise.resolve({ data: { items: [{ id: 7, code: 'EQ-001', name: '冷水机组' }], total: 1 } })
     }
     if (url.endsWith('/work-orders')) {
-      if (config.params?.page_size === 200) {
+      if (config.params?.page_size === 50) {
         return Promise.resolve({ data: { items: [{ id: 1, code: 'WO00001', description: '父工单' }], total: 1 } })
       }
       return Promise.resolve({ data: {
@@ -182,11 +182,11 @@ describe('营运到期、账龄与 SLA 警告', () => {
 })
 
 describe('营运工单留痕与导出', () => {
-  it('投诉父工单选项独立请求前 200 条', async () => {
+  it('投诉父工单选项独立请求前 50 条（可用关键字缩小）', async () => {
     const ctx = mount()
     await ctx.loadOrderOptions()
     expect(api.get).toHaveBeenLastCalledWith('/business/operations/work-orders', {
-      params: { page: 1, page_size: 200 },
+      params: { page: 1, page_size: 50 },
     })
     expect(ctx.orderOptions.value[0].code).toBe('WO00001')
   })
@@ -266,7 +266,7 @@ describe('工单关联工程设备', () => {
     const ctx = mount()
     await ctx.loadEquipmentOptions()
     expect(api.get).toHaveBeenLastCalledWith('/business/facility/equipment', {
-      params: { page: 1, page_size: 200 },
+      params: { page: 1, page_size: 50 },
     })
     expect(ctx.equipmentOptions.value[0].code).toBe('EQ-001')
 

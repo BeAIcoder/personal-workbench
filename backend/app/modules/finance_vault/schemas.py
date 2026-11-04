@@ -25,7 +25,8 @@ class IngestIn(BaseModel):
 
     table: str = Field(min_length=1, max_length=64, description="目标表名（小写字母/数字/下划线）")
     mode: str = Field(default="replace", description="replace=整表重建 / append=按列名追加")
-    sheet: str = Field(default="", description="xlsx 工作表名或序号（默认第一个）")
+    sheet: str = Field(default="", description="xlsx 工作表名（含纯数字名）或 0-based 序号（默认第一个）")
+    keep_text: bool = Field(default=True, description="保留编码/账号为文本（默认开启）")
 
 
 class IngestOut(BaseModel):
@@ -34,6 +35,11 @@ class IngestOut(BaseModel):
     source: str = ""
     mode: str = "replace"
     columns: list = []
+    keep_text: bool = True
+    sheet: str = ""
+    sheets: list[str] = []
+    sheet_count: int = 0
+    text_columns: list[str] = []
 
 
 class QueryIn(BaseModel):

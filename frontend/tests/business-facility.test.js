@@ -78,7 +78,7 @@ describe('工程物业页面真实请求', () => {
 
     await ctx.loadEquipmentOptions()
     expect(api.get).toHaveBeenLastCalledWith('/business/facility/equipment', {
-      params: { page: 1, page_size: 200 },
+      params: { page: 1, page_size: 50 },
     })
     expect(ctx.equipmentOptions.value).toHaveLength(1)
   })

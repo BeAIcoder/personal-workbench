@@ -12,16 +12,16 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 from . import expert_packs, skill_store
+from ..config import DEFAULT_WORKBUDDY_HOME
 
 # ---------- 常量 ----------
 
-DEFAULT_HOME = "C:/Users/Administrator/.workbuddy"
+DEFAULT_HOME = str(DEFAULT_WORKBUDDY_HOME)
 IDENTITY_FILES = ("SOUL.md", "IDENTITY.md", "USER.md", "BOOTSTRAP.md")
 MEMORY_MD = "MEMORY.md"
 SKILL_STORE_SUBDIR = "buddy-skill-store"
@@ -208,7 +208,7 @@ def _import_skills(items, result, dry_run: bool) -> None:
         name = it["name"]
         src = Path(it["source_dir"])
         try:
-            dest = skill_store._pack_dir(name)
+            skill_store._pack_dir(name)
         except ValueError as exc:
             bucket["failed"].append({"name": name, "error": str(exc)})
             continue
@@ -217,13 +217,9 @@ def _import_skills(items, result, dry_run: bool) -> None:
             (bucket["updated"] if exists else bucket["added"]).append(name)
             continue
         try:
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
-            if not exists:
-                skill_store.set_enabled(name, False)
-            (bucket["updated"] if exists else bucket["added"]).append(name)
-        except OSError as exc:
+            installed = skill_store.install_pack(src, name)
+            (bucket["updated"] if installed["updated"] else bucket["added"]).append(name)
+        except Exception as exc:  # 单包失败记录并继续；公共实现已回滚旧包
             bucket["failed"].append({"name": name, "error": str(exc)})
 
 

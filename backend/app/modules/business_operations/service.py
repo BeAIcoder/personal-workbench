@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -126,8 +127,9 @@ def _resolve_unit(db: Session, unit_id: int | None, exclude_contract_id: int | N
 def _lease_terms(db: Session, contract: OpsContract) -> dict:
     """从招商签约线索读取租决参数（免租期 / 年递增率 / 租金形式）。
 
-    勾稽链：合同.unit_id → LeasingLead.unit_id 且 status='signed'（取最新一条）。
-    未关联铺位或无签约线索时返回空 dict（保持旧的固定租金出账行为）。
+    勾稽链：合同.unit_id → LeasingLead.unit_id + stage='signed' + 未释放 + 同租户。
+    铺位换租户后，旧租户的商务条件绝不能再套到新合同上；未匹配到本租户签约线索时
+    返回空 dict（保持固定租金出账行为）。
     """
     if contract.unit_id is None:
         return {}
@@ -135,11 +137,13 @@ def _lease_terms(db: Session, contract: OpsContract) -> dict:
         from ..business_leasing.models import LeasingLead
     except ImportError:
         return {}
-    lead = (db.query(LeasingLead)
-            .filter(LeasingLead.unit_id == contract.unit_id,
-                    LeasingLead.stage == "signed")
-            .order_by(LeasingLead.id.desc())
-            .first())
+    tenant = str(contract.tenant or "").strip()
+    leads = (db.query(LeasingLead)
+             .filter(LeasingLead.unit_id == contract.unit_id,
+                     LeasingLead.stage == "signed",
+                     LeasingLead.released_at.is_(None))
+             .order_by(LeasingLead.id.desc()).all())
+    lead = next((row for row in leads if str(row.company or "").strip() == tenant), None)
     if lead is None:
         return {}
     return {
@@ -150,10 +154,50 @@ def _lease_terms(db: Session, contract: OpsContract) -> dict:
     }
 
 
+def _release_unit_after_termination(db: Session, contract: OpsContract) -> None:
+    """合同终止后释放铺位占用（同事务调用）。
+
+    只有在该铺位没有其它生效合同时才释放：铺位状态回到空置，占用中的签约线索
+    标记 released_at（stage 仍为 signed，签约历史与租决参数保留）。
+    """
+    if contract.unit_id is None:
+        return
+    others = (db.query(OpsContract)
+              .filter(OpsContract.unit_id == contract.unit_id,
+                      OpsContract.status == "active",
+                      OpsContract.id != (contract.id or -1))
+              .count())
+    if others:
+        return
+    try:
+        from ..business_leasing.models import LeasingLead, LeasingUnit
+    except ImportError:
+        return
+    tenant = str(contract.tenant or "").strip()
+    occupying = (db.query(LeasingLead)
+                 .filter(LeasingLead.unit_id == contract.unit_id,
+                         LeasingLead.stage == "signed",
+                         LeasingLead.released_at.is_(None))
+                 .all())
+    # 只释放本租户的签约线索；其它租户仍占用铺位时铺位不能回到空置
+    if any(str(row.company or "").strip() != tenant for row in occupying):
+        return
+    unit = db.get(LeasingUnit, contract.unit_id)
+    if unit is not None and unit.status == "leased":
+        unit.status = "vacant"
+    now = datetime.now()
+    (db.query(LeasingLead)
+     .filter(LeasingLead.unit_id == contract.unit_id,
+             LeasingLead.stage == "signed",
+             LeasingLead.released_at.is_(None))
+     .update({"released_at": now}, synchronize_session=False))
+
+
 def contract_save(db: Session, data: dict, contract_id: int | None = None) -> dict:
     c = db.get(OpsContract, contract_id) if contract_id else OpsContract()
     if c is None:
         raise LookupError("合同不存在")
+    releasing = False
     for field in ("contract_no", "tenant", "unit_no", "note"):
         if field in data and data[field] is not None:
             setattr(c, field, str(data[field]).strip())
@@ -169,8 +213,9 @@ def contract_save(db: Session, data: dict, contract_id: int | None = None) -> di
         resolved_id, resolved_no = _resolve_unit(
             db, data.get("unit_id"), exclude_contract_id=contract_id)
         c.unit_id = resolved_id
-        # 关联铺位时铺位号以招商台账为准（口径一致）；未填 unit_no 才回填
-        if resolved_id is not None and not str(data.get("unit_no") or "").strip():
+        # 关联铺位时铺位号一律以招商台账为准（手填值与台账不一致会让列表/导出/dq 三处错位）；
+        # 解绑（unit_id=null）时保留最后一次的值，作为历史铺位号
+        if resolved_id is not None:
             c.unit_no = resolved_no
     if "status" in data and data["status"] is not None:
         new_status = data["status"]
@@ -181,6 +226,8 @@ def contract_save(db: Session, data: dict, contract_id: int | None = None) -> di
             raise ValueError(f"非法状态迁移：{CONTRACT_STATUS_LABELS.get(c.status, c.status)} 不能改为 "
                              f"{CONTRACT_STATUS_LABELS.get(new_status, new_status)}，"
                              f"已终止合同不能重新启用（请走新合同）")
+        if contract_id is not None and c.status == "active" and new_status == "terminated":
+            releasing = True
         c.status = new_status
     if not c.contract_no:
         raise ValueError("合同编号不能为空")
@@ -190,6 +237,9 @@ def contract_save(db: Session, data: dict, contract_id: int | None = None) -> di
         raise ValueError("合同结束日期不能早于开始日期")
     if contract_id is None:
         db.add(c)
+    if releasing:
+        # 同一事务内释放：没有其它生效合同时，铺位回到空置并解除旧签约占用（线索记录保留）
+        _release_unit_after_termination(db, c)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -203,6 +253,17 @@ def contract_delete(db: Session, contract_id: int) -> None:
     c = db.get(OpsContract, contract_id)
     if c is None:
         raise LookupError("合同不存在")
+    order_count = (
+        db.query(OpsWorkOrder)
+        .filter(OpsWorkOrder.contract_id == contract_id)
+        .count()
+    )
+    if order_count:
+        # 工单引用了合同：硬删会让工单悬挂（与 facility 设备删除守卫同口径）
+        raise ValueError(
+            f"合同仍被 {order_count} 张工单引用，删除会让工单悬挂；"
+            "请先解除工单关联后再删除"
+        )
     paid_count = (
         db.query(OpsBill)
         .filter(OpsBill.contract_id == contract_id, OpsBill.paid_amount > 0)
@@ -214,6 +275,10 @@ def contract_delete(db: Session, contract_id: int) -> None:
             f"合同下有 {paid_count} 张已收款账单，删除会丢失收款记录；"
             "请先完成退款/冲正或导出留底后再删除"
         )
+    # 只有生效中的合同才需要释放占用；已终止合同在终止时已经释放过，
+    # 删除它不能再释放之后新签的同租户线索（Task 8 / Task 6 遗留）。
+    if c.status == "active":
+        _release_unit_after_termination(db, c)
     db.query(OpsBill).filter(OpsBill.contract_id == contract_id).delete()
     db.delete(c)
     db.commit()
@@ -451,7 +516,10 @@ def _work_order_query(db: Session, status: str = "", type_: str = "", keyword: s
     if type_:
         q = q.filter(OpsWorkOrder.type == type_)
     if keyword:
-        q = q.filter(OpsWorkOrder.description.contains(keyword, autoescape=True))
+        q = q.filter(or_(
+            OpsWorkOrder.code.contains(keyword, autoescape=True),
+            OpsWorkOrder.description.contains(keyword, autoescape=True),
+        ))
     return q
 
 
@@ -502,6 +570,15 @@ def work_order_save(db: Session, data: dict, order_id: int | None = None) -> dic
                 raise ValueError("父工单不能是工单自身")
             if db.get(OpsWorkOrder, parent_id) is None:
                 raise ValueError("父工单不存在")
+            # 沿父链上溯，任意环节回到本工单即成环（3 级及以上也要拦）
+            seen = set()
+            cursor = parent_id
+            while cursor is not None and cursor not in seen:
+                if order_id is not None and cursor == order_id:
+                    raise ValueError("父工单形成父子循环引用，请选择其它父工单")
+                seen.add(cursor)
+                parent = db.get(OpsWorkOrder, cursor)
+                cursor = parent.parent_id if parent is not None else None
         w.parent_id = parent_id
     if "equipment_id" in data:
         equipment_id = data["equipment_id"]

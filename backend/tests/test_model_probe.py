@@ -460,6 +460,19 @@ def test_probe_endpoints_roundtrip(client, monkeypatch):
     assert m["supports_thinking"] == 1 and m["probed_max_output"] == 131072 and m["probed_at"]
 
 
+def test_probe_endpoint_invalidates_runtime_model_cache(client, monkeypatch):
+    from app.agents import orchestrator
+
+    _, mid = _mk_provider_model_via_api(client)
+    monkeypatch.setattr(model_probe, "_chat_once", lambda *a, **k: _ok(reasoning_content="思考中……"))
+    orchestrator._model = object()
+    orchestrator._models[mid] = object()
+    resp = client.post(f"/api/models/{mid}/probe/reasoning")
+    assert resp.status_code == 200
+    assert orchestrator._model is None
+    assert orchestrator._models == {}
+
+
 def test_probe_endpoint_unreachable_returns_200_with_error(client, monkeypatch):
     pid, mid = _mk_provider_model_via_api(client)
     monkeypatch.setattr(model_probe, "_chat_once", lambda *a, **k: _err(None, "ConnectError: 厂商不可达"))

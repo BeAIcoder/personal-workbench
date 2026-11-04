@@ -10,8 +10,9 @@
       <el-descriptions :column="3" border>
         <el-descriptions-item label="企业">{{ enterpriseName }}</el-descriptions-item>
         <el-descriptions-item label="年度">{{ detail.year }}</el-descriptions-item>
-        <el-descriptions-item label="季度">{{ detail.quarter ?? '年度' }}</el-descriptions-item>
+        <el-descriptions-item label="季度">{{ detail.quarter ? `Q${detail.quarter}` : '年度' }}</el-descriptions-item>
         <el-descriptions-item label="申报类型">{{ detail.return_type }}</el-descriptions-item>
+        <el-descriptions-item label="适用优惠">{{ detail.tax_type || '—' }}</el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="detail.status === 'submitted' ? 'success' : 'info'" size="small">
             {{ detail.status === 'submitted' ? '已提交' : '草稿' }}
@@ -22,15 +23,19 @@
         <el-descriptions-item label="创建时间">{{ detail.created_at }}</el-descriptions-item>
       </el-descriptions>
 
-      <h4 style="margin-top: 20px">纳税调整明细</h4>
-      <el-table :data="adjustments" size="small" empty-text="无调整明细">
-        <el-table-column prop="item_name" label="调整项目" min-width="160" />
-        <el-table-column prop="adjustment_type" label="调整类型" width="120" />
-        <el-table-column label="金额(万元)" width="120" align="right">
-          <template #default="{ row }">{{ row.amount?.toFixed(2) }}</template>
-        </el-table-column>
-        <el-table-column prop="reason" label="原因" min-width="200" show-overflow-tooltip />
-      </el-table>
+      <h4 style="margin-top: 20px">利润表口径（A200000 第 1/2/3 行来源）</h4>
+      <el-descriptions :column="3" border size="small">
+        <el-descriptions-item label="营业收入">{{ yuan(detail.operating_revenue) }}</el-descriptions-item>
+        <el-descriptions-item label="其他收入">{{ yuan(detail.other_income) }}</el-descriptions-item>
+        <el-descriptions-item label="营业成本">{{ yuan(detail.operating_cost) }}</el-descriptions-item>
+        <el-descriptions-item label="期间费用">{{ yuan(detail.total_expenses) }}</el-descriptions-item>
+        <el-descriptions-item label="利润总额">{{ yuan(detail.total_profit) }}</el-descriptions-item>
+        <el-descriptions-item label="纳税调整净额">{{ yuan(detail.tax_adjustments) }}</el-descriptions-item>
+      </el-descriptions>
+      <p class="hint">
+        逐项纳税调整明细不在此处留存（历史「调整明细」接口恒为空，已按输入契约移除）；
+        明细请在「税额计算」页按同一组参数查看「计算过程」。
+      </p>
     </el-card>
   </div>
 </template>
@@ -43,8 +48,9 @@ import api from '../../../api'
 const route = useRoute()
 const loading = ref(false)
 const detail = ref({})
-const adjustments = ref([])
 const enterpriseName = ref('')
+
+const yuan = (value) => `${Number(value || 0).toFixed(2)} 元`
 
 async function load() {
   loading.value = true
@@ -55,8 +61,6 @@ async function load() {
       const e = await api.get(`/finance/tax/enterprises/${data.enterprise_id}`)
       enterpriseName.value = e.data.name
     }
-    const adj = await api.get(`/finance/tax/tax-returns/${route.params.id}/adjustments`)
-    adjustments.value = adj.data?.items || adj.data || []
   } catch {
     /* 保持空态 */
   } finally {
@@ -66,3 +70,11 @@ async function load() {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.hint {
+  margin: 12px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+</style>

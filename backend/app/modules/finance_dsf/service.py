@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ...config import get_finance_data_dir
 from ...utils_money import money
+from ...utils_xlsx import safe_cell
 
 # 分档减缴（财政部 税务总局公告2023年第8号）：
 # - 安排比例 ≥1% 且 <规定比例：按规定应缴费额的 50% 缴纳；
@@ -48,7 +49,10 @@ def calc_dsf(year: str, total_employees: int, total_salary: float,
     if local_avg_wage is not None and float(local_avg_wage) <= 0:
         raise ValueError("当地社会平均工资须 > 0")
 
-    status = policy_status("disability_fund_exemption", year)
+    exempt = total_employees <= EXEMPT_HEADCOUNT
+    status = policy_status(
+        "disability_fund_exemption" if exempt else "disability_fund_tiered", year
+    )
     if not status["valid"]:
         raise ValueError(status["message"])
 
@@ -128,7 +132,9 @@ def export_filing_xlsx(filing) -> Path:
     ws = wb.active
     ws.title = "残保金申报底稿"
     ws.append(["残疾人就业保障金申报表（底稿）"])
-    ws.append([f"所属年度：{filing.year}    用人单位：{filing.taxpayer_name or '—'}"])
+    # 用人单位名称为用户输入：单独成单元格并走 safe_cell，防 =/@/+/- 开头变公式
+    # （长文本里内嵌 = 不会成为公式，但独立单元格会被 Excel 当公式执行；台账 L-059）
+    ws.append(["所属年度", str(filing.year), "用人单位", safe_cell(filing.taxpayer_name or "—")])
     ws.append([])
     inputs = filing.inputs or {}
     ws.append(["在职职工总数", inputs.get("total_employees", 0)])

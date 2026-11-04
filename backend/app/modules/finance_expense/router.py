@@ -92,9 +92,16 @@ async def classify(file: UploadFile = File(...), db: Session = Depends(get_db)):
     except service.EngineUnavailableError as exc:
         _discard_stored(stored)
         raise HTTPException(status_code=503, detail=str(exc))
+    except service.RunBusyError as exc:
+        _discard_stored(stored)
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         _discard_stored(stored)
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _discard_stored(stored)
+        logger.exception("费用分类执行异常")
+        raise HTTPException(status_code=503, detail="费用分类执行失败，请稍后重试（详见服务端日志）") from exc
     return service.run_to_dict(run)
 
 

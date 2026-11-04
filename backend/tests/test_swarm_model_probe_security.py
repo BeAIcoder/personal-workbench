@@ -158,16 +158,19 @@ def test_probe_all_illegal_base_url_isolated_error_without_request(client, monke
 
 def test_sync_endpoint_illegal_models_url_sends_no_request(client, monkeypatch):
     """同步端点（Task 4）：非法 models_url 零请求，落目录兜底 + 明确 warning，不伪装在线。"""
-    pid = client.post(
-        "/api/assistant/providers",
-        json={
-            "name": "同步供应商",
-            "base_url": "https://api.deepseek.com/v1",
-            "api_key": _SECRET_KEY,
-            "preset_key": "deepseek",
-            "models_url": "https://user:pass@api.example.com/models",
-        },
-    ).json()["provider"]["id"]
+    with SessionLocal() as db:
+        provider = ModelProvider(
+            name="同步供应商",
+            protocol="openai",
+            base_url="https://api.deepseek.com/v1",
+            api_key=seal(_SECRET_KEY),
+            preset_key="deepseek",
+            models_url="https://user:pass@api.example.com/models",
+        )
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+        pid = provider.id
 
     calls: list = []
 
@@ -187,10 +190,17 @@ def test_sync_endpoint_illegal_models_url_sends_no_request(client, monkeypatch):
 
 def test_probe_endpoint_illegal_base_url_returns_200_with_error(client, monkeypatch):
     """端点层：非法供应商地址 → 200 + result.error，不发请求，supports_thinking 保持 -1。"""
-    pid = client.post(
-        "/api/assistant/providers",
-        json={"name": "探测供应商", "base_url": "https://user:pass@api.example.com/v1", "api_key": _SECRET_KEY},
-    ).json()["provider"]["id"]
+    with SessionLocal() as db:
+        provider = ModelProvider(
+            name="探测供应商",
+            protocol="openai",
+            base_url="https://user:pass@api.example.com/v1",
+            api_key=seal(_SECRET_KEY),
+        )
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+        pid = provider.id
     mid = client.post(
         f"/api/assistant/providers/{pid}/models",
         json={"model": "m-probe", "context_size": 128000, "max_tokens": 4096},

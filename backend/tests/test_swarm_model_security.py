@@ -202,15 +202,19 @@ def test_validator_error_message_does_not_echo_url():
 
 # ---------- 现有契约保持 ----------
 
-def test_save_provider_keeps_base_url_contract(client):
-    """保存契约不变：save_provider 不做 URL 校验、原样入库（校验在构造/测试侧）。"""
+def test_save_provider_rejects_unsafe_base_url(client):
+    """保存侧与运行侧同口径：内嵌凭据的地址在落库前即中文 400，不产生供应商。"""
     exotic = "https://user:pass@10.0.0.9:8443/gw"
-    pid = client.post(
+    resp = client.post(
         "/api/assistant/providers",
         json={"name": "url-contract", "protocol": "openai", "base_url": exotic, "api_key": "sk-keep-0001"},
-    ).json()["provider"]["id"]
-    prov = next(p for p in client.get("/api/assistant/providers").json()["providers"] if p["id"] == pid)
-    assert prov["base_url"] == exotic
+    )
+    assert resp.status_code == 400
+    assert "user:pass" not in resp.text
+    assert not any(
+        p["name"] == "url-contract"
+        for p in client.get("/api/assistant/providers").json()["providers"]
+    )
 
 
 def test_mask_dual_forms_still_recognized():

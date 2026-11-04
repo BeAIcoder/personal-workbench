@@ -149,26 +149,39 @@ RD_EXPENSE_SUPER_DEDUCTION_RULES: List[RDExpenseSuperDeductionRule] = [
 ]
 
 
-def get_rd_deduction_rate(enterprise_type: str = "一般企业") -> float:
+def get_rd_deduction_rate(enterprise_type: str = "一般企业", tax_year: str | int | None = None) -> float:
     """
     获取研发费用加计扣除比例
 
     Args:
         enterprise_type: 企业类型
+        tax_year: 所属年度（可选）；传入时校验该档加计比例的政策有效期，
+            过期/未生效抛 ValueError 中文提示（台账 L-055）
 
     Returns:
         加计扣除比例
     """
-    for rule in RD_EXPENSE_SUPER_DEDUCTION_RULES:
-        if enterprise_type in rule.applicable_enterprises:
-            return rule.deduction_rate
-    # 默认返回一般企业比例
-    return 1.0
+    rule = next(
+        (r for r in RD_EXPENSE_SUPER_DEDUCTION_RULES if enterprise_type in r.applicable_enterprises),
+        None,
+    )
+    if rule is None:
+        # 默认返回一般企业比例
+        return 1.0
+    if tax_year is not None and rule.expires_date:
+        from .policy_validity import policy_status
+
+        policy_key = "rd_deduction_120" if rule.deduction_rate >= 1.2 else "rd_deduction_100"
+        status = policy_status(policy_key, tax_year)
+        if not status["valid"]:
+            raise ValueError(status["message"])
+    return rule.deduction_rate
 
 
 def calculate_rd_expense_deduction(
     actual_rd_expense: float,
     enterprise_type: str = "一般企业",
+    tax_year: str | int | None = None,
 ) -> Dict[str, float]:
     """
     计算研发费用加计扣除金额
@@ -176,11 +189,12 @@ def calculate_rd_expense_deduction(
     Args:
         actual_rd_expense: 实际发生的研发费用
         enterprise_type: 企业类型
+        tax_year: 所属年度（可选）；120% 档按 2023 年第 44 号公告校验有效期
 
     Returns:
         包含扣除明细的字典
     """
-    rate = get_rd_deduction_rate(enterprise_type)
+    rate = get_rd_deduction_rate(enterprise_type, tax_year)
     super_deduction_amount = actual_rd_expense * rate
     total_deduction = actual_rd_expense + super_deduction_amount
 
@@ -274,6 +288,8 @@ def calculate_advertising_expense_limit(
     rate = rate_map.get(industry, 0.15)
     allowed_deduction = min(expense_amount, revenue * rate)
     tax_adjustment = expense_amount - allowed_deduction
+    # 超过限额部分准予结转以后纳税年度扣除；烟草广告费不得扣除且不得结转
+    carry_forward = 0.0 if rate == 0 else max(0, expense_amount - revenue * rate)
 
     return {
         "expense_amount": expense_amount,
@@ -282,6 +298,7 @@ def calculate_advertising_expense_limit(
         "deduction_rate": rate,
         "allowed_deduction": allowed_deduction,
         "tax_adjustment_increase": max(0, tax_adjustment),
+        "carry_forward_to_next_year": carry_forward,
     }
 
 

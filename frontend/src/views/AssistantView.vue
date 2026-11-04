@@ -1,13 +1,24 @@
 <template>
   <div class="assistant-layout">
-    <!-- 左列：会话 + 团队 -->
-    <div class="left-col">
+    <button ref="leftToggleRef" class="left-toggle" type="button" aria-controls="assistant-left" :aria-expanded="leftOpen" @click="toggleDrawer">
+      会话
+    </button>
+    <!-- 左列：会话 + 团队；窄屏（<=1100px）变为可折叠抽屉 -->
+    <div
+      id="assistant-left"
+      ref="leftColRef"
+      class="left-col"
+      :class="{ open: leftOpen }"
+      :inert="drawerClosed"
+      :aria-hidden="drawerClosed ? 'true' : null"
+      @keydown.esc.stop="onDrawerEsc"
+    >
       <SessionList
         :sessions="sessions"
         :current-session-id="currentSessionId"
         :archived="archivedTab"
         @create="newSession"
-        @select="switchSession"
+        @select="onSelectSession"
         @rename="renameSession"
         @delete="deleteSession"
         @archive="archiveSession"
@@ -55,10 +66,11 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { assistantApi } from '../api'
+import { drawerClosed as isDrawerClosed, escClosesDrawer, NARROW_MEDIA } from '../utils/assistantDrawer'
 import { sessionListParams } from '../utils/assistant'
 import SessionList from '../components/assistant/SessionList.vue'
 import AgentQuickList from '../components/assistant/AgentQuickList.vue'
@@ -78,6 +90,58 @@ const workModes = ref({})
 const presets = ref([])
 const teamConfig = ref({})
 const selectedAgent = ref(null)
+const leftOpen = ref(false)
+const narrow = ref(false)
+const leftToggleRef = ref(null)
+const leftColRef = ref(null)
+const drawerClosed = computed(() => isDrawerClosed(narrow.value, leftOpen.value))
+let mediaQuery = null
+
+function onMediaChange(event) {
+  narrow.value = !!event.matches
+}
+
+function focusFirstSession() {
+  const target = leftColRef.value?.querySelector?.('.session-main')
+  target?.focus?.()
+}
+
+function openDrawer() {
+  leftOpen.value = true
+  nextTick(focusFirstSession)
+}
+
+function closeDrawer({ restoreFocus = true } = {}) {
+  if (!leftOpen.value) return
+  leftOpen.value = false
+  if (restoreFocus) nextTick(() => leftToggleRef.value?.focus?.())
+}
+
+function toggleDrawer() {
+  if (leftOpen.value) closeDrawer()
+  else openDrawer()
+}
+
+function onDrawerEsc() {
+  if (narrow.value && leftOpen.value) closeDrawer()
+}
+
+function onWindowKeydown(event) {
+  if (event?.key !== 'Escape') return
+  const active = typeof document !== 'undefined' ? document.activeElement : null
+  if (escClosesDrawer({
+    narrow: narrow.value,
+    open: leftOpen.value,
+    drawer: leftColRef.value,
+    active,
+  })) closeDrawer()
+}
+
+function onSelectSession(sessionId) {
+  const result = switchSession(sessionId)
+  if (narrow.value) closeDrawer()
+  return result
+}
 
 // ---------------- 会话 ----------------
 const sessions = ref([])
@@ -279,6 +343,15 @@ watch(() => chatRef.value?.loading, (v) => {
 watch(() => route.query.auto, () => tryAutoRun())
 
 onMounted(async () => {
+  if (typeof window !== 'undefined') {
+    if (window.matchMedia) {
+      mediaQuery = window.matchMedia(NARROW_MEDIA)
+      narrow.value = mediaQuery.matches
+      if (mediaQuery.addEventListener) mediaQuery.addEventListener('change', onMediaChange)
+      else mediaQuery.addListener?.(onMediaChange)
+    }
+    window.addEventListener('keydown', onWindowKeydown)
+  }
   try {
     const { data } = await assistantApi.team()
     agents.value = data.agents
@@ -296,13 +369,33 @@ onMounted(async () => {
   if (sessions.value.length) await switchSession(sessions.value[0].session_id)
   await tryAutoRun()
 })
+
+onBeforeUnmount(() => {
+  if (mediaQuery?.removeEventListener) mediaQuery.removeEventListener('change', onMediaChange)
+  else mediaQuery?.removeListener?.(onMediaChange)
+  if (typeof window !== 'undefined') window.removeEventListener('keydown', onWindowKeydown)
+})
 </script>
 
 <style scoped>
 .assistant-layout {
+  position: relative;
   display: flex;
   gap: 16px;
   height: calc(100vh - 130px);
+}
+
+.left-toggle {
+  display: none;
+  position: absolute;
+  top: -4px;
+  left: 0;
+  z-index: 3;
+  padding: 4px 10px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
 }
 
 .left-col {
@@ -312,5 +405,36 @@ onMounted(async () => {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+}
+
+@media (max-width: 1280px) {
+  .left-col {
+    width: 280px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .left-toggle {
+    display: inline-flex;
+  }
+  .left-col {
+    position: absolute;
+    top: 34px;
+    bottom: 0;
+    left: 0;
+    z-index: 2;
+    width: min(320px, 86vw);
+    padding-right: 4px;
+    background: var(--wb-bg-page);
+    transform: translateX(-110%);
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform 0.18s ease, visibility 0.18s ease;
+  }
+  .left-col.open {
+    transform: none;
+    visibility: visible;
+    pointer-events: auto;
+  }
 }
 </style>

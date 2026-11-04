@@ -53,6 +53,7 @@ env.update({
 env["DATABASE_URL"] = f"sqlite:///{DB.as_posix()}"
 env["FINANCE_DATA_DIR"] = str(FIN)
 env["DEBUG_DATA_DIR"] = str(DEBUG_DIR)
+env["WORKBENCH_DATA_DIR"] = str(DATA)
 RUNNER = r"""
 import os
 from pathlib import Path

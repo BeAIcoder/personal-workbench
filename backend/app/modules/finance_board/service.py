@@ -55,11 +55,31 @@ class PipelineBusyError(RuntimeError):
     """已有管线正在运行中，由路由层映射为 409。"""
 
 
+class PipelineChannelUnavailableError(PipelineUnavailableError):
+    """计划任务通道本身无法启动（非忙态）。仅此错误允许回退直接执行。"""
+
+
+def _decode_console(raw: bytes | str | None) -> str:
+    """解码 schtasks 输出：本机中文 Windows 为 GBK，优先 UTF-8，其次 GBK/本地编码。"""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    for encoding in ("utf-8", "gbk", "mbcs"):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def pipeline_dir() -> Path:
     """微信报表监控项目目录：配置优先，否则按AssetLib默认相对位置推导。"""
-    if settings.finance_board_pipeline_path:
-        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
-        return resolve_engine_root(settings.finance_board_pipeline_path)
+    configured = (settings.finance_board_pipeline_path or "").strip()
+    if configured:
+        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root；
+        # configured 已判非空，resolve_engine_root 此处不会返回 None。
+        return resolve_engine_root(configured)
     # 锚点目录名取 settings.finance_asset_anchor（空则兜底 01-财税自动化），见 utils.find_sibling_project
     found = find_sibling_project("微信报表监控", Path(__file__))
     if found is None:
@@ -96,11 +116,15 @@ def _run_step(script: Path) -> str:
 
 
 def _scheduled_task_available() -> bool:
-    """本机是否注册了报表监控计划任务（服务安装.ps1 注册）。"""
-    proc = subprocess.run(
-        ["schtasks", "/query", "/tn", _task_name()],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
+    """本机是否注册了报表监控计划任务（服务安装.ps1 注册）；查询有超时，失败即不可用。"""
+    try:
+        proc = subprocess.run(
+            ["schtasks", "/query", "/tn", _task_name()],
+            capture_output=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        logger.warning("schtasks 查询计划任务超时或不可执行", exc_info=True)
+        return False
     return proc.returncode == 0
 
 
@@ -148,16 +172,21 @@ def _run_steps_via_scheduled_task() -> str:
     try:
         proc = subprocess.run(
             ["schtasks", "/run", "/tn", _task_name()],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=30,
+            capture_output=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
-        raise PipelineUnavailableError("触发计划任务超时（schtasks 无响应）") from None
-    msg = (proc.stderr or proc.stdout or "").strip()
+        raise PipelineChannelUnavailableError("触发计划任务超时（schtasks 无响应）") from None
+    except OSError as exc:
+        raise PipelineChannelUnavailableError(f"无法执行 schtasks：{exc}") from exc
+    msg = _decode_console(proc.stderr or proc.stdout).strip()
     if proc.returncode != 0:
-        if "已经运行" in msg or "already running" in msg.lower():
+        # 本机中文 Windows 输出为 GBK（如「错误: 计划任务 ... 已在运行中」），
+        # 旧实现按 UTF-8 解码后永远匹配不到中文忙态（L-080）。
+        lowered = msg.lower()
+        busy_markers = ("已经运行", "已在运行", "正在运行", "正在执行", "already running", "is running")
+        if any(marker in msg or marker in lowered for marker in busy_markers):
             raise PipelineBusyError("报表监控管线正在运行中（计划任务），请等待结束后再试")
-        raise PipelineUnavailableError(f"触发计划任务失败：{msg[:200]}")
+        raise PipelineChannelUnavailableError(f"触发计划任务失败：{msg[:200]}")
     deadline = time.monotonic() + TASK_CHANNEL_TIMEOUT
     last: dict = {}
     while time.monotonic() < deadline:
@@ -212,9 +241,24 @@ def _run_steps_directly(pdir: Path, stamp: str, t0: float, save_failed: bool = T
 
 
 def _execute_attempt(pdir: Path, stamp: str, t0: float) -> str:
-    """执行一次管线（计划任务通道或直接子进程）；失败不落快照，交由重试循环处理。"""
+    """执行一次管线（计划任务通道或直接子进程）；失败不落快照，交由重试循环处理。
+
+    仅当「非忙」且计划任务通道本身无法启动（未注册/拒绝启动/schtasks 超时）时
+    回退直接执行；任务已在运行（忙）或任务已启动但步骤失败，绝不回退——后者
+    回退会重复跑一遍管线并被误报成修复成功（L-080）。
+    """
     if _scheduled_task_available():
-        return _run_steps_via_scheduled_task()
+        try:
+            return _run_steps_via_scheduled_task()
+        except PipelineBusyError:
+            raise
+        except PipelineChannelUnavailableError as exc:
+            logger.warning("计划任务通道不可用，回退直接执行：%s", exc)
+            try:
+                return _run_steps_directly(pdir, stamp, t0, save_failed=False)
+            except PipelineUnavailableError as direct_exc:
+                direct_exc.channel_error = str(exc)
+                raise
     return _run_steps_directly(pdir, stamp, t0, save_failed=False)
 
 
@@ -233,7 +277,7 @@ def _notify_failure(message: str) -> None:
             status="open",
             source="analysis",
             page="/finance/board",
-            description=f"自动重试 {_PIPELINE_ATTEMPTS} 次后仍失败：{message[:800]}",
+            description=f"最多尝试 {_PIPELINE_ATTEMPTS} 次（重试 {_PIPELINE_ATTEMPTS - 1} 次）后仍失败：{message[:800]}",
         ))
     except Exception:  # 告警失败不得影响主流程
         logger.warning("看板失败告警登记失败", exc_info=True)
@@ -275,7 +319,7 @@ def _run_pipeline_locked() -> dict:
                 time.sleep(_RETRY_DELAY_SECONDS)
                 continue
             detail = getattr(exc, "logs", "") or str(exc)
-            msg = f"重试 {attempt} 次后仍失败：{exc}"
+            msg = f"尝试 {attempt} 次（重试 {attempt - 1} 次）后仍失败：{exc}"
             _save_snapshot(stamp, "failed", "", f"{msg}\n{detail}"[:4000], time.perf_counter() - t0)
             _notify_failure(str(exc))
             err = PipelineUnavailableError(msg)

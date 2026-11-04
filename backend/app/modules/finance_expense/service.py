@@ -13,10 +13,12 @@
 import contextlib
 from contextlib import contextmanager
 import importlib
+import math
 import os
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +52,80 @@ _BANK_READ_FAIL_DETAIL = (
     "银行明细账读取失败：请确认上传的是银行存款辅助明细账"
     "（需含 科目编码/日期/摘要/贷方本币 等列；表头行已自动定位）"
 )
+
+# 执行互斥与陈旧复位（与 POS/现金流同口径）：分类是长任务，同进程并发会互相覆盖
+# 引擎共享状态（os.chdir / 配置覆盖），且崩溃后 running 记录需可自动恢复。
+_EXEC_LOCK = threading.Lock()
+STALE_RUN_SECONDS = 2 * 3600
+
+
+class RunBusyError(RuntimeError):
+    """已有费用分类任务在执行中，由路由层映射 409。"""
+
+
+def _safe_amount(value: Any) -> float:
+    """金额容错转换：千分位逗号可解析；不可解析/NaN/Infinity 一律按 0（不流入统计）。"""
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number if math.isfinite(number) else 0.0
+    text = str(value).replace(",", "").strip()
+    if not text:
+        return 0.0
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
+def _amount_parseable(value: Any) -> bool:
+    """金额是否可解析（空值按 0 属合法；不可解析/NaN/Infinity 返回 False）。"""
+    if value is None:
+        return True
+    if isinstance(value, (int, float)):
+        return math.isfinite(float(value))
+    text = str(value).replace(",", "").strip()
+    if not text:
+        return True
+    try:
+        return math.isfinite(float(text))
+    except (TypeError, ValueError):
+        return False
+
+
+def recover_stale_runs(db: Session) -> int:
+    """把崩溃/重启后遗留的超时 running 记录置 failed，返回复位条数。"""
+    cutoff = datetime.now() - timedelta(seconds=STALE_RUN_SECONDS)
+    rows = (
+        db.query(ExpenseRun)
+        .filter(ExpenseRun.status == "running", ExpenseRun.created_at < cutoff)
+        .all()
+    )
+    for row in rows:
+        row.status = "failed"
+    if rows:
+        db.commit()
+    return len(rows)
+
+
+def _mark_run_failed(db: Session, run_id: int, elapsed: float) -> None:
+    """失败状态落库（先 rollback：原异常可能已让会话处于失败事务）。"""
+    try:
+        db.rollback()
+    except Exception:
+        logger.warning("费用运行 %s 失败回滚异常", run_id, exc_info=True)
+    try:
+        row = db.get(ExpenseRun, run_id)
+        if row is not None:
+            row.status = "failed"
+            row.duration_sec = round(elapsed, 3)
+        db.commit()
+    except Exception:
+        logger.warning("费用运行 %s 失败状态落库失败", run_id, exc_info=True)
 
 
 class EngineUnavailableError(RuntimeError):
@@ -167,9 +243,10 @@ def find_engine_dir() -> Path | None:
     """
     configured = (settings.finance_expense_engine_path or "").strip()
     if configured:
-        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root
+        # 支持目录或单一文件（文件取其父目录）——见 utils.resolve_engine_root；
+        # configured 已判非空，resolve_engine_root 此处不会返回 None。
         candidate = resolve_engine_root(configured)
-        return candidate if candidate and _is_engine_dir(candidate) else None
+        return candidate if _is_engine_dir(candidate) else None
     candidate = find_sibling_project("/".join(_ENGINE_RELATIVE.parts), Path(__file__))
     if candidate is None:
         return None
@@ -296,7 +373,8 @@ def _load_rules() -> dict:
 
 
 def run_to_dict(run: ExpenseRun) -> dict:
-    """运行记录转响应 dict。"""
+    """运行记录转响应 dict（含金额不可解析的告警）。"""
+    bad = int(getattr(run, "bad_amount_rows", 0) or 0)
     return {
         "id": run.id,
         "original_filename": run.original_filename,
@@ -304,6 +382,8 @@ def run_to_dict(run: ExpenseRun) -> dict:
         "matched_rows": run.matched_rows,
         "status": run.status,
         "duration_sec": run.duration_sec,
+        "bad_amount_rows": bad,
+        "warnings": [f"有 {bad} 行金额无法解析，已按 0 计入，请人工核对"] if bad else [],
         "artifact_path": run.artifact_path,
         "created_at": run.created_at,
     }
@@ -316,65 +396,75 @@ def classify_file(db: Session, original_filename: str, stored_path: Path) -> Exp
     路由层映射 400 并清理 inbox 上传），引擎不执行、不写运行记录、无半成品。
     失败时运行记录落库为 failed 并把中文错误抛给路由层（400）。
     引擎不可用抛 EngineUnavailableError（503），此时不写运行记录。
+    进程内执行互斥：已有分类任务运行时抛 RunBusyError（路由层 409）。
     """
-    _guard_import_rows(stored_path)
-    engine = _ensure_engine()
-    run = ExpenseRun(original_filename=original_filename[:300], status="running")
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-
-    started = time.perf_counter()
+    if not _EXEC_LOCK.acquire(blocking=False):
+        raise RunBusyError("费用分类正在执行中，请等待当前任务结束后再试")
     try:
-        clf = engine["classifier_cls"]()
-        header_row = _locate_bank_header_row(stored_path)
-        with _bank_header_override(engine, header_row):
-            if clf.read_bank_data(str(stored_path)) is None:
-                raise ValueError(_BANK_READ_FAIL_DETAIL)
-        if clf.integrate_data() is None:
-            raise ValueError("数据整合失败")
-        if clf.clean_data() is None:
-            raise ValueError("数据清洗失败")
-        classified = clf.classify_expenses()
-        if classified is None:
-            raise ValueError("费用分类执行失败")
-        if clf.summarize_expenses() is None:
-            raise ValueError("费用汇总计算失败")
-        out_name = f"run_{run.id}_费用分类结果.xlsx"
-        out_path = module_subdir("outbox") / out_name
-        if clf.export_results(str(out_path)) is None:
-            raise ValueError("结果报表导出失败")
-
-        rows: list[ExpenseRow] = []
-        matched = 0
-        for row_no, (_, record) in enumerate(classified.iterrows(), start=1):
-            category = str(record.get("费用类别") or "未分类")
-            hit = category != "未分类"
-            matched += int(hit)
-            rows.append(
-                ExpenseRow(
-                    run_id=run.id,
-                    row_no=row_no,
-                    summary=str(record.get("摘要") or "")[:500],
-                    amount=float(record.get("贷方本币") or 0),
-                    category=category[:50],
-                    hit=hit,
-                )
-            )
-        db.add_all(rows)
-        run.status = "success"
-        run.total_rows = len(rows)
-        run.matched_rows = matched
-        run.duration_sec = round(time.perf_counter() - started, 3)
-        run.artifact_path = f"{MODULE_NAME}/outbox/{out_name}"
+        recover_stale_runs(db)
+        _guard_import_rows(stored_path)
+        engine = _ensure_engine()
+        run = ExpenseRun(original_filename=original_filename[:300], status="running")
+        db.add(run)
         db.commit()
         db.refresh(run)
-        return run
-    except Exception:
-        run.status = "failed"
-        run.duration_sec = round(time.perf_counter() - started, 3)
-        db.commit()
-        raise
+
+        started = time.perf_counter()
+        try:
+            clf = engine["classifier_cls"]()
+            header_row = _locate_bank_header_row(stored_path)
+            with _bank_header_override(engine, header_row):
+                if clf.read_bank_data(str(stored_path)) is None:
+                    raise ValueError(_BANK_READ_FAIL_DETAIL)
+            if clf.integrate_data() is None:
+                raise ValueError("数据整合失败")
+            if clf.clean_data() is None:
+                raise ValueError("数据清洗失败")
+            classified = clf.classify_expenses()
+            if classified is None:
+                raise ValueError("费用分类执行失败")
+            if clf.summarize_expenses() is None:
+                raise ValueError("费用汇总计算失败")
+            out_name = f"run_{run.id}_费用分类结果.xlsx"
+            out_path = module_subdir("outbox") / out_name
+            if clf.export_results(str(out_path)) is None:
+                raise ValueError("结果报表导出失败")
+
+            rows: list[ExpenseRow] = []
+            matched = 0
+            bad_amounts = 0
+            for row_no, (_, record) in enumerate(classified.iterrows(), start=1):
+                category = str(record.get("费用类别") or "未分类")
+                hit = category != "未分类"
+                matched += int(hit)
+                raw_amount = record.get("贷方本币")
+                if not _amount_parseable(raw_amount):
+                    bad_amounts += 1
+                rows.append(
+                    ExpenseRow(
+                        run_id=run.id,
+                        row_no=row_no,
+                        summary=str(record.get("摘要") or "")[:500],
+                        amount=_safe_amount(raw_amount),
+                        category=category[:50],
+                        hit=hit,
+                    )
+                )
+            db.add_all(rows)
+            run.status = "success"
+            run.total_rows = len(rows)
+            run.matched_rows = matched
+            run.bad_amount_rows = bad_amounts
+            run.duration_sec = round(time.perf_counter() - started, 3)
+            run.artifact_path = f"{MODULE_NAME}/outbox/{out_name}"
+            db.commit()
+            db.refresh(run)
+            return run
+        except Exception:
+            _mark_run_failed(db, run.id, time.perf_counter() - started)
+            raise
+    finally:
+        _EXEC_LOCK.release()
 
 
 def list_runs(db: Session, page: int, page_size: int) -> dict:

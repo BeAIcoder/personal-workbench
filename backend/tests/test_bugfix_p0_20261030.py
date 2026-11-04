@@ -48,7 +48,7 @@ def test_tax_return_small_micro_uses_5pct(client):
     """50 人 / 100 万资产 / 100 万所得 → 小微 5%，落库 50,000。"""
     ent = _create_enterprise(client, "91110108P0TEST0001", employee_count=50, total_assets=100.0)
     r = client.post(f"{P}/tax-returns/", json={
-        "enterprise_id": ent["id"], "tax_period": "2026", "report_type": "A类",
+        "enterprise_id": ent["id"], "tax_period": "2026", "quarter": "Q1", "report_type": "A类",
         "total_revenue": 100, "total_costs": 0, "total_expenses": 0,
     })
     assert r.status_code in (200, 201), r.text
@@ -59,7 +59,7 @@ def test_tax_return_non_small_micro_has_no_10pct_bracket(client):
     """400 人 → 非小微；500 万所得必须按 25% = 1,250,000，而不是旧 10% = 500,000。"""
     ent = _create_enterprise(client, "91110108P0TEST0002", employee_count=400, total_assets=100.0)
     r = client.post(f"{P}/tax-returns/", json={
-        "enterprise_id": ent["id"], "tax_period": "2026", "report_type": "A类",
+        "enterprise_id": ent["id"], "tax_period": "2026", "quarter": "Q1", "report_type": "A类",
         "total_revenue": 500, "total_costs": 0, "total_expenses": 0,
     })
     assert r.status_code in (200, 201), r.text
@@ -76,7 +76,7 @@ def test_tax_return_missing_headcount_defaults_to_standard_rate(client):
     assert ent["employee_count"] is None and ent["total_assets"] is None
 
     r = client.post(f"{P}/tax-returns/", json={
-        "enterprise_id": ent["id"], "tax_period": "2026", "report_type": "A类",
+        "enterprise_id": ent["id"], "tax_period": "2026", "quarter": "Q1", "report_type": "A类",
         "total_revenue": 100, "total_costs": 0, "total_expenses": 0,
     })
     assert r.status_code in (200, 201), r.text

@@ -785,31 +785,41 @@ def save_provider(data: dict) -> dict:
             db.flush()
         else:
             prov.name = name
-        prov.protocol = str(data.get("protocol") or prov.protocol or "openai")[:20]
+        protocol = str(data.get("protocol") or prov.protocol or "openai").strip().lower()
+        if protocol not in ("openai", "anthropic"):
+            raise ValueError("供应商协议仅支持 openai / anthropic")
+        prov.protocol = protocol
         if data.get("base_url") is not None:
-            prov.base_url = str(data["base_url"]).strip().rstrip("/")[:300]
+            url = str(data["base_url"]).strip().rstrip("/")
+            if len(url) > 300:
+                raise ValueError("供应商地址过长（最多 300 字符）")
+            prov.base_url = validate_base_url(url) if url else ""
         if data.get("preset_key") is not None:
             prov.preset_key = str(data["preset_key"]).strip()[:50]
         if data.get("models_url") is not None:
-            url = str(data["models_url"]).strip().rstrip("/")[:300]
-            if url and not url.startswith(("http://", "https://")):
-                raise ValueError("模型列表地址仅允许 http(s)")
-            prov.models_url = url
+            url = str(data["models_url"]).strip().rstrip("/")
+            if len(url) > 300:
+                raise ValueError("模型列表地址过长（最多 300 字符）")
+            prov.models_url = validate_base_url(url) if url else ""
         key_in = str(data.get("api_key") or "").strip()
+        if len(key_in) > 300:
+            raise ValueError("API Key 过长（最多 300 字符），未保存")
         # 两种掩码形态均视为「未修改保留原值」：哨兵 ******** 与 GET 回显的 ••••••+后四位
         if key_in and key_in != MASK and not key_in.startswith(MASK_PREFIX):
-            prov.api_key = seal(key_in[:300])
+            prov.api_key = seal(key_in)
         # 管控凭证：与 api_key 同口径（空/掩码保留旧值），逐字段合并后整体重新密封
         ak_in = str(data.get("sync_access_key") or "").strip()
         sk_in = str(data.get("sync_secret_key") or "").strip()
+        if len(ak_in) > 300 or len(sk_in) > 300:
+            raise ValueError("管控凭证过长（每项最多 300 字符），未保存")
         if ak_in or sk_in:
             creds = _read_sync_credentials(prov.sync_credentials)
             changed = False
             if ak_in and ak_in != MASK and not ak_in.startswith(MASK_PREFIX):
-                creds["access_key"] = ak_in[:300]
+                creds["access_key"] = ak_in
                 changed = True
             if sk_in and sk_in != MASK and not sk_in.startswith(MASK_PREFIX):
-                creds["secret_key"] = sk_in[:300]
+                creds["secret_key"] = sk_in
                 changed = True
             if changed:
                 prov.sync_credentials = seal(json.dumps(creds, ensure_ascii=False))

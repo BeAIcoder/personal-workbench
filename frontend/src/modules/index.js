@@ -8,14 +8,64 @@
 //   }   // subgroup 可选：组内二级折叠子分组名（如「税务填报」）；缺省则直挂在分组下
 const files = import.meta.glob('./*/manifest.js', { eager: true })
 
-const manifests = []
+// 注册唯一性校验：缺 name / 重名 / 路由 path 冲突的模块跳过并告警，
+// 避免下个模块接入时静默消失或覆盖前一个（L-138）。
+export function dedupeManifests(list, warn = (message) => console.warn(`[modules] ${message}`)) {
+  const names = new Set()
+  const paths = new Set()
+  const routeNames = new Set()
+  const out = []
+  for (const manifest of list || []) {
+    if (!manifest || !manifest.name) {
+      warn('模块缺少 name，已跳过')
+      continue
+    }
+    if (names.has(manifest.name)) {
+      warn(`模块重名已跳过：${manifest.name}`)
+      continue
+    }
+    const conflict = (manifest.routes || []).map((r) => r.path).find((path) => path && paths.has(path))
+    if (conflict) {
+      warn(`模块 ${manifest.name} 的路由 ${conflict} 已被占用，已跳过`)
+      continue
+    }
+    const conflictName = (manifest.routes || [])
+      .map((r) => r.name)
+      .find((name) => name && routeNames.has(name))
+    if (conflictName) {
+      warn(`模块 ${manifest.name} 的路由名 ${conflictName} 已被占用，已跳过`)
+      continue
+    }
+    names.add(manifest.name)
+    for (const route of manifest.routes || []) {
+      if (route.path) paths.add(route.path)
+      if (route.name) routeNames.add(route.name)
+    }
+    out.push(manifest)
+  }
+  return out
+}
+
+const rawManifests = []
 
 for (const [path, mod] of Object.entries(files)) {
   const dir = path.split('/')[1]
   if (dir.startsWith('_')) continue
-  const manifest = mod.default
-  if (!manifest || !manifest.name) continue
-  manifests.push(manifest)
+  rawManifests.push(mod.default)
+}
+
+const manifests = dedupeManifests(rawManifests)
+
+// 侧栏分组顺序：与《使用说明》的菜单地图一致（调试组固定最后，避免 80 < 81 把职能挤到后面）
+const GROUP_ORDER = new Map([
+  ['财务', 10],
+  ['经营', 20],
+  ['职能', 30],
+  ['调试', 90],
+])
+
+export function groupRank(name) {
+  return GROUP_ORDER.get(name) ?? 100
 }
 
 // 全部模块路由（追加到静态路由之后、404 兜底之前）
@@ -54,4 +104,7 @@ export function getModuleMenuGroups() {
     }
   }
   return [...groups.values()]
+    .map((group, index) => ({ group, index }))
+    .sort((a, b) => groupRank(a.group.name) - groupRank(b.group.name) || a.index - b.index)
+    .map(({ group }) => group)
 }

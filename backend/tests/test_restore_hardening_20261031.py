@@ -127,7 +127,7 @@ def test_force_restore_keeps_full_snapshot(tmp_path):
 
     zpath = _make_zip(tmp_path, {"workbench.db": _good_db_bytes(tmp_path)})
     mod.restore(zpath, target, force=True)
-    snapshots = sorted(target.parent.glob("data.before_restore_*"))
+    snapshots = sorted(target.parent.glob("data2.before_restore_*"))
     assert snapshots
     prev = sqlite3.connect(snapshots[-1] / "workbench.db")
     assert prev.execute("SELECT x FROM t").fetchone()[0] == 7

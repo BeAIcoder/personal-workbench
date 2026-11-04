@@ -114,10 +114,10 @@ const batches = ref([])
 const fieldLabels = {
   date: '日期', ledger: '核算账簿', voucher_no: '凭证号', summary: '摘要',
   debit: '借方金额', credit: '贷方金额', voucher_full_no: '会计凭证号',
-  subject_code: '科目编码', subject_name: '科目名称',
+  subject_code: '科目编码', subject_name: '科目名称', subject: '科目（编码+名称）',
   opening_debit: '期初借方', opening_credit: '期初贷方',
-  current_debit: '本期借方', current_credit: '本期贷方',
-  ending_debit: '期末借方', ending_credit: '期末贷方',
+  period_debit: '本期借方', period_credit: '本期贷方',
+  closing_debit: '期末借方', closing_credit: '期末贷方',
 }
 
 const form = reactive({ file: null, file_type: '', period: '', mapping: {} })
