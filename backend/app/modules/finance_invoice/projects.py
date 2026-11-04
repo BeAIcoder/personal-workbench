@@ -2,7 +2,7 @@
 
 规则来源（运行时只读，不在本仓库复制任何真实名称）：
 - 引擎 ``ConfigManager`` 的 ``extraction.address_keywords``（地址/项目关键词）
-- ``extraction.address_force_mapping``（关键词 → 项目名的强制映射，如「脱敏单位 → 脱敏单位」）
+- ``extraction.address_force_mapping``（关键词 → 项目名的强制映射，如「示例道路 → 示例项目A」）
 
 归类优先级（高 → 低）：
 1. 引擎已给出的项目名本身是规则内项目名 → 原样保留；
@@ -65,7 +65,7 @@ def load_project_rules() -> list[ProjectRule]:
         seen.add(keyword)
         project = re.sub(r"\s+", "", str(mapping.get(keyword, keyword) or "")) or keyword
         rules.append(ProjectRule(keyword=keyword, project=project))
-    # 长词优先：避免「脱敏单位」被更短的包含词抢先命中
+    # 长词优先：避免「示例项目全称」被更短的包含词抢先命中
     rules.sort(key=lambda rule: len(rule.keyword), reverse=True)
     return rules
 

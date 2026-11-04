@@ -353,7 +353,7 @@ def _execute_run_locked(db: Session, run_id: int, project: str | None = None) ->
         run.log_tail = "\n".join(logs) + "\n" + stderr_text[-2000:]
         # 引擎项目识别/匹配失败时，把「需指定项目 + 可用项目名」并入 error/503 detail：
         # 前端据此弹窗补填项目名后带 ?project 重试（否则 UI 用户无法满足 --project 要求）。
-        # 可用项目名从引擎 stderr 的「项目汇总: 脱敏街区:2天 / 园城:0天 / 金阶:0天」行解析。
+        # 可用项目名从引擎 stderr 的「项目汇总: 示例项目A:2天 / 示例项目B:0天」行解析。
         if "识别项目" in stderr_text or "--project" in stderr_text or "未找到项目" in stderr_text:
             names = ""
             m = re.search(r"项目汇总[:：]\s*(.+)", stderr_text)
