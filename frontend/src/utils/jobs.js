@@ -2,8 +2,16 @@
 
 export const modeLabel = { standard: '标准执行', readonly: '只读咨询', deep: '深度研究' }
 
-export const runStatusLabel = { ok: '成功', error: '失败', skipped: '跳过', '': '未运行' }
-export const runStatusTag = { ok: 'success', error: 'danger', skipped: 'info', '': 'info' }
+export const runStatusLabel = { ok: '成功', error: '失败', skipped: '跳过', unknown: '结果未知', '': '未运行' }
+export const runStatusTag = { ok: 'success', error: 'danger', skipped: 'info', unknown: 'warning', '': 'info' }
+
+// 定时任务无人值守：标准/深度模式会执行写入类工具，保存前必须让用户明确知道
+export function modeWarning(mode) {
+  if (mode === 'standard' || mode === 'deep') {
+    return '定时任务无人值守：该模式会执行写入类工具，可能修改工作台数据，请确认后再保存。'
+  }
+  return ''
+}
 
 // 调度方式展示：interval「每 N 分钟」（整小时折算为小时），daily「每天 HH:MM」
 export function formatSchedule(job) {

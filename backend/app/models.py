@@ -268,8 +268,30 @@ class ScheduledJob(TimestampMixin, Base):
     last_status: Mapped[str] = mapped_column(String(10), default="")  # ok / error / skipped
     last_error: Mapped[str] = mapped_column(Text, default="")
     last_note_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # 最近运行记录（最多 20 条）：[{at, status, summary}]
+    # 运行占入标记：开始执行时写入本轮 run_id 与开始时间；正常结束/未知恢复时清空。
+    # 服务重启后据此识别「上一轮是否跑过但没留下结果」，不盲目重试有副作用的动作。
+    running_token: Mapped[str] = mapped_column(String(36), default="")
+    running_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 最近运行记录（最多 20 条）：[{at, status, summary, run_id?, duration_seconds?}]
     recent_runs: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class ScheduledJobRunFact(Base):
+    """定时任务运行事实（append-only）：run.started/finished/unknown/skipped。
+
+    事实是运行真相，ScheduledJob.recent_runs 是可重建投影；replay_recent_runs()
+    用另一套实现从事实重建投影，用于崩溃恢复、审计与回归 oracle。
+    """
+
+    __tablename__ = "scheduled_job_run_facts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(Integer, index=True)
+    run_id: Mapped[str] = mapped_column(String(36), index=True)
+    # run.started / run.finished / run.unknown / run.skipped
+    type: Mapped[str] = mapped_column(String(20), index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
 
 
 class McpServer(Base):

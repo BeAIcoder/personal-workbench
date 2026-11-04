@@ -306,7 +306,7 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 
 ## 定时任务 /api/jobs
 
-定时 Agent：到点自动按提示词执行一次助手对话，回复写成笔记（标题以「【定时任务】」开头，标签含「定时任务」）。调度器每 20 秒检查一次到期任务；同一任务串行执行（上次未结束则跳过）；LLM 未配置时本轮标记 `skipped`，不发请求。
+定时 Agent：到点自动按提示词执行一次助手对话，回复写成笔记（标题以「【定时任务】」开头，标签含「定时任务」）。调度器为**单定时器**：按最近到期时间唤醒，任务增删改/执行完成立即重算；同一任务串行执行（上次未结束则跳过）；LLM 未配置时本轮标记 `skipped`，不发请求。运行事实追加写入 `scheduled_job_run_facts`，`recent_runs` 是可重建投影；服务重启/超时导致未收尾时状态为 `unknown`，不自动重试。
 
 任务字段（ScheduledJob）：
 
@@ -316,43 +316,57 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 | `name` | string | 任务名称（必填，≤100 字） |
 | `prompt` | string | 到点执行的提示词（必填，≤5000 字） |
 | `agent_name` | string\|null | 指定专家标识；`null` = 智能路由 |
-| `mode` | string | 工作模式：`standard` / `readonly` / `deep` |
+| `mode` | string | 工作模式：`readonly` / `standard` / `deep`；**新建默认 `readonly`**，历史行保留原值 |
 | `schedule_type` | string | 调度方式：`interval` / `daily` / `cron` |
 | `interval_minutes` | int\|null | 间隔分钟（`interval` 必填，5~10080） |
 | `daily_at` | string\|null | 每天执行时间 HH:MM（`daily` 必填） |
 | `enabled` | bool | 是否启用 |
 | `last_run_at` | datetime\|null | 最近一次执行时间 |
-| `last_status` | string | 最近一次状态：`ok` / `error` / `skipped` / 空（未运行） |
-| `last_error` | string | 最近一次错误摘要 |
+| `last_status` | string | 最近一次状态：`ok` / `error` / `skipped` / `unknown` / 空（未运行） |
+| `last_error` | string | 最近一次错误/未知摘要 |
 | `last_note_id` | int\|null | 最近一次结果笔记 id |
-| `recent_runs` | array | 最近 20 条运行记录，元素 `{at, status, summary}` |
+| `running_token` / `running_since` | string\|null / datetime\|null | **内部占入字段**（运行开始时写入、结束/未知恢复时清空；不在列表响应中返回） |
+| `recent_runs` | array | 最近 20 条运行投影，元素 `{at, status, summary, run_id, duration_seconds}`（升级前旧条目可能没有后两项） |
 | `created_at` / `updated_at` | datetime | 创建 / 更新时间 |
 
 ### GET /api/jobs
 全部任务列表（按 id 升序）：`[ { ...ScheduledJob } ]`
 
 ### POST /api/jobs（返回 201）
-创建任务。`schedule_type=interval` 必须带 `interval_minutes`（5~10080）；`daily` 必须带 `daily_at`（HH:MM）。缺字段或格式错误返回 422。
+创建任务。`schedule_type=interval` 必须带 `interval_minutes`（5~10080）；`daily` 必须带 `daily_at`（HH:MM）。缺字段或格式错误返回 422。未传 `mode` 时默认 `readonly`。
 ```json
 {
   "name": "每周税务自查", "prompt": "检查未来 7 天到期任务并汇总成清单",
-  "agent_name": null, "mode": "standard",
+  "agent_name": null, "mode": "readonly",
   "schedule_type": "interval", "interval_minutes": 10080, "enabled": true
 }
 ```
 
 ### PUT /api/jobs/{id}
-部分更新：只传需要修改的字段；不存在返回 404；调度参数不一致（interval 未带 interval_minutes / daily 未带 daily_at）返回 422。
+部分更新：只传需要修改的字段；不存在返回 404；调度参数不一致（interval 未带 interval_minutes / daily 未带 daily_at）返回 422。更新后立即唤醒调度器重算。
 
 ### DELETE /api/jobs/{id}（返回 204）
-删除任务，不存在返回 404。
+删除任务及其运行事实，不存在返回 404。
 
 ### POST /api/jobs/{id}/run
 立即执行一次（不影响下次到点触发），不存在返回 404。
 ```json
 { "status": "ok", "summary": "……（回复摘要，最长 200 字）", "note_id": 12 }
 ```
-- `status`：`ok`（成功，`note_id` 为结果笔记 id）/ `skipped`（模型未配置，或上一次尚未结束）/ `error`（`summary` 为错误摘要，同时记入任务 `last_error`）。
+- `status`：`ok`（成功，`note_id` 为结果笔记 id）/ `skipped`（模型未配置，或上一次尚未结束）/ `error`（`summary` 为错误摘要，同时记入任务 `last_error`）/ `unknown`（Agent 超时，可能已产生部分副作用，不自动重试；人工核实后手动补跑）。
+
+### GET /api/jobs/{id}/runs
+运行时间线：从运行事实重放得到，并与 `recent_runs` 投影核对。
+```json
+{
+  "job_id": 1,
+  "timeline": [{"at": "2026-11-04 10:30", "status": "ok", "summary": "……", "run_id": "…", "duration_seconds": 12.3}],
+  "replay_ok": true,
+  "mismatch": null
+}
+```
+- `limit`：1~200，默认 50。
+- `replay_ok=false` 时 `mismatch` 返回重放结果，页面会提示投影不一致；事实每任务最多保留 500 条，超出裁剪最旧。
 
 ## 知识与记忆 /api/knowledge
 
@@ -520,7 +534,7 @@ name 重复或必填缺失返回 400。
 - 定时任务（`POST /api/jobs`）新增字段：`cron_expr`（schedule_type=cron 时必填，五段表达式）、`action`（模块动作名，空 = Agent 对话任务）
 - 调度语义：cron 同自然分钟不重复触发；模块动作任务走线程池执行、不写笔记
 
-> 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按AssetLib相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级；入仓取数阶段即受 200,000 行上限约束，超限返回 400，不会先全量组装数据。
+> 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按示例主体22相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级；入仓取数阶段即受 200,000 行上限约束，超限返回 400，不会先全量组装数据。
 
 ## 调试中心 /api/debug（v1.16.0）
 
@@ -1038,6 +1052,7 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `PUT` | `/api/jobs/{job_id}` | 更新定时任务（仅传需要修改的字段） |
 | `DELETE` | `/api/jobs/{job_id}` | 删除定时任务 |
 | `POST` | `/api/jobs/{job_id}/run` | 立即执行一次（不影响下次到点触发） |
+| `GET` | `/api/jobs/{job_id}/runs` | 定时任务运行时间线（事实重放 + 投影核对） |
 | `GET` | `/api/knowledge/memories` | 记忆列表（关键词/类型过滤，置顶优先） |
 | `POST` | `/api/knowledge/memories` | 新建记忆 |
 | `GET` | `/api/knowledge/memories/export.md` | 导出记忆为 MEMORY.md 风格 Markdown |

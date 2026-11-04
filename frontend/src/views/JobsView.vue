@@ -33,7 +33,17 @@
       <el-table-column label="最近运行" width="170">
         <template #default="{ row }">
           <span>{{ fmtDT(row.last_run_at) }}</span>
-          <el-tag :type="runStatusTag[row.last_status]" size="small" effect="plain" style="margin-left: 6px">
+          <el-tooltip
+            v-if="row.last_status === 'unknown'"
+            :content="UNKNOWN_HINT"
+            placement="top"
+            :show-after="300"
+          >
+            <el-tag type="warning" size="small" effect="plain" style="margin-left: 6px">
+              {{ runStatusLabel.unknown }}
+            </el-tag>
+          </el-tooltip>
+          <el-tag v-else :type="runStatusTag[row.last_status]" size="small" effect="plain" style="margin-left: 6px">
             {{ runStatusLabel[row.last_status] || row.last_status }}
           </el-tag>
         </template>
@@ -46,10 +56,11 @@
           <span v-else class="text-muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="success" plain :loading="runningId === row.id" @click="runNow(row)">立即运行</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button size="small" link type="primary" @click="openRuns(row)">记录</el-button>
           <el-button size="small" type="danger" plain @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -80,10 +91,18 @@
         </el-form-item>
         <el-form-item label="工作模式">
           <el-select v-model="form.mode" style="width: 100%">
-            <el-option label="标准执行" value="standard" />
             <el-option label="只读咨询" value="readonly" />
+            <el-option label="标准执行" value="standard" />
             <el-option label="深度研究" value="deep" />
           </el-select>
+          <el-alert
+            v-if="modeWarning(form.mode)"
+            :title="modeWarning(form.mode)"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mode-warning"
+          />
         </el-form-item>
         <el-form-item label="模块动作">
           <el-select v-model="form.action" placeholder="Agent 对话任务（不使用模块动作）" clearable style="width: 100%" @change="onActionChange">
@@ -124,6 +143,34 @@
         <el-button type="primary" :loading="dialog.saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-drawer v-model="runsDrawer.visible" :title="`运行记录：${runsDrawer.jobName}`" size="560px">
+      <div v-if="runsDrawer.loading" v-loading="true" class="runs-loading"></div>
+      <template v-else>
+        <el-alert
+          v-if="!runsDrawer.replayOk"
+          title="事实重放与运行投影不一致"
+          description="运行记录由事实日志重放得到，与页面投影存在差异；请把该任务的记录反馈给开发者核对。"
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 12px"
+        />
+        <el-table v-if="runsDrawer.timeline.length" :data="runsDrawer.timeline" size="small" stripe>
+          <el-table-column prop="at" label="时间" width="130" />
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">
+              <el-tag :type="runStatusTag[row.status]" size="small" effect="plain">
+                {{ runStatusLabel[row.status] || row.status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="summary" label="摘要" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="duration_seconds" label="耗时(s)" width="80" />
+        </el-table>
+        <el-empty v-else description="暂无运行记录" :image-size="60" />
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -132,13 +179,15 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { jobApi, assistantApi } from '../api'
 import { fmtDT, snippet } from '../utils/format'
-import { agentLabel, agentOptionLabel, formatSchedule, runStatusLabel, runStatusTag } from '../utils/jobs'
+import { agentLabel, agentOptionLabel, formatSchedule, modeWarning, runStatusLabel, runStatusTag } from '../utils/jobs'
 
 const rows = ref([])
 const agents = ref([])
 const actions = ref([])
 const loading = ref(false)
 const runningId = ref(null)
+const UNKNOWN_HINT = '服务重启/超时导致上一轮结果不确定；系统未自动重试，请核实外部副作用后手动补跑。'
+const runsDrawer = reactive({ visible: false, loading: false, jobName: '', timeline: [], replayOk: true })
 
 const ACTION_LABELS = { 'finance_board.run': '刷新报表看板' }
 const actionLabel = (a) => ACTION_LABELS[a] || a
@@ -154,7 +203,7 @@ const form = reactive({
   name: '',
   prompt: '',
   agent_name: null,
-  mode: 'standard',
+  mode: 'readonly',
   schedule_type: 'interval',
   interval_minutes: 60,
   daily_at: '09:00',
@@ -225,7 +274,7 @@ function resetForm() {
     name: '',
     prompt: '',
     agent_name: null,
-    mode: 'standard',
+    mode: 'readonly',
     schedule_type: 'interval',
     interval_minutes: 60,
     daily_at: '09:00',
@@ -318,12 +367,30 @@ async function runNow(row) {
     const { data } = await jobApi.runNow(row.id)
     if (data.status === 'ok') ElMessage.success('已完成，结果已写入笔记')
     else if (data.status === 'skipped') ElMessage.warning(data.summary || '已跳过本次执行')
+    else if (data.status === 'unknown') ElMessage.warning(data.summary || '结果未知，请核实后手动补跑')
     else ElMessage.error(data.summary || '执行失败')
     load()
   } catch {
     // 拦截器已提示（超时/网络异常）；吞掉 rejection 避免未捕获异常
   } finally {
     runningId.value = null
+  }
+}
+
+async function openRuns(row) {
+  runsDrawer.visible = true
+  runsDrawer.loading = true
+  runsDrawer.jobName = row.name
+  runsDrawer.timeline = []
+  runsDrawer.replayOk = true
+  try {
+    const { data } = await jobApi.runs(row.id)
+    runsDrawer.timeline = data.timeline || []
+    runsDrawer.replayOk = data.replay_ok !== false
+  } catch {
+    // 拦截器已提示；保留空列表
+  } finally {
+    runsDrawer.loading = false
   }
 }
 
@@ -391,5 +458,13 @@ onMounted(() => {
   color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.mode-warning {
+  margin-top: 8px;
+}
+
+.runs-loading {
+  height: 120px;
 }
 </style>

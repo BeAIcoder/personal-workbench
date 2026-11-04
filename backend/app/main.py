@@ -39,7 +39,12 @@ from .routers import (
     workbuddy,
 )
 from .seed import seed_agent_specs, seed_if_empty
-from .scheduler import normalize_legacy_jobs, scheduler_loop, shutdown as scheduler_shutdown
+from .scheduler import (
+    normalize_legacy_jobs,
+    recover_interrupted_runs,
+    scheduler_loop,
+    shutdown as scheduler_shutdown,
+)
 from .upload import UploadTooLargeError
 
 logger = logging.getLogger(__name__)
@@ -84,6 +89,13 @@ async def lifespan(_: FastAPI):
     if settings.seed_on_startup:
         with SessionLocal() as db:
             seed_if_empty(db)
+    # 上次进程退出时仍在执行的定时任务：标为 unknown（结果未知），不自动重试。
+    try:
+        recovered = recover_interrupted_runs()
+        if recovered:
+            logger.warning("定时任务中断恢复：%d 轮标记为 unknown（未自动重试）", recovered)
+    except Exception:
+        logger.warning("定时任务中断恢复跳过（不影响启动）", exc_info=True)
     # 安全提示：本应用面向本机单人使用设计，监听非回环地址会把 API Key 明文接口与
     # 技能/插件/Bash 执行面暴露给局域网，仅在你明确知晓风险时使用
     if settings.host not in ("127.0.0.1", "localhost", "::1"):
@@ -154,6 +166,8 @@ def _ensure_sqlite_columns() -> None:
         "scheduled_jobs": {
             "cron_expr": "TEXT DEFAULT ''",
             "action": "TEXT DEFAULT ''",
+            "running_token": "TEXT DEFAULT ''",
+            "running_since": "DATETIME",
         },
         "model_providers": {
             "preset_key": "TEXT DEFAULT ''",

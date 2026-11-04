@@ -205,7 +205,8 @@ def test_readonly_agent_has_query_tools_only(client):
         agent = asyncio.run(orchestrator._build_agent(TEAM["it_finance"], "readonly"))
         schemas = asyncio.run(agent.toolkit.get_tool_schemas())
         names = {s["function"]["name"] for s in schemas}
-        assert names and names <= set(QUERY_TOOLS)
+        # read_context 是只读资料工具，2026-11-04 起自动补进所有专家
+        assert names and names <= (set(QUERY_TOOLS) | {"read_context"})
         assert "create_task" not in names
 
         agent_full = asyncio.run(orchestrator._build_agent(TEAM["it_finance"], "standard"))

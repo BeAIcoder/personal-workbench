@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentLabel, agentOptionLabel, formatSchedule, modeLabel, runStatusLabel, runStatusTag } from '../src/utils/jobs'
+import { agentLabel, agentOptionLabel, formatSchedule, modeLabel, modeWarning, runStatusLabel, runStatusTag } from '../src/utils/jobs'
 
 describe('调度方式展示', () => {
   it('interval：分钟与整小时折算', () => {
@@ -51,5 +51,14 @@ describe('模式与运行状态映射', () => {
     expect(runStatusTag.error).toBe('danger')
     expect(runStatusTag.skipped).toBe('info')
     expect(runStatusLabel['']).toBe('未运行')
+  })
+  it('unknown 状态：warning + 中文「结果未知」', () => {
+    expect(runStatusTag.unknown).toBe('warning')
+    expect(runStatusLabel.unknown).toBe('结果未知')
+  })
+  it('标准/深度模式提示写入风险，只读模式不提示', () => {
+    expect(modeWarning('readonly')).toBe('')
+    expect(modeWarning('standard')).toContain('会执行写入类工具')
+    expect(modeWarning('deep')).toContain('会执行写入类工具')
   })
 })

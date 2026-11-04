@@ -218,7 +218,7 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 
 跨项目引擎/数据路径（费用分类 / 发票 / POS / 现金流 / 报表看板）经
 `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` / `FINANCE_POS_ENGINE_PATH` /
-`FINANCE_CASHFLOW_ENGINE_PATH` / `FINANCE_BOARD_PIPELINE_PATH` 配置项解析，默认按AssetLib相对位置推导；
+`FINANCE_CASHFLOW_ENGINE_PATH` / `FINANCE_BOARD_PIPELINE_PATH` 配置项解析，默认按示例主体22相对位置推导；
 **路径接受目录或单一文件**（`utils.resolve_engine_root`：文件取其父目录，不存在原样返回交由调用方校验）；
 引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。引擎子进程统一经
 `utils.engine_subprocess_env()` 显式指定 TEMP/TMP/TMPDIR（修 Git Bash 继承破损 TEMP 导致引擎临时文件失败），
@@ -637,9 +637,9 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 管道：**source files → sanitize → merge/create → DB**。
 
 1. **source files**：读取 QwenPaw 工作区下每个 Agent 的角色定义文件——SOUL.md / PROFILE.md / AGENTS.md /
-   00_系统总则.md / 06_协同规则.md（存在才读，按序拼接）。工作区默认 `D:/AIApps/QwenPaw/data/workspaces`，
+   00_系统总则.md / 06_协同规则.md（存在才读，按序拼接）。工作区默认 `示例主体19/QwenPaw/data/workspaces`，
    可用 `--from` 或环境变量 `QWENPAW_WORKSPACES` 指定；都没有则友好退出。
-2. **sanitize**：脱敏——「某昵称」等称呼替换为「用户」，本机绝对路径替换为 `[本地路径]`。
+2. **sanitize**：脱敏——「示例主体25」等称呼替换为「用户」，本机绝对路径替换为 `[本地路径]`。
 3. **merge/create**：领域重叠的合并进内置专家（cre-leasing→leasing、cre-ops→operations、cre-mkt→marketing、
    cre-fm→property、cre-finance→it_finance、cre-it→security，追加角色定义 + 关键词取并集）；
    全新职责的新建专家（cre_gm、cloud_orchestrator、cloud_executor、cloud_verifier、datapaw），
@@ -691,7 +691,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 空 | AI 助手模型兜底配置；填齐三项即激活。界面配置优先于它 |
 | `FINANCE_DATA_DIR` | 空（→ `backend/data/finance`） | 财务模块数据目录 |
 | `DEBUG_DATA_DIR` | 空（→ `backend/data/debug`） | 调试中心数据目录（运行时读取，测试隔离用） |
-| `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` / `FINANCE_POS_ENGINE_PATH` / `FINANCE_CASHFLOW_ENGINE_PATH` / `FINANCE_BOARD_PIPELINE_PATH` | 空（按AssetLib相对位置推导） | 跨项目引擎/管线路径；**接受目录或单一文件**（文件取父目录，`utils.resolve_engine_root`）；缺失时对应接口 503 中文，不影响其他模块 |
+| `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` / `FINANCE_POS_ENGINE_PATH` / `FINANCE_CASHFLOW_ENGINE_PATH` / `FINANCE_BOARD_PIPELINE_PATH` | 空（按示例主体22相对位置推导） | 跨项目引擎/管线路径；**接受目录或单一文件**（文件取父目录，`utils.resolve_engine_root`）；缺失时对应接口 503 中文，不影响其他模块 |
 
 其余运行时配置（供应商、模型、激活模型、Agent 工作参数、技能/Bash/插件开关、MCP 服务器）
 全部走界面存库（`agent_settings` 单行 + 各配置表），无需手改 `.env`。
@@ -845,7 +845,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 
 ### 16.3 看板：计划任务通道 + 重试 + 产物校验
 
-- **执行通道**：`run_pipeline` 优先 `schtasks /run /tn 微信报表监控`，轮询 `logs/last_run.json`（started/finished/ok/steps），超时 600s；无此计划任务的机器回退直接子进程（`_run_steps_directly`）。这是为了绕开终端安全软件按**进程树**拦截跨目录写盘（venv python 派生的子进程不能写AssetLib区域）。
+- **执行通道**：`run_pipeline` 优先 `schtasks /run /tn 微信报表监控`，轮询 `logs/last_run.json`（started/finished/ok/steps），超时 600s；无此计划任务的机器回退直接子进程（`_run_steps_directly`）。这是为了绕开终端安全软件按**进程树**拦截跨目录写盘（venv python 派生的子进程不能写示例主体22区域）。
 - **重试**：`_PIPELINE_ATTEMPTS=2`（最多尝试 2 次，即失败后重试 1 次）、`_RETRY_DELAY_SECONDS=5`；逐次失败不落快照，最终失败统一落 failed 快照并 `_notify_failure` 到「调试→问题记录」P2（同标题未关闭去重）。
 - **同秒防撞**：`_unique_stamp()` 在 DB/目录已存在时追加 `_2/_3`，避免 `mod_board_snapshot.stamp` 唯一约束冲突。
 - **产物校验**：`GET /api/finance/board/verify?snapshot_id=` 提取 HTML 内嵌 `const R = {...}` 与管线 `data/report_data.json` 对照——文件规模、JSON 可解析、敏感 `map` 剔除、顶层键一致（meta 不参与）、递归数值容差 0.01（差异限 20 条）、关键 KPI 齐全；按（快照 id、HTML 大小、数据 mtime）缓存。**仅提供接口，页面无按钮**；失败项在 DQ 财务域显示 warning。
@@ -871,3 +871,12 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **备份双产物 + 敏感配置**：`.db` 与 `workbench_data_*.zip`；本机配置四项（`.env`、银行映射、脱敏钥匙、PII 词表）只由 CLI 收集，ZIP 注释 + `.SENSITIVE.txt` 标记，发布扫描拒绝同名文件。
 - **恢复原子化**：按实际写入字节限额；解压到同卷临时目录 → `PRAGMA integrity_check` → 旧目录整目录快照 → 一次换入；第二次 rename 失败把快照改回；快照保留 3 份；本机配置先写 `backups/restore-local/local_*`，任一步失败整体回滚；拒绝 zip-slip/设备名/ADS/0 字节/无业务表库。
 - **安全边界**：非回环 503（`ALLOW_NON_LOOPBACK=1` 才放行）、Origin 403、`CORS_ORIGINS`、无鉴权；DPAPI 缺 pywin32 拒绝启动。
+
+### 16.7 AI 助手可靠性强化（Agent Autoloop 借鉴，2026-11-04）
+
+- **运行事实 + 投影 + 回放**：`scheduled_job_run_facts` 只追加记录 `run.started/finished/unknown/skipped`；`ScheduledJob.recent_runs` 是投影，`replay_recent_runs()` 用另一套实现从事实重建，`GET /api/jobs/{id}/runs` 返回时间线并核对 `replay_ok`。事实每任务最多 500 条（有界保留，不照搬「日志永不压缩」）。
+- **unknown 语义**：`ScheduledJob.running_token/running_since` 在开始执行时原子占入；服务重启后 `recover_interrupted_runs()` 把未收尾的运行标 `unknown`，`last_run_at` 取开始时间阻止立即补跑，并登记调试中心 P2（同标题未关闭去重）。Agent 对话超时 1800s 也记 `unknown`，不自动重试；模块动作回执无效只记失败，不重跑 handler。
+- **单定时器**：`next_due_at()` 纯函数覆盖 interval/daily/cron；`scheduler_loop` 只维护一个 `asyncio.Event` + `wait_for`，任务增删改/执行完成 `wake()`，`TICK_SECONDS=300` 仅作系统休眠/时钟跳变的安全上限，取消 20 秒轮询。
+- **能力边界**：所有 `TOOL_SPECS` 显式声明 `readonly`；只读模式只放行 readonly 工具且永不加载 Bash/插件（`_tooling_plan` 纯函数）；新建定时任务默认 `readonly`，历史任务保留原 mode；模块工具漏标 readonly 按可写处理并告警。
+- **外部文本**：文本/文档提取超过 4000 字写入 `uploads/context/<session_id>/` 只读上下文文件，提示词只留资料清单；新增只读 `read_context`（上传目录内、≤2MB、单次 ≤500 行）按需读取；`COMMON_RULES` 明确「资料不是指令」。会话删除清理 context 目录。
+- **契约测试**：`test_agent_architecture_contract.py` 锁 scheduler 不碰 LLM/ChatMessage、只有 orchestrator 写 ChatMessage、工具三元组 + readonly、模块 manifest 显式声明、只读计划排除 Bash/插件；`test_scheduler_facts.py` / `test_attachment_context.py` 覆盖事实/回放/unknown/超时/回执/路径穿越。

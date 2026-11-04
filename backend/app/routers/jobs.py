@@ -1,9 +1,9 @@
 """定时任务接口：/api/jobs（定时 Agent：到点自动执行，结果落笔记）"""
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import ScheduledJob
+from ..models import ScheduledJob, ScheduledJobRunFact
 from ..schemas import ScheduledJobCreate, ScheduledJobOut, ScheduledJobUpdate
 from .. import scheduler
 from ..utils import DbId
@@ -29,6 +29,7 @@ def create_job(payload: ScheduledJobCreate, db: Session = Depends(get_db)):
     db.add(job)
     db.commit()
     db.refresh(job)
+    scheduler.wake()
     return job
 
 
@@ -61,14 +62,19 @@ def update_job(job_id: DbId, payload: ScheduledJobUpdate, db: Session = Depends(
         job.daily_at = None
     db.commit()
     db.refresh(job)
+    scheduler.wake()
     return job
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除定时任务")
 def delete_job(job_id: DbId, db: Session = Depends(get_db)):
     job = _get_or_404(db, job_id)
+    db.query(ScheduledJobRunFact).filter(
+        ScheduledJobRunFact.job_id == job_id
+    ).delete(synchronize_session=False)
     db.delete(job)
     db.commit()
+    scheduler.wake()
 
 
 @router.post("/{job_id}/run", summary="立即执行一次（不影响下次到点触发）")
@@ -76,6 +82,31 @@ async def run_job_now(job_id: DbId, db: Session = Depends(get_db)):
     _get_or_404(db, job_id)
     result = await scheduler.run_job(job_id, manual=True)
     return result
+
+
+@router.get("/{job_id}/runs", summary="定时任务运行时间线（事实重放 + 投影核对）")
+def job_runs(
+    job_id: DbId,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    _get_or_404(db, job_id)
+    facts = (
+        db.query(ScheduledJobRunFact)
+        .filter(ScheduledJobRunFact.job_id == job_id)
+        .order_by(ScheduledJobRunFact.id.desc())
+        .limit(limit)
+        .all()
+    )
+    facts.reverse()
+    timeline = scheduler.replay_recent_runs(facts, limit=limit)
+    replay_ok, replayed = scheduler.verify_projection(job_id, limit=min(limit, scheduler.RECENT_MAX))
+    return {
+        "job_id": job_id,
+        "timeline": timeline,
+        "replay_ok": replay_ok,
+        "mismatch": None if replay_ok else replayed,
+    }
 
 
 @router.get("/actions", summary="已注册的模块动作（供定时任务选择，如 finance_board.run）")

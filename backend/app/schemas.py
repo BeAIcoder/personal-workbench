@@ -338,7 +338,7 @@ class ScheduledJobBase(BaseModel):
     name: str = Field(min_length=1, max_length=100, description="任务名称")
     prompt: str = Field("", max_length=5000, description="到点执行的提示词（模块动作任务可空）")
     agent_name: Optional[str] = Field(None, max_length=50, description="指定专家 name；null 智能路由")
-    mode: str = Field("standard", description="工作模式：standard / readonly / deep")
+    mode: str = Field("readonly", description="工作模式：readonly / standard / deep（新建默认只读）")
     schedule_type: Literal["interval", "daily", "cron"] = Field("interval", description="interval / daily / cron")
     interval_minutes: Optional[int] = Field(None, ge=5, le=10080, description="间隔分钟（interval）")
     daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="每天执行时间 HH:MM（daily）")

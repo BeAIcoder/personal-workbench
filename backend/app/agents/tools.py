@@ -420,17 +420,28 @@ TOOL_SPECS: dict[str, dict] = {
     },
 }
 
+# 能力边界：每个内置工具显式标注是否只读；新增工具若忘记声明，默认按可写处理（安全侧）。
+_READONLY_BUILTIN_TOOLS = {
+    "query_tasks", "query_schedules", "search_notes", "workbench_stats",
+}
+for _tool_name, _tool_spec in TOOL_SPECS.items():
+    _tool_spec["readonly"] = _tool_name in _READONLY_BUILTIN_TOOLS
+
 
 def register_module_tools(specs: dict) -> None:
     """把模块注册的工具并入 TOOL_SPECS（Module Registry 注册器调用）。
 
     与内置工具重名时不覆盖、记日志跳过；spec 结构与内置 TOOL_SPECS 同构，
     另带 readonly 标记（True 表示只读工具，供只读模式放行判断）。
+    模块漏标 readonly 时按可写处理并告警，绝不因漏标而把写工具放进口袋。
     """
     for name, spec in (specs or {}).items():
         if name in TOOL_SPECS:
             logger.warning("模块工具 %s 与已注册工具重名，跳过注册", name)
             continue
+        if "readonly" not in spec:
+            logger.warning("模块工具 %s 未声明 readonly，已按可写工具处理", name)
+            spec = {**spec, "readonly": False}
         TOOL_SPECS[name] = spec
         logger.info("模块工具已注册：%s", name)
 
@@ -514,5 +525,30 @@ TOOL_SPECS["recall_memories"] = {
         "top_k": ("integer", "返回条数，默认5", False),
     },
     "required": ["query"],
+    "readonly": True,
+}
+
+
+def read_context(path: str, offset: int = 0, limit: int = 200) -> dict:
+    """按行读取附件上下文文件（只读；路径限定在上传目录内）。"""
+    from ..context_files import read_context_file
+
+    try:
+        result = read_context_file(path, offset=offset, limit=limit)
+    except Exception as exc:
+        result = {"ok": False, "error": f"读取资料文件失败：{exc}"}
+    _record("read_context", {"path": path, "offset": offset, "limit": limit}, result)
+    return result
+
+
+TOOL_SPECS["read_context"] = {
+    "func": read_context,
+    "description": "按行读取附件资料文件（大段外部文本已转为只读上下文文件时使用；路径必须是资料清单里给出的路径）",
+    "params": {
+        "path": ("string", "资料文件路径（提示词资料清单中的完整路径）", True),
+        "offset": ("integer", "起始行号，默认0", False),
+        "limit": ("integer", "最多返回行数，默认200，上限500", False),
+    },
+    "required": ["path"],
     "readonly": True,
 }

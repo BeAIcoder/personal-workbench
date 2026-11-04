@@ -270,3 +270,27 @@ def test_cron_job_validation(client):
 async def _run(job_id):
     from app.scheduler import run_job
     return await run_job(job_id)
+
+
+def test_job_runs_endpoint_and_default_readonly(client, monkeypatch):
+    import asyncio
+
+    from app import scheduler
+
+    async def fake_chat(**kwargs):
+        return {"ok": True, "reply": "运行结果", "agent": {"name": "realestate", "label": "商业地产管家"}}
+
+    monkeypatch.setattr(scheduler, "llm_status", lambda: {"configured": True})
+    monkeypatch.setattr(scheduler.orchestrator, "chat", fake_chat)
+    created = client.post("/api/jobs", json=_payload(name="默认只读"))
+    assert created.status_code == 201
+    job = created.json()
+    assert job["mode"] == "readonly"  # 新建默认安全；历史行不改
+
+    assert asyncio.run(_run(job["id"]))["status"] == "ok"
+    runs = client.get(f"/api/jobs/{job['id']}/runs").json()
+    assert runs["job_id"] == job["id"]
+    assert runs["replay_ok"] is True
+    assert runs["mismatch"] is None
+    assert runs["timeline"][0]["status"] == "ok"
+    assert runs["timeline"][0]["run_id"]
