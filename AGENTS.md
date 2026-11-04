@@ -419,3 +419,13 @@ Personal Workbench 个人财税自动化工作台（FastAPI + SQLAlchemy + SQLit
 - **E2E 探针（未全绿）**：17 个可独立功能探针 + `perf_probe --quick`；首轮 656 断言/26 失败，看板隔离重跑 46/46、skills-experts 修复后 51/51，剩 **13 条**未回改；`business-closed-loop`/`business-gm` 依赖其他 SDD 计划 `server.log` 未运行。`perf_probe --quick` 18 API 全 200、0 失败。
 - **git**：254 条 = 190 M / 60 ?? / 4 D；用户原有 17 条基线全部保留；4 D 为 L-066 死代码；60 ?? 为交付物。未 commit/push。
 - **外部阻断**：完整打包（脏工作区/未提交，bankflow 未跟踪）、CI 首跑 GCM、L-156 历史路径、真实 LLM/BIP/局域网/读屏、L-170 真实 Key；C1 外部任务潜在写入待用户检查。证据见 `2026-11-03_检查结果.md` §7 与 `task-11-report.md`。
+
+## 自动销项与本地历史重写（2026-11-04）
+
+- L-034 摘要失败退避（10 分钟进程内）与 L-035 原子会话占用已关闭；回归 `test_summary_failure_backoff_avoids_repeated_model_calls`、`test_begin_session_run_is_atomic_and_releasable`。
+- 17 个可独立 E2E 探针已全部 0 失败；2 个依赖外部 SDD `server.log` 的业务探针仍未独立运行。
+- 台账：132 已关闭 / 1 已知限制（L-028）/ 1 外部验证（L-170）/ 1 CI 首跑外阻（L-151）/ 3 外部阻断（L-056/L-068/L-156），共 138。
+- 本地历史已用 `git filter-repo` 按映射表做 UTF-8/GB18030 替换，HEAD `5e08c6b`；1873 blobs / 42 patterns / 0 hits。镜像备份 `backups/history-mirror-20261104*.git`。未 push。
+- 分发包 `backups/releases/个人工作台-v1.16.1-20261104.zip`，527 文件/2.38 MB，sha256 `d14ef14dd312bea45e1bfed2b9f31fa4caf1d290c3579d68e8b123e91bae8129`，`/`、`/docs`、新库冒烟通过。
+- **安全事件**：批量 PII 脚本误改过 `dev/sanitize-map.local.json` 和 `dev/pii-terms.local.txt`，已按仓库上下文重建（24 mappings / 12 terms），但不是原钥匙；有离线备份时必须核对恢复。未进入分发包，不影响 git 历史扫描的 0 hits 结果。
+- 真实 `backend/data` 当前 736 文件；相对 Task0 新增 0/删除 0/变更 4（DB/WAL/SHM/debug 日志），归因运行中服务，不宣称零 mismatch。
