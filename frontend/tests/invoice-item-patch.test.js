@@ -2,6 +2,7 @@
 // 旧实现一次提交 project_name+remark 两个字段且无序号：先编辑项目、再编辑备注时，
 // 先发的请求晚返回会把备注覆盖回旧值；失败也不回滚。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ElMessage } from 'element-plus'
 
 const api = vi.hoisted(() => ({
   get: vi.fn(),
@@ -10,6 +11,14 @@ const api = vi.hoisted(() => ({
   defaults: { baseURL: '/api' },
 }))
 const route = vi.hoisted(() => ({ params: { id: '1' }, query: {} }))
+
+const download = vi.hoisted(() => ({
+  saveBlob: vi.fn(() => true),
+  openPrintWindow: vi.fn(),
+  showPdfInWindow: vi.fn(() => 'blob:pdf-1'),
+  REVOKE_DELAY_MS: 10000,
+  PRINT_REVOKE_DELAY_MS: 600000,
+}))
 
 vi.mock('vue', async (importOriginal) => {
   const actual = await importOriginal()
@@ -21,7 +30,7 @@ vi.mock('element-plus', () => ({
   ElMessageBox: { confirm: vi.fn() },
 }))
 vi.mock('../src/api', () => ({ default: api, BACKEND_HINT: '测试后端提示' }))
-vi.mock('../src/utils/download.js', () => ({ saveBlob: vi.fn(() => true), REVOKE_DELAY_MS: 10000 }))
+vi.mock('../src/utils/download.js', () => download)
 
 const { createItemPatcher } = await import('../src/modules/finance-invoice/itemPatch.js')
 const BatchDetailView = (await import('../src/modules/finance-invoice/views/BatchDetailView.vue')).default
@@ -226,5 +235,186 @@ describe('发票详情按字段提交', () => {
     await vi.waitFor(() => expect(saveBlob).toHaveBeenCalled())
     const downloadCall = api.get.mock.calls.find(([url]) => url.includes('/download'))
     expect(downloadCall[1]).toMatchObject({ responseType: 'blob', timeout: 300000 })
+  })
+})
+
+// 项目级 PDF：不依赖先导出 ZIP，每行独立 loading；打印必须先同步预开标签页，
+// 失败时关掉空白页并交给全局拦截器提示（catch 不重复弹 ElMessage.error）。
+function projectsBody() {
+  return {
+    data: [
+      {
+        project: '昆明项目',
+        count: 2,
+        amount: 100,
+        manual: 0,
+        zip_file: '昆明项目2026年10月.zip',
+        zip_ready: true,
+        pdf_name: '昆明项目2026年10月发票.pdf',
+      },
+      {
+        project: '曲靖项目',
+        count: 1,
+        amount: 50,
+        manual: 0,
+        zip_file: '',
+        zip_ready: false,
+        pdf_name: '曲靖项目2026年10月发票.pdf',
+      },
+    ],
+  }
+}
+
+async function mountWithProjects(status = 'parsed') {
+  api.get.mockImplementation(async (url) => {
+    if (url.includes('/projects/pdf')) return { data: new Blob(['pdf']) }
+    if (url.includes('/projects')) return projectsBody()
+    const body = batchBody()
+    body.data.status = status
+    return body
+  })
+  const ctx = mount()
+  await ctx.load()
+  return ctx
+}
+
+describe('项目 PDF 下载与打印', () => {
+  beforeEach(() => {
+    download.openPrintWindow.mockReset()
+    download.showPdfInWindow.mockReset()
+    download.showPdfInWindow.mockReturnValue('blob:pdf-1')
+  })
+
+  it('下载项目 PDF 走 projects/pdf 接口，并用后端 pdf_name 落名', async () => {
+    const ctx = await mountWithProjects()
+    api.get.mockResolvedValueOnce({ data: new Blob(['pdf']) })
+    await ctx.downloadProjectPdf(ctx.projects.value[0])
+
+    const call = api.get.mock.calls.at(-1)
+    expect(call[0]).toBe(
+      `/finance/invoice/batches/1/projects/pdf?project=${encodeURIComponent('昆明项目')}`,
+    )
+    expect(call[1]).toMatchObject({ responseType: 'blob', timeout: 300000 })
+    expect(download.saveBlob).toHaveBeenCalledWith(expect.any(Blob), '昆明项目2026年10月发票.pdf')
+    expect(ctx.projectOps.value['昆明项目']).toBeUndefined()
+  })
+
+  it('未导出 ZIP 的项目也能下载 PDF', async () => {
+    const ctx = await mountWithProjects()
+    api.get.mockResolvedValueOnce({ data: new Blob(['pdf']) })
+    await ctx.downloadProjectPdf(ctx.projects.value[1])
+    expect(api.get.mock.calls.at(-1)[0]).toContain(encodeURIComponent('曲靖项目'))
+    expect(download.saveBlob).toHaveBeenCalled()
+  })
+
+  it('合并期间只锁该行：重复点击不发新请求，其他项目照常可用', async () => {
+    const ctx = await mountWithProjects()
+    const pending = deferred()
+    api.get.mockReturnValueOnce(pending.promise)
+    const first = ctx.downloadProjectPdf(ctx.projects.value[0])
+    expect(ctx.projectOps.value['昆明项目']).toBe('download')
+
+    const before = api.get.mock.calls.length
+    await ctx.downloadProjectPdf(ctx.projects.value[0])
+    expect(api.get.mock.calls.length).toBe(before)
+
+    api.get.mockResolvedValueOnce({ data: new Blob(['pdf']) })
+    await ctx.downloadProjectPdf(ctx.projects.value[1])
+    expect(ctx.projectOps.value['曲靖项目']).toBeUndefined()
+    expect(ctx.projectOps.value['昆明项目']).toBe('download')
+
+    pending.resolve({ data: new Blob(['pdf']) })
+    await first
+    expect(ctx.projectOps.value['昆明项目']).toBeUndefined()
+  })
+
+  it('下载失败后释放该行 loading，不重复弹 error', async () => {
+    const ctx = await mountWithProjects()
+    api.get.mockRejectedValueOnce(new Error('缺少原件'))
+    await ctx.downloadProjectPdf(ctx.projects.value[0])
+    expect(ctx.projectOps.value['昆明项目']).toBeUndefined()
+    expect(download.saveBlob).not.toHaveBeenCalled()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+  })
+
+  it('打印在点击的同步阶段预开标签页，随后才发请求', async () => {
+    const ctx = await mountWithProjects()
+    const win = { close: vi.fn() }
+    const before = api.get.mock.calls.length
+    let requestsAtOpen = -1
+    download.openPrintWindow.mockImplementationOnce(() => {
+      requestsAtOpen = api.get.mock.calls.length
+      return win
+    })
+
+    const op = ctx.printProjectPdf(ctx.projects.value[0])
+    expect(download.openPrintWindow).toHaveBeenCalledTimes(1)
+    expect(requestsAtOpen).toBe(before) // 预开窗口先于请求
+    expect(ctx.projectOps.value['昆明项目']).toBe('print')
+
+    await op
+    expect(download.showPdfInWindow).toHaveBeenCalledWith(expect.any(Blob), { window: win })
+    expect(ElMessage.info).toHaveBeenCalled()
+    const message = ElMessage.info.mock.calls.at(-1)[0]
+    expect(message).toContain('正在新标签页加载')
+    expect(message).not.toContain('已在新标签页打开')
+    expect(win.close).not.toHaveBeenCalled()
+    expect(ctx.projectOps.value['昆明项目']).toBeUndefined()
+  })
+
+  it('弹窗被拦截时不发请求，提示改用下载', async () => {
+    const ctx = await mountWithProjects()
+    download.openPrintWindow.mockReturnValue(null)
+    const before = api.get.mock.calls.length
+    await ctx.printProjectPdf(ctx.projects.value[0])
+    expect(api.get.mock.calls.length).toBe(before)
+    expect(ElMessage.warning).toHaveBeenCalled()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(ctx.projectOps.value['昆明项目']).toBeUndefined()
+  })
+
+  it('打印请求失败关闭空白页，由拦截器提示后端原因', async () => {
+    const ctx = await mountWithProjects()
+    const win = { close: vi.fn() }
+    download.openPrintWindow.mockReturnValue(win)
+    api.get.mockRejectedValueOnce(new Error('合并失败：缺少原件'))
+    await ctx.printProjectPdf(ctx.projects.value[0])
+    expect(win.close).toHaveBeenCalled()
+    expect(download.showPdfInWindow).not.toHaveBeenCalled()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(ctx.projectOps.value['昆明项目']).toBeUndefined()
+  })
+
+  it('无法把 PDF 交给新窗口时关窗兜底，不弹 error', async () => {
+    const ctx = await mountWithProjects()
+    const win = { close: vi.fn() }
+    download.openPrintWindow.mockReturnValue(win)
+    download.showPdfInWindow.mockReturnValue('')
+    api.get.mockResolvedValueOnce({ data: new Blob(['pdf']) })
+    await ctx.printProjectPdf(ctx.projects.value[0])
+    expect(win.close).toHaveBeenCalled()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(ctx.projectOps.value['昆明项目']).toBeUndefined()
+  })
+
+  it('待解析/失败批次禁用项目 PDF 操作，不打开窗口也不发请求', async () => {
+    for (const status of ['uploaded', 'failed']) {
+      vi.clearAllMocks()
+      const ctx = await mountWithProjects(status)
+      expect(ctx.pdfDisabled.value).toBe(true)
+      const before = api.get.mock.calls.length
+      await ctx.downloadProjectPdf(ctx.projects.value[0])
+      await ctx.printProjectPdf(ctx.projects.value[0])
+      expect(api.get.mock.calls.length).toBe(before)
+      expect(download.openPrintWindow).not.toHaveBeenCalled()
+    }
+  })
+
+  it('已解析/已导出批次允许项目 PDF 操作', async () => {
+    for (const status of ['parsed', 'exported']) {
+      vi.clearAllMocks()
+      const ctx = await mountWithProjects(status)
+      expect(ctx.pdfDisabled.value).toBe(false)
+    }
   })
 })

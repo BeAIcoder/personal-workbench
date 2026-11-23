@@ -7,7 +7,7 @@
 3. 优化后是否有可比较的数字，而不是凭感觉「感觉变快了」。
 
 用法：
-    D:/DevEnv/runtime/python/python.exe dev/e2e/perf_probe.py
+    python dev/e2e/perf_probe.py
 
 运行模式：
     --seed-only  只重建独立性能库（调试数据规模时用）

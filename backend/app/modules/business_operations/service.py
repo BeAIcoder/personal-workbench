@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import func, inspect, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -122,6 +122,75 @@ def _resolve_unit(db: Session, unit_id: int | None, exclude_contract_id: int | N
             f"铺位 {unit.unit_no} 已存在生效合同（{dup.contract_no}），不能重复出租；"
             "请先终止旧合同或更换铺位")
     return int(unit.id), str(unit.unit_no or "")
+
+
+def find_active_unit_duplicates(db: Session) -> list[dict]:
+    """存量重复查重：同铺位存在多份 active 合同（只读，不删除任何数据）。
+
+    部分唯一索引只能拦住新建/更新；历史库可能已有重复，上线前用本函数盘点，
+    再由业务人工决定保留哪一份（脚本入口见模块 `duplicates.py`）。
+    """
+    rows = (
+        db.query(OpsContract.unit_id, func.count(OpsContract.id))
+        .filter(OpsContract.status == "active", OpsContract.unit_id.isnot(None))
+        .group_by(OpsContract.unit_id)
+        .having(func.count(OpsContract.id) > 1)
+        .order_by(OpsContract.unit_id)
+        .all()
+    )
+    result = []
+    for unit_id, count in rows:
+        contracts = (
+            db.query(OpsContract)
+            .filter(OpsContract.unit_id == unit_id, OpsContract.status == "active")
+            .order_by(OpsContract.id)
+            .all()
+        )
+        result.append({
+            "unit_id": int(unit_id),
+            "unit_no": contracts[0].unit_no if contracts else "",
+            "count": int(count),
+            "contract_ids": [row.id for row in contracts],
+            "contract_nos": [row.contract_no for row in contracts],
+        })
+    return result
+
+
+def ensure_active_unit_index(db: Session) -> dict:
+    """历史库补建部分唯一索引（幂等，先查 active 重复，只读检查通过才建）。
+
+    宿主通用索引迁移的重复检查不识别部分索引的 WHERE：历史库只要同铺位存在
+    多份已终止合同、或有 unit_id 为空的合同，就会误判重复并跳过建索引。本函数
+    按真实条件（active + unit_id 非空）检查后再补建，供启动迁移与查重脚本
+    `--apply-index` 使用；有 active 重复时只返回清单，绝不删数据。
+
+    副作用：建索引时会 commit 调用方 session（DDL 需提交后其它连接才可见）。
+    安全约束：session 存在未提交的新增/修改/删除时直接拒绝，避免把业务事务
+    一起提交；请只在启动迁移/CLI 的独立 Session 中调用。
+    """
+    if db.new or db.dirty or db.deleted:
+        raise ValueError(
+            "ensure_active_unit_index 不能在未提交的 session 上调用"
+            "（该函数会提交调用方事务）；请使用独立 Session"
+        )
+    duplicates = find_active_unit_duplicates(db)
+    if duplicates:
+        return {"created": False, "duplicates": duplicates}
+    index = next(
+        (item for item in OpsContract.__table__.indexes
+         if item.name == "uq_ops_contract_unit_active"),
+        None,
+    )
+    if index is None:
+        return {"created": False, "duplicates": []}
+    exists = any(
+        item["name"] == index.name
+        for item in inspect(db.connection()).get_indexes(OpsContract.__tablename__)
+    )
+    if not exists:
+        index.create(bind=db.connection(), checkfirst=True)
+        db.commit()
+    return {"created": not exists, "duplicates": []}
 
 
 def _lease_terms(db: Session, contract: OpsContract) -> dict:
@@ -244,6 +313,11 @@ def contract_save(db: Session, data: dict, contract_id: int | None = None) -> di
         db.commit()
     except IntegrityError as exc:
         db.rollback()
+        detail = str(getattr(exc, "orig", exc))
+        if "uq_ops_contract_unit_active" in detail or "mod_ops_contract.unit_id" in detail:
+            raise ValueError(
+                "该铺位已存在生效合同，不能重复出租；请先终止旧合同或更换铺位"
+            ) from exc
         raise ValueError("合同编号已存在") from exc
     db.refresh(c)
     return _contract_dict(c)

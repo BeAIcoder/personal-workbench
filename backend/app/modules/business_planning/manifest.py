@@ -9,8 +9,6 @@ manifest = ModuleManifest(
     title="企划管理",
     version="0.1.0",
     prefix="/api/business/planning",
-    tables=["mod_plan_campaign", "mod_plan_vendor"],
-    menu={"group": "经营", "icon": "Promotion", "order": 73},
     agent_tools=[
         {
             "name": "planning_summary",

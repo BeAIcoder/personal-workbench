@@ -5,9 +5,9 @@
 // node 环境无 DOM：mock 消息组件与 API，直接驱动编译后的 setup()。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import api, { assistantApi, modelProbeApi } from '../src/api'
+import api, { assistantApi, knowledgeApi, modelProbeApi } from '../src/api'
 import SettingsDrawer from '../src/components/assistant/SettingsDrawer.vue'
-import KnowledgeView from '../src/views/KnowledgeView.vue'
+import KnowledgeSearch from '../src/components/knowledge/KnowledgeSearch.vue'
 
 // vitest 的 SSR transform 会往 setup 里注入 useSSRContext()；KnowledgeView 还用了
 // onMounted/onBeforeUnmount，node 环境下一并 stub 才能脱离组件实例调用
@@ -57,6 +57,13 @@ vi.mock('../src/api', async (importOriginal) => {
       ...actual.modelProbeApi,
       probeAll: vi.fn(),
     },
+    knowledgeApi: {
+      ...actual.knowledgeApi,
+      stats: vi.fn(),
+      rebuild: vi.fn(),
+      facets: vi.fn(),
+      search: vi.fn(),
+    },
   }
 })
 
@@ -73,7 +80,7 @@ function mountDrawer(teamConfig = { max_iters: 5, history_inject: 12 }) {
 }
 
 function mountKnowledge() {
-  const ctx = KnowledgeView.setup({}, { expose: () => {}, emit: () => {} })
+  const ctx = KnowledgeSearch.setup({}, { expose: () => {}, emit: () => {} })
   return { ctx }
 }
 
@@ -278,8 +285,8 @@ describe('异常收口：失败不伪成功且锁复位', () => {
   })
 
   it('discoverSkillsCount 失败：锁复位、不清空结果也不写新结果', async () => {
-    const { ctx } = mountDrawer({ skills_dir: 'D:\\saved' })
-    ctx.globalsForm.skills_dir = 'D:\\saved'
+    const { ctx } = mountDrawer({ skills_dir: 'D:/path/to/saved' })
+    ctx.globalsForm.skills_dir = 'D:/path/to/saved'
     assistantApi.config.discoverSkills.mockRejectedValueOnce(new Error('boom'))
 
     await ctx.discoverSkillsCount()
@@ -289,8 +296,8 @@ describe('异常收口：失败不伪成功且锁复位', () => {
   })
 
   it('discoverSkillsCount 忙态防连点：检测中不发起第二次检测', async () => {
-    const { ctx } = mountDrawer({ skills_dir: 'D:\\saved' })
-    ctx.globalsForm.skills_dir = 'D:\\saved'
+    const { ctx } = mountDrawer({ skills_dir: 'D:/path/to/saved' })
+    ctx.globalsForm.skills_dir = 'D:/path/to/saved'
     assistantApi.config.discoverSkills.mockImplementationOnce(slow({ data: { count: 1, names: ['a'] } }))
     assistantApi.config.discoverSkills.mockResolvedValue({ data: { count: 1, names: ['a'] } })
 
@@ -306,8 +313,8 @@ describe('异常收口：失败不伪成功且锁复位', () => {
   })
 
   it('discoverPluginsCount 失败：锁复位、不写结果', async () => {
-    const { ctx } = mountDrawer({ plugins_dir: 'D:\\saved' })
-    ctx.globalsForm.plugins_dir = 'D:\\saved'
+    const { ctx } = mountDrawer({ plugins_dir: 'D:/path/to/saved' })
+    ctx.globalsForm.plugins_dir = 'D:/path/to/saved'
     assistantApi.config.discoverPlugins.mockRejectedValueOnce(new Error('boom'))
 
     await ctx.discoverPluginsCount()
@@ -317,8 +324,8 @@ describe('异常收口：失败不伪成功且锁复位', () => {
   })
 
   it('discoverPluginsCount 忙态防连点：检测中不发起第二次检测', async () => {
-    const { ctx } = mountDrawer({ plugins_dir: 'D:\\saved' })
-    ctx.globalsForm.plugins_dir = 'D:\\saved'
+    const { ctx } = mountDrawer({ plugins_dir: 'D:/path/to/saved' })
+    ctx.globalsForm.plugins_dir = 'D:/path/to/saved'
     assistantApi.config.discoverPlugins.mockImplementationOnce(slow({ data: { loadable: 1, plugins: [] } }))
     assistantApi.config.discoverPlugins.mockResolvedValue({ data: { loadable: 1, plugins: [] } })
 
@@ -368,30 +375,30 @@ describe('异常收口：失败不伪成功且锁复位', () => {
 
   it('doRebuild 失败：不提示「索引已重建」、不刷新统计、锁复位', async () => {
     const { ctx } = mountKnowledge()
-    api.post.mockRejectedValueOnce(new Error('boom'))
+    knowledgeApi.rebuild.mockRejectedValueOnce(new Error('boom'))
 
     await ctx.doRebuild()
 
     expect(ElMessage.success).not.toHaveBeenCalled()
-    expect(api.get).not.toHaveBeenCalled()
+    expect(knowledgeApi.stats).not.toHaveBeenCalled()
     expect(ctx.rebuilding.value).toBe(false)
   })
 
   it('doRebuild 成功：提示并刷新统计', async () => {
     const { ctx } = mountKnowledge()
-    api.post.mockResolvedValueOnce({ data: {} })
-    api.get.mockResolvedValueOnce({ data: { notes_indexed: 3, chunks: 9, vocabulary: 5 } })
+    knowledgeApi.rebuild.mockResolvedValueOnce({ data: {} })
+    knowledgeApi.stats.mockResolvedValueOnce({ data: { notes_indexed: 3, chunks: 9, vocabulary: 5 } })
 
     await ctx.doRebuild()
 
     expect(ElMessage.success).toHaveBeenCalledWith('索引已重建')
-    expect(ctx.stats).toMatchObject({ notes_indexed: 3, chunks: 9, vocabulary: 5 })
+    expect(ctx.stats.value).toMatchObject({ notes_indexed: 3, chunks: 9, vocabulary: 5 })
     expect(ctx.rebuilding.value).toBe(false)
   })
 
   it('doRebuild 忙态防连点：重建中不发起第二次重建', async () => {
     const { ctx } = mountKnowledge()
-    api.post.mockImplementationOnce(slow({ data: {} }))
+    knowledgeApi.rebuild.mockImplementationOnce(slow({ data: {} }))
 
     const first = ctx.doRebuild()
     await tick()
@@ -399,7 +406,7 @@ describe('异常收口：失败不伪成功且锁复位', () => {
     const second = ctx.doRebuild()
     await second
 
-    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(knowledgeApi.rebuild).toHaveBeenCalledTimes(1)
     await first
     expect(ctx.rebuilding.value).toBe(false)
   })
@@ -408,7 +415,7 @@ describe('异常收口：失败不伪成功且锁复位', () => {
 describe('目录检测：未保存路径先保存再检测（后端只允许已保存目录）', () => {
   it('技能池路径未保存：先弹确认；用户取消则零请求', async () => {
     const { ctx, emit } = mountDrawer() // teamConfig {} → 已保存目录为空
-    ctx.globalsForm.skills_dir = 'D:\\skills\\pool'
+    ctx.globalsForm.skills_dir = 'D:/path/to/skills'
     // 旧实现无保存门：若直发检测也应能返回，确保失败原因是「缺确认」而非 mock 未就绪
     assistantApi.config.discoverSkills.mockResolvedValue({ data: { count: 0, names: [] } })
     ElMessageBox.confirm.mockRejectedValueOnce('cancel')
@@ -424,7 +431,7 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
 
   it('技能池路径未保存：确认后先保存工作参数再检测，且不关闭抽屉', async () => {
     const { ctx, emit } = mountDrawer()
-    ctx.globalsForm.skills_dir = 'D:\\skills\\pool'
+    ctx.globalsForm.skills_dir = 'D:/path/to/skills'
     ElMessageBox.confirm.mockResolvedValueOnce('confirm')
     assistantApi.config.saveGlobals.mockResolvedValueOnce({ data: {} })
     assistantApi.config.discoverSkills.mockResolvedValueOnce({ data: { count: 2, names: ['a', 'b'] } })
@@ -434,9 +441,9 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
     expect(ElMessageBox.confirm).toHaveBeenCalledOnce()
     expect(assistantApi.config.saveGlobals).toHaveBeenCalledTimes(1)
     expect(assistantApi.config.saveGlobals).toHaveBeenCalledWith(
-      expect.objectContaining({ skills_dir: 'D:\\skills\\pool' }),
+      expect.objectContaining({ skills_dir: 'D:/path/to/skills' }),
     )
-    expect(assistantApi.config.discoverSkills).toHaveBeenCalledWith('D:\\skills\\pool')
+    expect(assistantApi.config.discoverSkills).toHaveBeenCalledWith('D:/path/to/skills')
     expect(ctx.skillsFound.value).toBe(2)
     expect(emit).toHaveBeenCalledWith('refresh')
     expect(emit).not.toHaveBeenCalledWith('update:visible', false)
@@ -444,7 +451,7 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
 
   it('技能池路径未保存：保存失败则不发起检测', async () => {
     const { ctx } = mountDrawer()
-    ctx.globalsForm.skills_dir = 'D:\\skills\\pool'
+    ctx.globalsForm.skills_dir = 'D:/path/to/skills'
     assistantApi.config.discoverSkills.mockResolvedValue({ data: { count: 0, names: [] } })
     ElMessageBox.confirm.mockResolvedValueOnce('confirm')
     assistantApi.config.saveGlobals.mockRejectedValueOnce(new Error('boom'))
@@ -457,14 +464,14 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
   })
 
   it('技能池路径与已保存一致：直接检测，不弹确认', async () => {
-    const { ctx } = mountDrawer({ skills_dir: 'D:\\skills\\pool' })
-    ctx.globalsForm.skills_dir = 'D:\\skills\\pool'
+    const { ctx } = mountDrawer({ skills_dir: 'D:/path/to/skills' })
+    ctx.globalsForm.skills_dir = 'D:/path/to/skills'
     assistantApi.config.discoverSkills.mockResolvedValueOnce({ data: { count: 0, names: [] } })
 
     await ctx.discoverSkillsCount()
 
     expect(ElMessageBox.confirm).not.toHaveBeenCalled()
-    expect(assistantApi.config.discoverSkills).toHaveBeenCalledWith('D:\\skills\\pool')
+    expect(assistantApi.config.discoverSkills).toHaveBeenCalledWith('D:/path/to/skills')
     expect(ctx.skillsFound.value).toBe(0)
   })
 
@@ -481,7 +488,7 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
 
   it('插件路径未保存：先弹确认；用户取消则零请求', async () => {
     const { ctx, emit } = mountDrawer()
-    ctx.globalsForm.plugins_dir = 'D:\\plugins'
+    ctx.globalsForm.plugins_dir = 'D:/path/to/plugins'
     assistantApi.config.discoverPlugins.mockResolvedValue({ data: { loadable: 0, plugins: [] } })
     ElMessageBox.confirm.mockRejectedValueOnce('cancel')
 
@@ -496,7 +503,7 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
 
   it('插件路径未保存：确认后先保存工作参数再检测，且不关闭抽屉', async () => {
     const { ctx, emit } = mountDrawer()
-    ctx.globalsForm.plugins_dir = 'D:\\plugins'
+    ctx.globalsForm.plugins_dir = 'D:/path/to/plugins'
     ElMessageBox.confirm.mockResolvedValueOnce('confirm')
     assistantApi.config.saveGlobals.mockResolvedValueOnce({ data: {} })
     assistantApi.config.discoverPlugins.mockResolvedValueOnce({
@@ -507,9 +514,9 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
 
     expect(ElMessageBox.confirm).toHaveBeenCalledOnce()
     expect(assistantApi.config.saveGlobals).toHaveBeenCalledWith(
-      expect.objectContaining({ plugins_dir: 'D:\\plugins' }),
+      expect.objectContaining({ plugins_dir: 'D:/path/to/plugins' }),
     )
-    expect(assistantApi.config.discoverPlugins).toHaveBeenCalledWith('D:\\plugins')
+    expect(assistantApi.config.discoverPlugins).toHaveBeenCalledWith('D:/path/to/plugins')
     expect(ctx.pluginsFound.value).toMatchObject({ loadable: 1 })
     expect(emit).toHaveBeenCalledWith('refresh')
     expect(emit).not.toHaveBeenCalledWith('update:visible', false)
@@ -517,7 +524,7 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
 
   it('插件路径未保存：保存失败则不发起检测', async () => {
     const { ctx } = mountDrawer()
-    ctx.globalsForm.plugins_dir = 'D:\\plugins'
+    ctx.globalsForm.plugins_dir = 'D:/path/to/plugins'
     assistantApi.config.discoverPlugins.mockResolvedValue({ data: { loadable: 0, plugins: [] } })
     ElMessageBox.confirm.mockResolvedValueOnce('confirm')
     assistantApi.config.saveGlobals.mockRejectedValueOnce(new Error('boom'))
@@ -530,14 +537,14 @@ describe('目录检测：未保存路径先保存再检测（后端只允许已�
   })
 
   it('插件路径与已保存一致：直接检测，不弹确认', async () => {
-    const { ctx } = mountDrawer({ plugins_dir: 'D:\\plugins' })
-    ctx.globalsForm.plugins_dir = 'D:\\plugins'
+    const { ctx } = mountDrawer({ plugins_dir: 'D:/path/to/plugins' })
+    ctx.globalsForm.plugins_dir = 'D:/path/to/plugins'
     assistantApi.config.discoverPlugins.mockResolvedValueOnce({ data: { loadable: 0, plugins: [] } })
 
     await ctx.discoverPluginsCount()
 
     expect(ElMessageBox.confirm).not.toHaveBeenCalled()
-    expect(assistantApi.config.discoverPlugins).toHaveBeenCalledWith('D:\\plugins')
+    expect(assistantApi.config.discoverPlugins).toHaveBeenCalledWith('D:/path/to/plugins')
   })
 
   it('插件目录为空：提示填写，不发起任何请求', async () => {

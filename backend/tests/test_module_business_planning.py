@@ -28,7 +28,10 @@ def test_manifest_loaded():
     assert "business_planning" in loaded
     m = loaded["business_planning"]
     assert m.prefix == "/api/business/planning"
-    assert m.tables == ["mod_plan_campaign", "mod_plan_vendor"]
+    from app.modules.business_planning import models as plan_models
+
+    assert {plan_models.PlanCampaign.__tablename__,
+            plan_models.PlanVendor.__tablename__} == {"mod_plan_campaign", "mod_plan_vendor"}
 
 
 def test_campaign_budget_summary_calendar(client):

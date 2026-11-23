@@ -1,5 +1,6 @@
 <template>
   <div class="page" v-loading="loading">
+    <HelpLink section="6.3" />
     <el-card shadow="never">
       <template #header>
         <div class="card-head">
@@ -65,6 +66,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import HelpLink from '../../../components/HelpLink.vue'
 import api from '../../../api'
 import { takeFiles } from '../../_shared/fileInput'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'

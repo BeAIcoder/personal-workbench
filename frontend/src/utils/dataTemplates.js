@@ -1,7 +1,8 @@
 // 数据模板清单与下载：文件名与后端白名单（app/routers/data_templates.py）一一对应。
 // 界面各上传页通过 <TemplateLinks type="..." /> 引用，改模板只需改这里 + 后端白名单。
 import { ElMessage } from 'element-plus'
-import { API_BASE } from '../api'
+import api from '../api'
+import { saveBlob } from './download'
 
 export const DATA_TEMPLATES = {
   vault: [
@@ -21,20 +22,35 @@ export const DATA_TEMPLATES = {
     { file: 'BIP账簿-辅助明细账-模板.xlsx', label: '辅助明细账' },
     { file: 'BIP账簿-辅助余额表-模板.xlsx', label: '辅助余额表' },
   ],
+  lease: [{ file: '租赁核算-付款计划-模板.xlsx', label: '付款计划模板' }],
+  manage: [
+    { file: '经营管理-内控管理表格-模板.xlsx', label: '内控管理表格' },
+    { file: '经营管理-云南项目周报-模板.xlsx', label: '云南项目周报' },
+    { file: '经营管理-曲靖项目周报-模板.xlsx', label: '曲靖项目周报' },
+    { file: '经营管理-月度工作情况表-模板.xlsx', label: '月度工作情况表' },
+  ],
 }
 
-export function templateUrl(file) {
-  return `${API_BASE}/templates/${encodeURIComponent(file)}`
+// axios 的 baseURL 已是 API_BASE：请求必须传相对路径，否则会拼成 /api/api/templates。
+export function templatePath(file) {
+  return `/templates/${encodeURIComponent(file)}`
 }
 
-// 走 <a download> 触发浏览器下载：响应带 Content-Disposition，中文名不依赖浏览器猜名。
-export function downloadTemplate(file) {
-  if (!file) return
-  const a = document.createElement('a')
-  a.href = templateUrl(file)
-  a.download = file
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  ElMessage.success(`已开始下载：${file}`)
+// 下载以服务端响应为准：先取 blob，确认成功后才落文件并提示「已下载」。
+// 旧写法先弹「已开始下载」再点 <a download>，404/500 也会假成功；
+// 中文名仍由前端显式给出（Content-Disposition 经代理链路不可靠）。
+export async function downloadTemplate(file, deps = {}) {
+  if (!file) return false
+  const request = deps.request ?? api
+  const save = deps.save ?? saveBlob
+  const notify = deps.notify ?? ElMessage
+  try {
+    const { data } = await request.get(templatePath(file), { responseType: 'blob' })
+    save(data, file)
+    notify.success(`已下载：${file}`)
+    return true
+  } catch {
+    // 拦截器已统一提示失败原因（Blob 错误体也会解析出 detail）
+    return false
+  }
 }

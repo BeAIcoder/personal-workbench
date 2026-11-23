@@ -5,6 +5,9 @@
 - 减除费用 5000 元/月（个人所得税法）；
 - 专项附加扣除标准：子女教育/3岁以下婴幼儿照护 2000 元/月/孩、赡养老人 3000 元/月
   （非独生≤1500）（国发〔2023〕13号，2023-01-01 起长期）；
+- 住房贷款利息 1000 元/月（最长 240 个月）与住房租金 1500/1100/800 元/月（按城市档位）
+  为两项独立扣除，同一纳税年度不可同时享受；继续教育学历 400 元/月（同一学历≤48 个月）、
+  职业资格 3600 元/年（取得证书当年）（国发〔2018〕41号）；
 - 预扣率表：综合所得年度预扣率（3%~45% 七级）。
 """
 from __future__ import annotations
@@ -17,13 +20,47 @@ from ...finance_iit_common import BRACKETS, MONTHLY_DEDUCTION, calc_cumulative_w
 from ...utils_money import money
 from ...utils_xlsx import safe_cell
 
-# 专项附加扣除标准（元/月，国发〔2023〕13号）
+# 专项附加扣除标准（元）：国发〔2018〕41号《个人所得税专项附加扣除暂行办法》；
+# 子女教育/婴幼儿照护/赡养老人按国发〔2023〕13号自 2023-01-01 提高（2000/2000/3000）。
+# 住房贷款利息与住房租金是两项独立扣除，同一纳税年度不可同时享受（41号 第二十条），
+# 旧表把它们合并成 1500 上限会让贷款利息多扣 500、租金档位无法区分（R11-020）。
 SPECIAL_DEDUCTION_STANDARDS = {
-    "children_education": {"label": "子女教育", "monthly_per_child": 2000},
-    "infant_care": {"label": "3岁以下婴幼儿照护", "monthly_per_child": 2000},
-    "elderly": {"label": "赡养老人", "monthly_max": 3000, "shared_max": 1500},
-    "housing": {"label": "住房贷款利息/住房租金", "monthly_max": 1500},
-    "continuing_education": {"label": "继续教育", "monthly_max": 400},
+    "children_education": {
+        "label": "子女教育", "monthly_per_child": 2000,
+        "basis": "国发〔2023〕13号（原 国发〔2018〕41号 第五条 1000 元）",
+    },
+    "infant_care": {
+        "label": "3岁以下婴幼儿照护", "monthly_per_child": 2000,
+        "basis": "国发〔2023〕13号（原 1000 元）",
+    },
+    "elderly": {
+        "label": "赡养老人", "monthly_max": 3000, "shared_max": 1500,
+        "basis": "国发〔2023〕13号（独生 3000；非独生分摊每人≤1500）",
+    },
+    "housing_loan_interest": {
+        "label": "住房贷款利息",
+        "monthly": 1000,
+        "max_months": 240,
+        "note": "首套住房贷款利息在实际发生年度按 1000 元/月定额扣除，最长 240 个月；与住房租金同一纳税年度不可同时享受",
+        "basis": "国发〔2018〕41号 第十四条、第二十条",
+    },
+    "housing_rent": {
+        "label": "住房租金",
+        "monthly_by_city": {
+            "直辖市省会计划单列市": 1500,
+            "市辖区户籍人口超100万": 1100,
+            "市辖区户籍人口不超100万": 800,
+        },
+        "note": "按主要工作城市档位定额扣除；与住房贷款利息同一纳税年度不可同时享受",
+        "basis": "国发〔2018〕41号 第十七条、第二十条",
+    },
+    "continuing_education": {
+        "label": "继续教育",
+        "degree": {"monthly": 400, "max_months": 48},
+        "professional_qualification": {"yearly": 3600},
+        "note": "学历（学位）继续教育 400 元/月，同一学历最长 48 个月；技能人员/专业技术人员职业资格在取得证书当年 3600 元",
+        "basis": "国发〔2018〕41号 第八条",
+    },
     "medical": {"label": "大病医疗（年度限额8万，月度按实际）", "monthly_max": None},
 }
 
@@ -36,7 +73,9 @@ def calc_filing(year: str, rows: list[dict]) -> dict:
     返回 {employees: [{name, months: [...]}], totals: {tax_withheld}}
     """
     from ..finance_tax.config.policy_validity import policy_status
+    from ..finance_tax.config.tax_scope import require_tax_scope
 
+    require_tax_scope("individual_income_tax")  # 准入门禁首行
     if not str(year).isdigit() or len(str(year)) != 4:
         raise ValueError("year 须为 4 位年度")
     if not rows:

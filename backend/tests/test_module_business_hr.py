@@ -25,7 +25,11 @@ def test_manifest_loaded():
     assert "business_hr" in loaded
     m = loaded["business_hr"]
     assert m.prefix == "/api/business/hr"
-    assert m.tables == ["mod_hr_employee", "mod_hr_attendance", "mod_hr_payroll"]
+    from app.modules.business_hr import models as hr_models
+
+    assert {hr_models.HrEmployee.__tablename__, hr_models.HrAttendance.__tablename__,
+            hr_models.HrPayroll.__tablename__} == {
+        "mod_hr_employee", "mod_hr_attendance", "mod_hr_payroll"}
 
 
 def test_employee_crud_and_expiring(client):

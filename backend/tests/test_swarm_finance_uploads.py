@@ -28,6 +28,7 @@ from app.database import SessionLocal
 from app.modules.finance_expense import router as expense_router
 from app.modules.finance_expense import service as expense_svc
 from app.modules.finance_invoice import router as invoice_router
+from app.modules.finance_invoice import invoice_parse
 from app.modules.finance_invoice import service as invoice_svc
 from app.modules.finance_ledger_personal import router as personal_router
 from app.modules.finance_ledger_personal import service as personal_svc
@@ -104,13 +105,13 @@ def vault_dir(monkeypatch, tmp_path, client):
 def mock_engine(monkeypatch):
     """打桩发票引擎：_require_engine 放行；按文件名返回罐头解析结果。"""
     canned: dict[str, dict] = {}
-    monkeypatch.setattr(invoice_svc, "_require_engine", lambda: None)
+    monkeypatch.setattr(invoice_parse, "_require_engine", lambda: None)
 
     def fake_parse(pdf_path):
         fields = canned.get(Path(pdf_path).name)
         return invoice_svc.ParsedInvoice(**fields) if fields is not None else None
 
-    monkeypatch.setattr(invoice_svc, "_parse_pdf_with_engine", fake_parse)
+    monkeypatch.setattr(invoice_parse, "_parse_pdf_with_engine", fake_parse)
     return canned
 
 
@@ -258,9 +259,9 @@ def test_upload_handlers_fail_closed_when_shared_reader_missing(
     monkeypatch.setattr(expense_svc, "ensure_engine_ready", lambda: None)
     monkeypatch.setattr(expense_svc, "classify_file", lambda db, original, stored: SimpleNamespace(id=1))
     monkeypatch.setattr(expense_svc, "run_to_dict", lambda run: {"id": 1})
-    monkeypatch.setattr(invoice_svc, "_require_engine", lambda: None)
+    monkeypatch.setattr(invoice_parse, "_require_engine", lambda: None)
     monkeypatch.setattr(
-        invoice_svc, "_parse_pdf_with_engine", lambda p: invoice_svc.ParsedInvoice(**make_fields())
+        invoice_parse, "_parse_pdf_with_engine", lambda p: invoice_svc.ParsedInvoice(**make_fields())
     )
 
     fake_xlsx = _FakeUpload(b"x" * 16, filename="a.xlsx")

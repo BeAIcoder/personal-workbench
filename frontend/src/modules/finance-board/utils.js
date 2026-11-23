@@ -5,3 +5,12 @@
 export function shouldReloadAfterRun(error) {
   return Boolean(error && error.response)
 }
+
+// 只有「还在跑」的状态继续轮询：ok/failed 以及未知非空状态都按终态处理，
+// 避免后端新增状态名后把前端拖进无意义的长时间轮询；空状态视为尚未返回结果，继续等。
+const RUNNING_STATUSES = new Set(['running', 'pending', 'queued', 'started', 'submitted', 'in_progress'])
+
+export function isTerminalRunStatus(status) {
+  const normalized = String(status ?? '').trim().toLowerCase()
+  return normalized !== '' && !RUNNING_STATUSES.has(normalized)
+}

@@ -15,3 +15,19 @@
 *.css   filter=sanitize
 # 无扩展名的脚本类文件（如有新增请在此登记；二进制一律不要加）
 *.sh    text eol=lf filter=sanitize
+*.ps1   text eol=crlf filter=sanitize
+*.cmd   text eol=crlf filter=sanitize
+# 常用文本扩展（2026-11-11 补齐；二进制一律不要加）
+*.toml  filter=sanitize
+*.ini   filter=sanitize
+*.cfg   filter=sanitize
+*.conf  filter=sanitize
+*.csv   filter=sanitize
+*.sql   filter=sanitize
+*.xml   filter=sanitize
+*.ts    filter=sanitize
+*.tsx   filter=sanitize
+*.jsx   filter=sanitize
+*.scss  filter=sanitize
+*.less  filter=sanitize
+*.log   filter=sanitize

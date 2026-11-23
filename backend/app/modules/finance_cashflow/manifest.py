@@ -11,8 +11,6 @@ manifest = ModuleManifest(
     title="现金流填报",
     version="0.1.0",
     prefix="/api/finance/cashflow",
-    tables=["mod_cashflow_run"],
-    menu={"group": "财务", "icon": "TrendCharts", "order": 80},
     agent_tools=[
         {
             "name": "cashflow_summary",
@@ -24,7 +22,8 @@ manifest = ModuleManifest(
         }
     ],
     preset_experts=["finance_specialist"],  # 工具自动预置进财税专员白名单
-    column_patches={},
+    # 历史库补列：运行记录年份（create_all 不改已有表；旧行默认 0，输出按创建年份兜底）
+    column_patches={"mod_cashflow_run": {"actual_year": "INTEGER DEFAULT 0"}},
     requires=[],
     enabled=True,
 )

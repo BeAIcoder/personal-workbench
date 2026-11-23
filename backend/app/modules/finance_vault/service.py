@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import math
 import re
 import threading
@@ -27,7 +28,7 @@ import pandas as pd
 from ...config import get_finance_data_dir
 from ...database import SessionLocal
 from ...utils import repair_upload_mojibake
-from .models import VaultDataset
+from .models import VaultCleanLog, VaultDataset
 
 try:
     # 单次入仓行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
@@ -51,6 +52,9 @@ QUALITY_CACHE_TTL_SEC = 60.0           # 质量画像结果缓存（秒），避
 
 # 表名白名单：仅小写字母/数字/下划线，1-64 字符
 _TABLE_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+# 派生物理修订表名：{数据集名}__r{修订号}。基数仍 ≤64，但总长可达 64+__r+数字，
+# 因此不能复用 _TABLE_NAME_RE（复核 I-1：61–64 字符数据集曾无法删除）。
+_PHYSICAL_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}__r\d{1,9}$")
 # 数据引擎保留的表函数/元信息函数名（A09）：数据集名不得与之同名。
 # 括号/点号已由 _TABLE_NAME_RE 排除，这里封堵「合法标识符形状的函数名」，
 # 避免查询白名单放行后与表函数调用形态混淆（如 FROM read_csv 的歧义）。
@@ -156,6 +160,8 @@ _JOIN_KEYWORDS = {
 # 写操作串行化（同进程多连接 DuckDB 允许，但并发写事务可能冲突，应用层串行最稳）
 _write_lock = threading.Lock()
 
+logger = logging.getLogger(__name__)
+
 
 class SqlRejected(ValueError):
     """SQL 只读校验不通过。"""
@@ -244,6 +250,336 @@ def list_datasets() -> list[dict]:
     with SessionLocal() as db:
         rows = db.query(VaultDataset).order_by(VaultDataset.table_name.asc()).all()
         return [_dataset_out(r) for r in rows]
+
+
+# ---------- 数据集生命周期（使用情况 / 删除 / 重命名） ----------
+
+
+class DatasetConflict(ValueError):
+    """数据集状态冲突：目标已存在 / 仍被引用 / 登记与数据仓不一致（路由层转 409）。"""
+
+
+def _catalog(con: duckdb.DuckDBPyConnection) -> dict[str, str]:
+    """DuckDB main schema 目录快照 {对象名: VIEW / BASE TABLE}（常量 SQL，零拼接）。"""
+    rows = con.execute(
+        "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'main'"
+    ).fetchall()
+    return {str(name): str(kind) for name, kind in rows}
+
+
+def _physical_tables(catalog: dict[str, str], table: str) -> list[str]:
+    """{table}__r{n} 物理修订表名（按修订号升序）；与 _latest_physical 同口径。
+
+    只认 BASE TABLE：名为 {table}__r9 的「视图」（另一个数据集）不是物理修订表，
+    否则重命名会对视图执行 ALTER TABLE、删除会误删别的数据集（复核 M-10）。
+    """
+    prefix = table + "__r"
+    revs = [
+        name for name, kind in catalog.items()
+        if kind == "BASE TABLE" and name.startswith(prefix) and name[len(prefix):].isdigit()
+    ]
+    return sorted(revs, key=lambda name: int(name[len(prefix):]))
+
+
+def dataset_exists(table: str) -> bool:
+    """数据集是否已存在：登记表或数据仓任一残留都算（聚合另存/清洗结果冲突判定）。"""
+    name = validate_table_name(table)
+    if name in _registered_names():
+        return True
+    con = _connect()
+    try:
+        catalog = _catalog(con)
+    finally:
+        con.close()
+    return name in catalog or bool(_physical_tables(catalog, name))
+
+
+def _usage_snapshot(con: duckdb.DuckDBPyConnection, table: str) -> dict:
+    """读取数据集使用情况快照；调用方提供已打开连接，便于在写锁内重取（复核 M-10）。
+
+    - registered/view_exists/relation_kind/physical_tables 描述登记与数据仓实际对象；
+    - references 汇总清洗日志对它的引用（作为源表/结果表）；
+    - consistent=False + issues 表示登记与数据仓不一致（需重新入仓或 force 清理）；
+    - requires_force=True 表示被引用或存在未登记残留，删除必须显式 force。
+    """
+    with SessionLocal() as db:
+        row = db.query(VaultDataset).filter(VaultDataset.table_name == table).first()
+        refs = db.query(VaultCleanLog).filter(
+            (VaultCleanLog.source_table == table) | (VaultCleanLog.result_table == table)
+        ).all()
+        as_source = sum(1 for r in refs if r.source_table == table)
+        as_result = sum(1 for r in refs if r.result_table == table)
+        registered = row is not None
+        rows = int(row.rows or 0) if row else 0
+        columns = list(row.columns_json or []) if row else []
+    catalog = _catalog(con)
+    relation_kind = catalog.get(table, "")
+    view_exists = relation_kind == "VIEW"
+    physical = _physical_tables(catalog, table)
+    issues: list[str] = []
+    if registered and not view_exists:
+        issues.append("元数据已登记但数据仓视图缺失（或同名对象不是视图），需重新入仓或删除该登记")
+    if not registered and relation_kind:
+        issues.append(f"数据仓存在同名对象（{relation_kind}）但未登记元数据，建议删除后重新入仓")
+    if not registered and physical and not relation_kind:
+        issues.append("数据仓存在未登记的物理修订表残留，建议 force 清理后重新入仓")
+    if registered and view_exists and not physical:
+        issues.append("已登记数据集未找到物理修订表，视图可能指向其他来源")
+    return {
+        "table": table,
+        "registered": registered,
+        "view_exists": view_exists,
+        "relation_kind": relation_kind,
+        "physical_tables": physical,
+        "rows": rows,
+        "columns": columns,
+        "references": {"clean_logs": len(refs), "as_source": as_source, "as_result": as_result},
+        "consistent": not issues,
+        "issues": issues,
+        "requires_force": bool(refs) or (
+            not registered and (bool(relation_kind) or bool(physical))
+        ),
+        "confirm_name": table,
+    }
+
+
+def dataset_usage(table: str) -> dict:
+    """数据集使用情况预检（删除/重命名前二次确认所需信息）；见 _usage_snapshot。"""
+    table = validate_table_name(table)
+    con = _connect()
+    try:
+        return _usage_snapshot(con, table)
+    finally:
+        con.close()
+
+
+def _assert_relation_name(name: str) -> str:
+    """校验要交给 DDL 的标识符：数据集名（≤64）或派生修订表名（base≤64 + __r<数字>）。
+
+    派生物理名总长可超过 64（64 字符数据集 → 68 字符 {table}__r1），不能复用
+    _TABLE_NAME_RE；DROP/ALTER 前一律先过这里，绝不把调用方原文拼进 SQL（复核 I-1）。
+    """
+    text = name or ""
+    if _TABLE_NAME_RE.fullmatch(text) or _PHYSICAL_NAME_RE.fullmatch(text):
+        return text
+    raise ValueError(
+        f"非法表名 {name!r}：仅允许小写字母/数字/下划线（≤64），或派生的 __r<数字> 物理修订表名"
+    )
+
+
+def _drop_relation(con: duckdb.DuckDBPyConnection, name: str, kind: str) -> None:
+    """按校验后的标识符 DROP 视图/物理表（含派生修订名），绝不拼接调用方原文。"""
+    _assert_relation_name(name)
+    verb = "VIEW" if kind == "VIEW" else "TABLE"
+    con.execute(f"DROP {verb} IF EXISTS {_quote_ident(name)}")
+
+
+def _rename_physical_table(con: duckdb.DuckDBPyConnection, old_name: str, new_name: str) -> None:
+    """把单个物理修订表改名为新名（两端标识符都须通过白名单）。"""
+    _assert_relation_name(old_name)
+    _assert_relation_name(new_name)
+    con.execute(f"ALTER TABLE {_quote_ident(old_name)} RENAME TO {_quote_ident(new_name)}")
+
+
+def _create_dataset_view(con: duckdb.DuckDBPyConnection, table: str) -> None:
+    """以最新物理修订表（重）建数据集视图；replace=True 保证回滚幂等。"""
+    latest = _latest_physical(con, table)
+    if latest is None:
+        raise DatasetConflict(f"重命名失败：未找到 {table} 的物理修订表")
+    con.table(latest).to_view(table, replace=True)
+
+
+def _name_token_pattern(name: str) -> re.Pattern:
+    """按标识符边界匹配旧名（tok_src 不会命中 tok_src_extra）。"""
+    return re.compile(rf"(?<![a-z0-9_]){re.escape(name)}(?![a-z0-9_])")
+
+
+def _rename_metadata(table: str, new_table: str) -> tuple[int, int]:
+    """SQLite 侧改名：登记行 + 清洗日志引用 + 其它数据集来源文案。
+
+    返回 (改写的日志条数, 改写的来源文案数据集数)。登记行缺失抛 LookupError；
+    唯一约束冲突等异常上抛，由 rename_dataset 反向补偿 DuckDB（复核 I-2）。
+    """
+    pattern = _name_token_pattern(table)
+    with SessionLocal() as db:
+        row = db.query(VaultDataset).filter(VaultDataset.table_name == table).first()
+        if row is None:
+            raise LookupError(f"数据集未注册：{table}")
+        row.table_name = new_table
+        row.updated_at = datetime.now()
+        logs = db.query(VaultCleanLog).filter(
+            (VaultCleanLog.source_table == table) | (VaultCleanLog.result_table == table)
+        ).all()
+        for log in logs:
+            if log.source_table == table:
+                log.source_table = new_table
+            if log.result_table == table:
+                log.result_table = new_table
+        rewritten_sources = 0
+        for ds in db.query(VaultDataset).all():
+            text = ds.source or ""
+            if table not in text:
+                continue
+            updated = pattern.sub(new_table, text)
+            if updated != text:
+                ds.source = updated[:300]
+                rewritten_sources += 1
+        db.commit()
+        return len(logs), rewritten_sources
+
+
+def _rollback_rename(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    new_table: str,
+    renamed: list[tuple[str, str]],
+    old_latest: str,
+) -> list[str]:
+    """反向补偿重命名：删新视图 → 物理表改回原名 → 用旧最新修订重建旧视图。
+
+    尽力而为但绝不吞掉主异常：返回失败说明，调用方记录日志后继续上抛原异常。
+    """
+    errors: list[str] = []
+    try:
+        _drop_relation(con, new_table, "VIEW")
+    except Exception as exc:  # 新视图可能还没建成，删除失败不阻断后续补偿
+        errors.append(f"删除新视图 {new_table} 失败：{exc}")
+    for old_phys, new_phys in reversed(renamed):
+        try:
+            _rename_physical_table(con, new_phys, old_phys)
+        except Exception as exc:
+            errors.append(f"还原物理表 {new_phys} 失败：{exc}")
+    # 一律回到原「最新修订」：部分改名失败时，未改名的更高修订才是数据真相。
+    if old_latest:
+        try:
+            con.table(old_latest).to_view(table, replace=True)
+        except Exception as exc:
+            errors.append(f"重建视图 {table} 失败：{exc}")
+    return errors
+
+
+def delete_dataset(table: str, confirm: str = "", force: bool = False) -> dict:
+    """安全删除数据集：二次确认 + 引用检查 + 物理表与元数据同步清理。
+
+    - confirm 必须与数据集名完全一致（防止误删其他数据集）；
+    - 被清洗日志引用、或仅有未登记残留时默认拒绝（DatasetConflict），force=True 才继续；
+    - 引用/残留快照在 _write_lock 内重取，避免「校验后被并发入仓/清洗」的窗口（复核 M-10）；
+    - 先对全部目标名做白名单校验再逐个 DROP：名字异常时整体失败，不留半删状态
+      （复核 I-1）；物理对象全部删完才删 SQLite 登记行，半途失败可再次删除修复。
+    """
+    table = validate_table_name(table)
+    confirm = (confirm or "").strip()
+    if not confirm:
+        raise ValueError("删除数据集需要二次确认：请提供 confirm=<数据集名>")
+    if confirm != table:
+        raise ValueError(f"删除确认不一致：confirm 必须等于数据集名（{table}）")
+    with _write_lock:
+        con = _connect()
+        try:
+            usage = _usage_snapshot(con, table)
+            if (
+                not usage["registered"]
+                and not usage["relation_kind"]
+                and not usage["physical_tables"]
+            ):
+                raise LookupError(f"数据集未注册：{table}")
+            if usage["references"]["clean_logs"] and not force:
+                raise DatasetConflict(
+                    f"数据集被 {usage['references']['clean_logs']} 条清洗日志引用，"
+                    "删除后历史配方将失去来源；确认后请带 force=true 重试"
+                )
+            if not usage["registered"] and not force:
+                raise DatasetConflict(
+                    f"数据集 {table} 仅有未登记的视图/物理表残留，清理请带 force=true 重试"
+                )
+            targets: list[tuple[str, str]] = []
+            if usage["relation_kind"] in ("VIEW", "BASE TABLE"):
+                targets.append((table, usage["relation_kind"]))
+            targets.extend((phys, "BASE TABLE") for phys in usage["physical_tables"])
+            for name, _kind in targets:  # 先全量校验，再 DROP
+                _assert_relation_name(name)
+            dropped_physical = 0
+            for name, kind in targets:
+                _drop_relation(con, name, kind)
+                if kind != "VIEW":
+                    dropped_physical += 1
+            metadata_only = (
+                usage["registered"] and not usage["relation_kind"] and not usage["physical_tables"]
+            )
+            with SessionLocal() as db:
+                db.query(VaultDataset).filter(VaultDataset.table_name == table).delete()
+                db.commit()
+        finally:
+            con.close()
+    return {
+        "deleted": True,
+        "table": table,
+        "dropped_physical": dropped_physical,
+        "metadata_only": metadata_only,
+    }
+
+
+def rename_dataset(table: str, new_table: str) -> dict:
+    """重命名数据集：视图/物理修订表/登记元数据/清洗日志引用/来源文案同步改名。
+
+    - 不覆盖已有数据：目标已登记、有同名视图或 BASE TABLE、或有同名物理修订表一律
+      DatasetConflict；
+    - 源/目标状态与 DDL 都在 _write_lock 内用同一连接重取，缩小并发窗口（复核 M-10）；
+    - DuckDB 阶段或 SQLite 元数据阶段失败都反向补偿（物理表改回 + 重建旧视图），
+      旧名保持可查询、新名不留半成品（复核 I-2）。
+    """
+    table = validate_table_name(table)
+    new_table = validate_table_name(new_table)
+    if table == new_table:
+        raise ValueError("新数据集名与原名称相同")
+    renamed: list[tuple[str, str]] = []
+    stage = "check"
+    with _write_lock:
+        con = _connect()
+        try:
+            usage = _usage_snapshot(con, table)
+            if not usage["registered"]:
+                raise LookupError(f"数据集未注册：{table}")
+            if not usage["view_exists"]:
+                raise DatasetConflict(f"数据集视图不可用（登记与数据仓不一致），请删除后重新入仓：{table}")
+            if not usage["physical_tables"]:
+                raise DatasetConflict(f"数据集缺少物理修订表，无法重命名：{table}")
+            target = _usage_snapshot(con, new_table)
+            if target["registered"] or target["relation_kind"] or target["physical_tables"]:
+                raise DatasetConflict(f"目标数据集已存在：{new_table}（重命名不覆盖已有数据）")
+            new_physicals = [new_table + phys[len(table):] for phys in usage["physical_tables"]]
+            for name in [new_table, *new_physicals]:  # 派生长名也先全量校验
+                _assert_relation_name(name)
+            old_latest = usage["physical_tables"][-1]
+            stage = "ddl"
+            _drop_relation(con, table, "VIEW")
+            for phys, new_phys in zip(usage["physical_tables"], new_physicals):
+                _rename_physical_table(con, phys, new_phys)
+                renamed.append((phys, new_phys))
+            _create_dataset_view(con, new_table)
+            stage = "metadata"
+            rewritten_logs, rewritten_sources = _rename_metadata(table, new_table)
+        except Exception as exc:
+            if stage != "check":
+                errors = _rollback_rename(con, table, new_table, renamed, old_latest)
+                if errors:
+                    logger.warning(
+                        "重命名 %s→%s 回滚未完全成功：%s", table, new_table, "；".join(errors)
+                    )
+            if stage == "metadata":
+                raise DatasetConflict(
+                    f"重命名失败（元数据更新异常），已回滚为 {table}：{exc}"
+                ) from exc
+            raise
+        finally:
+            con.close()
+    return {
+        "table": new_table,
+        "old_table": table,
+        "physical_tables": new_physicals,
+        "rewritten_logs": rewritten_logs,
+        "rewritten_sources": rewritten_sources,
+    }
 
 
 _QUALITY_CACHE: dict[str, Any] = {"key": None, "at": 0.0, "value": None}
@@ -381,6 +717,40 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _restore_after_register_failure(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    mode: str,
+    previous_latest: str | None,
+    created_physical: str | None,
+) -> None:
+    """登记写失败时回滚 DuckDB 侧（调用方持写锁），避免「数据在、元数据不在」。
+
+    - replace / 新建：视图指回旧修订（若有），并删除本次新建的物理修订表；
+    - append 到既有表：追加已写入数据，保留（重试按整行去重），仅告警行数待修正。
+    """
+    try:
+        if mode == "append" and previous_latest:
+            logger.warning("数据仓登记失败：追加数据已写入 %s，登记行数待下次成功入仓修正", table)
+            return
+        if previous_latest:
+            con.table(previous_latest).to_view(table, replace=True)
+        else:
+            _drop_relation(con, table, "VIEW")
+        if created_physical:
+            _drop_relation(con, created_physical, "BASE TABLE")
+    except Exception as exc:  # 回滚尽力而为，绝不掩盖登记失败的原始异常
+        logger.warning("数据仓登记失败后的回滚未完全成功（%s）：%s", table, exc)
+
+
+def _discard_unreferenced_revision(con: duckdb.DuckDBPyConnection, physical: str) -> None:
+    """丢弃本次新建但未被视图引用的物理修订表（失败只记日志，不掩盖主异常）。"""
+    try:
+        _drop_relation(con, physical, "BASE TABLE")
+    except Exception as exc:  # pragma: no cover - 防御路径
+        logger.warning("清理未引用的物理修订表 %s 失败：%s", physical, exc)
+
+
 def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") -> dict:
     """模块间契约：把 DataFrame 入仓为 DuckDB 表，并登记到 mod_vault_dataset。
 
@@ -390,7 +760,10 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
     - source：来源说明（写入登记表，留空记为 dataframe）；
     - 行数护栏：数据行数超过共享上限 MAX_IMPORT_ROWS 即拒绝，不落库、不留半成品。
 
-    返回 {"table": table, "rows": 入仓后总行数}；参数非法抛 ValueError。
+    参数校验在锁外完成，DDL 与登记在 `_ingest_dataframe_locked` 的同一写锁内完成；
+    已有写锁的调用方（clean_apply / save_aggregate_as_dataset）应直接调内部 helper。
+
+    返回 {"table": table, "rows": 入仓后总行数, "columns": 列信息}；参数非法抛 ValueError。
     """
     table = validate_table_name(table)
     if mode not in ("replace", "append"):
@@ -403,35 +776,60 @@ def ingest_dataframe(table: str, df, mode: str = "replace", source: str = "") ->
     if len(df) > MAX_IMPORT_ROWS:
         raise ValueError(f"数据行数（{len(df)}）超过单次导入上限（{MAX_IMPORT_ROWS} 行），请拆分后导入")
     with _write_lock:
-        con = _connect()
+        return _ingest_dataframe_locked(table, df, mode, source)
+
+
+def _ingest_dataframe_locked(table: str, df: pd.DataFrame, mode: str, source: str) -> dict:
+    """入仓的锁内实现：**调用方必须已持有 _write_lock**（内部不再取锁，避免重入死锁）。
+
+    table / df / mode 由调用方完成校验（表名白名单、列名规范化、行数护栏）；本函数负责
+    视图/物理表写入 + 登记，两者同处调用方的写锁临界区，删除/重命名无法插进中间。
+    """
+    con = _connect()
+    latest: str | None = None
+    created_physical: str | None = None
+    try:
+        con.register("staging_df", df)
+        latest = _latest_physical(con, table)
+        if mode == "append" and latest:
+            # append：按列名追加；整行相同的已在库行跳过（2026-11-02 数据清洗强化）
+            skipped = _append_deduped(con, latest, df)
+        else:
+            skipped = 0
+            # 物理“修订表”版本化 + 用户名固定为视图：数据落到新物理修订表（表名作
+            # API 参数），用户名经 to_view(replace=True) 原子换装——全程零 DDL 文本
+            # 拼接。修订号自目录枚举推算；旧修订暂不回收（嵌入式单文件库，量级可忽略）。
+            # 注：库目录为空时上线，无同名 TABLE 迁移问题（视图不能替换同名 TABLE）。
+            rev = _physical_rev(latest) + 1
+            phys = f"{table}__r{rev}"
+            con.sql("SELECT * FROM staging_df").to_table(phys)
+            created_physical = phys
+            con.table(phys).to_view(table, replace=True)
+        rel = con.table(table)
+        rows = rel.aggregate("count(*)").fetchone()[0]
+        cols = [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)]
+        # 登记与视图/物理表写入同处一个写锁临界区：删除/重命名无法插进
+        # 「数据已写好、登记还没落库」的窗口（复核残余边界）；登记失败回滚 DuckDB。
         try:
-            con.register("staging_df", df)
-            latest = _latest_physical(con, table)
-            if mode == "append" and latest:
-                # append：按列名追加；整行相同的已在库行跳过（2026-11-02 数据清洗强化）
-                skipped = _append_deduped(con, latest, df)
-            else:
-                skipped = 0
-                # 物理“修订表”版本化 + 用户名固定为视图：数据落到新物理修订表（表名作
-                # API 参数），用户名经 to_view(replace=True) 原子换装——全程零 DDL 文本
-                # 拼接。修订号自目录枚举推算；旧修订暂不回收（嵌入式单文件库，量级可忽略）。
-                # 注：库目录为空时上线，无同名 TABLE 迁移问题（视图不能替换同名 TABLE）。
-                rev = _physical_rev(latest) + 1
-                phys = f"{table}__r{rev}"
-                con.sql("SELECT * FROM staging_df").to_table(phys)
-                con.table(phys).to_view(table, replace=True)
-            rel = con.table(table)
-            rows = rel.aggregate("count(*)").fetchone()[0]
-            cols = [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)]
-        except ValueError:
+            _register_dataset(table, source=source or "dataframe", rows=rows, columns=cols)
+        except Exception:
+            _restore_after_register_failure(con, table, mode, latest, created_physical)
             raise
-        except duckdb.Error as exc:
-            # 列不匹配等 DuckDB 层错误属于数据/参数问题：降级为 ValueError（路由层转 400），不裸抛 500
-            raise ValueError(f"入仓失败：{exc}") from exc
-        finally:
-            con.close()
-    _register_dataset(table, source=source or "dataframe", rows=rows, columns=cols)
-    return {"table": table, "rows": rows, "skipped_duplicates": skipped}
+    except ValueError:
+        raise
+    except duckdb.Error as exc:
+        # 列不匹配等 DuckDB 层错误属于数据/参数问题：降级为 ValueError（路由层转 400），不裸抛 500；
+        # DDL 可能已建出新修订表（如视图名被 BASE TABLE 占用），失败时丢弃该未引用修订
+        if created_physical:
+            _discard_unreferenced_revision(con, created_physical)
+        raise ValueError(f"入仓失败：{exc}") from exc
+    except Exception:
+        if created_physical:
+            _discard_unreferenced_revision(con, created_physical)
+        raise
+    finally:
+        con.close()
+    return {"table": table, "rows": rows, "columns": cols, "skipped_duplicates": skipped}
 
 
 def _quote_ident(name: str) -> str:
@@ -474,13 +872,17 @@ def _latest_physical(con: duckdb.DuckDBPyConnection, table: str) -> "str | None"
     """枚举目录推算最新物理修订表（常量 SQL + Python 侧过滤，零拼接）。
 
     用户名在目录中恒为视图（{table}），物理数据表为 {table}__r{n}；
-    返回修订号最大的物理表名，无则 None。
+    只认 BASE TABLE：名为 {table}__r9 的「视图」（另一数据集）不算修订（复核 M-10）。
     """
     rows = con.execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'main'"
     ).fetchall()
     prefix = table + "__r"
-    revs = [t for (t,) in rows if t.startswith(prefix) and t[len(prefix):].isdigit()]
+    revs = [
+        str(name) for name, kind in rows
+        if str(kind) == "BASE TABLE" and str(name).startswith(prefix)
+        and str(name)[len(prefix):].isdigit()
+    ]
     return max(revs, key=lambda t: int(t[len(prefix):])) if revs else None
 
 
@@ -620,15 +1022,13 @@ def ingest_uploaded_file(
     except Exception:
         dest.unlink(missing_ok=True)  # 失败不留档，避免 inbox 堆积垃圾
         raise
-    with SessionLocal() as db:  # 补充列信息到返回值（ingest_dataframe 已登记）
-        row = db.query(VaultDataset).filter(VaultDataset.table_name == table).first()
-        columns = row.columns_json if row else []
     return {
         "table": result["table"],
         "rows": result["rows"],
         "source": safe_name,
         "mode": mode,
-        "columns": columns,
+        # 列信息复用入仓返回值：不再锁外二次查登记表（并发删除时不会读到空）
+        "columns": result.get("columns") or [],
         "keep_text": keep_text,
         **info,
     }

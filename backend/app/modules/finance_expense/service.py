@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -63,15 +64,23 @@ class RunBusyError(RuntimeError):
     """已有费用分类任务在执行中，由路由层映射 409。"""
 
 
+_MONEY = Decimal("0.01")
+
+
+def _money(value: Any) -> float:
+    """金额统一 Decimal ROUND_HALF_UP 两位（避免 round() 银行家舍入与二进制误差）。"""
+    return float(Decimal(str(value)).quantize(_MONEY, rounding=ROUND_HALF_UP))
+
+
 def _safe_amount(value: Any) -> float:
-    """金额容错转换：千分位逗号可解析；不可解析/NaN/Infinity 一律按 0（不流入统计）。"""
+    """金额容错转换：千分位逗号可解析；HALF_UP 两位；不可解析/NaN/Infinity 一律按 0。"""
     if value is None:
         return 0.0
     if isinstance(value, bool):
         return float(value)
     if isinstance(value, (int, float)):
         number = float(value)
-        return number if math.isfinite(number) else 0.0
+        return _money(number) if math.isfinite(number) else 0.0
     text = str(value).replace(",", "").strip()
     if not text:
         return 0.0
@@ -79,7 +88,7 @@ def _safe_amount(value: Any) -> float:
         number = float(text)
     except (TypeError, ValueError):
         return 0.0
-    return number if math.isfinite(number) else 0.0
+    return _money(number) if math.isfinite(number) else 0.0
 
 
 def _amount_parseable(value: Any) -> bool:
@@ -494,7 +503,7 @@ def run_detail(db: Session, run: ExpenseRun) -> dict:
         bucket[0] += 1
         bucket[1] += r.amount
     stats = [
-        {"category": category, "count": v[0], "amount": round(v[1], 2)}
+        {"category": category, "count": v[0], "amount": _money(v[1])}
         for category, v in sorted(stats_map.items(), key=lambda kv: kv[1][1], reverse=True)
     ]
     return {

@@ -288,8 +288,10 @@ def test_termination_keeps_unit_when_another_active_contract_remains(client):
     unit_id = _unit(client, "U-KEEP", status="leased")
     first = _contract(client, unit_id=unit_id, tenant="商户甲", no="HT-K1")
     assert first.status_code == 201, first.text
-    # 存量脏数据：同铺位第二份生效合同（写守卫会拦，这里经 ORM 直接落库）
+    # 存量脏数据：同铺位第二份生效合同（写守卫会拦，这里模拟「部分唯一索引上线前」的
+    # 历史库：先移除索引再经 ORM 直接落库）
     with SessionLocal() as db:
+        db.connection().exec_driver_sql("DROP INDEX IF EXISTS uq_ops_contract_unit_active")
         db.add(OpsContract(
             contract_no="HT-K2", tenant="商户乙", unit_no="U-KEEP", unit_id=unit_id,
             area=10.0, start_date=date(2026, 1, 1), end_date=date(2026, 12, 31),

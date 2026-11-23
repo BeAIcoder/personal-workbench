@@ -107,7 +107,7 @@
 工具全部经 SQLAlchemy 参数绑定，按来源分四类：
 
 - **内置业务工具 8 个**，直接操作工作台数据：`query_tasks / create_task / complete_task / query_schedules / create_schedule / search_notes / create_note / workbench_stats`；
-- **知识/记忆只读工具 2 个**：`search_knowledge`（BM25 知识检索）/ `recall_memories`（长期记忆召回），均带 `readonly=True` 标记；
+- **知识/记忆只读工具 3 个**：`search_knowledge`（制度/手册 + 笔记混合检索，带章节/页码出处）/ `read_knowledge_doc`（按行读全文）/ `recall_memories`（长期记忆召回），均带 `readonly=True` 标记；前两个由编排器自动补进所有专家；
 - **财务模块工具**：由 Module Registry 的 `preset_experts` 幂等合并进目标专家白名单（如 `finance_specialist`），工具名清单见 `module_tool_preset.FINANCE_TOOL_NAMES`，运行时权威来源是注册表；
 - **MCP 工具**：`mcp_<服务器名>__<工具名>`，按服务器连接状态动态注册（见 §17）。
 
@@ -225,11 +225,11 @@
 
 ```
 QwenPaw 工作区文件（SOUL.md / PROFILE.md / AGENTS.md / 00_系统总则.md / 06_协同规则.md）
-  → 按序拼接 + 脱敏（「某昵称」等称呼替换为「用户」，本机绝对路径替换为 [本地路径]）
+  → 按序拼接 + 脱敏（「示例主体25」等称呼替换为「用户」，本机绝对路径替换为 [本地路径]）
   → 合并 / 新建进 agent_specs 表（role_prompt 带【QwenPaw 整合】标记）
 ```
 
-- 源目录：默认 `D:/AIApps/QwenPaw/data/workspaces`，可用 `--from` 或环境变量 `QWENPAW_WORKSPACES` 指定；都没有则友好退出，不影响别的功能。
+- 源目录：默认 `示例主体19/QwenPaw/data/workspaces`，可用 `--from` 或环境变量 `QWENPAW_WORKSPACES` 指定；都没有则友好退出，不影响别的功能。
 
 **合并 / 新建策略**：
 

@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { JOB_RUN_TIMEOUT_MS } from '../utils/jobs'
 
 // SSE（fetch）与 axios 共用同一个 baseURL 来源
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api'
@@ -95,7 +96,8 @@ export const jobApi = {
   create: (data) => api.post('/jobs', data),
   update: (id, data) => api.put(`/jobs/${id}`, data),
   remove: (id) => api.delete(`/jobs/${id}`),
-  runNow: (id) => api.post(`/jobs/${id}/run`, {}, { timeout: 120000 }),
+  // 长任务：后端 AGENT_JOB_TIMEOUT_SECONDS=1800s，前端超时须更大（见 utils/jobs.js）
+  runNow: (id) => api.post(`/jobs/${id}/run`, {}, { timeout: JOB_RUN_TIMEOUT_MS }),
   runs: (id, limit = 50) => api.get(`/jobs/${id}/runs`, { params: { limit } }),
   actions: () => api.get('/jobs/actions'),
 }
@@ -107,6 +109,38 @@ export const noteApi = {
   create: (data) => api.post('/notes', data),
   update: (id, data) => api.put(`/notes/${id}`, data),
   remove: (id) => api.delete(`/notes/${id}`),
+}
+
+export const knowledgeApi = {
+  docs: (params) => api.get('/knowledge/docs', { params }),
+  facets: () => api.get('/knowledge/docs/facets'),
+  doc: (id) => api.get(`/knowledge/docs/${id}`),
+  // 解析/切块可能超过默认 10s，上传与重解析单独放宽超时
+  upload: (formData) => api.post('/knowledge/docs/upload', formData, { timeout: 180000 }),
+  createText: (data) => api.post('/knowledge/docs', data, { timeout: 60000 }),
+  update: (id, data) => api.put(`/knowledge/docs/${id}`, data),
+  remove: (id) => api.delete(`/knowledge/docs/${id}`),
+  reindex: (id) => api.post(`/knowledge/docs/${id}/reindex`, null, { timeout: 180000 }),
+  embed: (id) => api.post(`/knowledge/docs/${id}/embed`),
+  file: (id) => api.get(`/knowledge/docs/${id}/file`, { responseType: 'blob' }),
+  context: (id, chunkId, params) => api.get(`/knowledge/docs/${id}/chunks/${chunkId}`, { params }),
+  settings: () => api.get('/knowledge/settings'),
+  saveSettings: (data) => api.put('/knowledge/settings', data),
+  testEmbedding: (payload) => api.post('/knowledge/settings/test', payload, { timeout: 60000 }),
+  search: (data) => api.post('/knowledge/rag/search', data, { timeout: 60000 }),
+  stats: () => api.get('/knowledge/rag/stats'),
+  rebuild: (params) => api.post('/knowledge/rag/rebuild', null, { params, timeout: 300000 }),
+}
+
+// 知识库记忆：create/update 接受可选 source_doc_id（null = 取消关联，非法 id 后端 4xx）；
+// 列表返回 source_doc_id 与 source_doc_title（来源文档名）
+export const memoryApi = {
+  list: (params) => api.get('/knowledge/memories', { params }),
+  stats: () => api.get('/knowledge/memories/stats'),
+  create: (data) => api.post('/knowledge/memories', data),
+  update: (id, data) => api.put(`/knowledge/memories/${id}`, data),
+  remove: (id) => api.delete(`/knowledge/memories/${id}`),
+  importMd: (data) => api.post('/knowledge/memories/import.md', data),
 }
 
 export const dashboardApi = {

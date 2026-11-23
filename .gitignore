@@ -124,3 +124,9 @@ backend/xls_smoke_*/
 
 # finance_bankflow 本机映射（真实账号与 H 编码不入仓库）
 backend/app/modules/finance_bankflow/config.local.yaml
+
+# 本机脱敏脚本配置（真实目录/公司映射；代码只留合成示例，机制见 dev/SANITIZE.md）
+dev/desensitize.local.json
+
+# zcode 工具冒烟产物（临时目录，含本地样本，永不入库）
+zcode_voucher_smoke_*/

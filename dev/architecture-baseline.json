@@ -1,0 +1,50 @@
+{
+  "cross_module_imports": {
+    "backend/app/modules/business_dq/service.py": [
+      "business_leasing",
+      "business_operations",
+      "finance_board",
+      "finance_ledger_bip",
+      "finance_vault"
+    ],
+    "backend/app/modules/business_facility/service.py": [
+      "business_operations"
+    ],
+    "backend/app/modules/business_leasing/service.py": [
+      "business_operations"
+    ],
+    "backend/app/modules/business_operations/service.py": [
+      "business_facility",
+      "business_leasing"
+    ],
+    "backend/app/modules/finance_board/service.py": [
+      "debug_center"
+    ],
+    "backend/app/modules/finance_ledger_bip/service.py": [
+      "finance_vault"
+    ]
+  },
+  "god_files": {
+    "backend/app/agents/model_sync.py": 1216,
+    "backend/app/agents/orchestrator.py": 1253,
+    "backend/app/modules/finance_pos/vouchers_service.py": 1354,
+    "backend/app/modules/finance_tax/services/financial_data_importer.py": 1614,
+    "backend/app/modules/finance_vault/service.py": 1325,
+    "frontend/src/components/assistant/SettingsDrawer.vue": 1623
+  },
+  "round_calls": {
+    "backend/app/modules/finance_board/service.py": 1,
+    "backend/app/modules/finance_cashflow/service.py": 2,
+    "backend/app/modules/finance_dsf/service.py": 1,
+    "backend/app/modules/finance_expense/service.py": 2,
+    "backend/app/modules/finance_ledger_personal/schemas.py": 1,
+    "backend/app/modules/finance_ledger_personal/service.py": 13,
+    "backend/app/modules/finance_pos/service.py": 2,
+    "backend/app/modules/finance_pos/vouchers_service.py": 3,
+    "backend/app/modules/finance_tax/services/additional_tax_calculator.py": 1,
+    "backend/app/modules/finance_tax/services/financial_data_importer.py": 1,
+    "backend/app/modules/finance_tax/services/value_added_tax_calculator.py": 37,
+    "backend/app/modules/finance_vault/cleaning.py": 7,
+    "backend/app/modules/finance_vault/service.py": 1
+  }
+}

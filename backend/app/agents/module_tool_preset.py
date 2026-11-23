@@ -26,6 +26,10 @@ FINANCE_TOOL_NAMES: list[str] = [
     "tax_returns_summary",
     "pos_summary",
     "cashflow_summary",
+    # finance_recon 商户核销对账
+    "recon_summary",
+    # finance_receipt 银行回单整理
+    "receipt_summary",
 ]
 
 # 预置目标专家（与各模块 manifest.preset_experts 保持一致）

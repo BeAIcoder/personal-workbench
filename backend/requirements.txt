@@ -5,6 +5,8 @@ pydantic>=2.7.0
 pydantic-settings>=2.3.0
 httpx>=0.27.0
 pytest>=8.2.0
+# 单例超时：CI 后端步骤曾 42 分钟才失败，先让“慢/挂起”可诊断
+pytest-timeout>=2.3,<3
 # 全量回归并行分片（conftest 按 PID 隔离临时库，与 xdist 多进程天然兼容；本机实测 -n 12 全绿 69.85s）
 pytest-xdist>=3.6,<4
 agentscope==2.0.7.post1
@@ -12,9 +14,20 @@ openpyxl>=3.1
 # AI 助手 Word/PPT 正文提取；PDF 复用下方 pdfplumber
 python-docx>=1.1,<2
 python-pptx>=1.0,<2
+# 知识库向量检索（可选增强）：缺包/加载失败时自动降级为 FTS5 关键词检索
+sqlite-vec>=0.1.9,<1
+# 扫描件 OCR（可选增强）：RapidOCR + onnxruntime；模型随 wheel 分发，运行时不联网
+# 版本锁定：OCR 模型/输出结构在次版本间可能变化，升级需重跑 test_knowledge_docs
+rapidocr==3.10.0
+onnxruntime==1.31.1
 # 财务模块（finance_*）依赖：pandas 费用分类/企业记账引擎；pdfplumber 发票 PDF 提取；duckdb 数据仓；xlrd 兼容旧版 .xls
 pandas>=2.2,<3
 pdfplumber>=0.11,<1
+# POS 刷卡凭证（vouchers_service）：pypdf 回单裁切/PDF 合并；pypdfium2 回单文本层逐字符取框（原先仅靠传递安装，显式声明防上游变动）
+pypdf>=5.0,<7
+pypdfium2>=4.30,<6
+# 银行回单整理：按表头坐标拆分页内回单并无损矢量重排
+PyMuPDF>=1.28,<2
 duckdb>=1.1,<2
 xlrd>=2.0,<3
 # xlsx 内部 XML 解析防实体扩展（financial_data_importer 上传文件解析）

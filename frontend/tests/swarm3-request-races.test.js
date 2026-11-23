@@ -32,7 +32,7 @@ function fnBody(src, headerNeedle) {
 const CASES = [
   {
     name: '数据集预览',
-    file: 'src/modules/finance-vault/views/TableListView.vue',
+    file: 'src/modules/finance-vault/views/parts/TablesPanel.vue',
     header: 'async function preview(row)',
     seq: 'previewSeq',
   },

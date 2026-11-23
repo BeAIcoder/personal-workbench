@@ -98,8 +98,10 @@ def test_module_registered_and_mounted():
     manifest = loaded["finance_expense"]
     assert manifest.prefix == "/api/finance/expense"
     assert manifest.title == "费用分类"
-    assert set(manifest.tables) == {"mod_expense_run", "mod_expense_row"}
-    assert manifest.menu == {"group": "财务", "icon": "Histogram", "order": 10}
+    from app.modules.finance_expense import models as expense_models
+
+    assert {expense_models.ExpenseRun.__tablename__,
+            expense_models.ExpenseRow.__tablename__} == {"mod_expense_run", "mod_expense_row"}
 
     from app.agents.tools import TOOL_SPECS
 

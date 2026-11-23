@@ -69,7 +69,9 @@ def test_parse_and_summarize():
     data = _flow_xlsx(_ROWS_A + [_flow_row(_ACC_B, "2026-10-08", "7", "-", 700.0, "乙一", "户B", "SEQ-B1")])
     out = bf.summarize_flow(data)
     assert out["total"] == 5
-    acc_a = next(a for a in out["accounts"] if a["account"] == _ACC_A)
+    # 预览只回掩码账号 + 稳定令牌，不再暴露完整账号
+    acc_a = next(a for a in out["accounts"] if a["account"] == bf.mask_account(_ACC_A))
+    assert acc_a["tail"] == "1111" and acc_a["account_token"].startswith("BK")
     assert acc_a["ent"] == "TESTH001" and acc_a["rows"] == 4
     assert acc_a["date_min"] == "20261005" and acc_a["date_max"] == "20261020"
 
@@ -129,7 +131,7 @@ def test_api_preview_and_template_download():
     r2 = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("flow.xlsx", data)},
-        data={"account": _ACC_A, "date_start": "2026-10-01", "date_end": "2026-10-23"},
+        data={"account_token": acc["account_token"], "date_start": "2026-10-01", "date_end": "2026-10-23"},
     )
     assert r2.status_code == 200
     assert r2.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -141,11 +143,15 @@ def test_api_preview_and_template_download():
 
 
 def test_api_unmapped_account_400():
-    data = _flow_xlsx(_ROWS_A)
+    """流水里的账号未登记映射：令牌可反查到账号，但映射校验必须拒绝。"""
+    unmapped = "9999000000009999"
+    data = _flow_xlsx([_flow_row(unmapped, "2026-10-05", "1", "-", 1.0, "未登记", "户X", "SEQ-U1")])
+    body = client.post("/api/finance/bankflow/preview", files={"file": ("flow.xlsx", data)}).json()
+    token = body["accounts"][0]["account_token"]
     r = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("flow.xlsx", data)},
-        data={"account": "9999000000009999", "date_start": "", "date_end": ""},
+        data={"account_token": token, "date_start": "", "date_end": ""},
     )
     assert r.status_code == 400
     assert "未在映射配置中登记" in r.json()["detail"]
@@ -156,7 +162,7 @@ def test_api_bad_date_400():
     r = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("flow.xlsx", data)},
-        data={"account": _ACC_A, "date_start": "2026/13/99", "date_end": ""},
+        data={"account_token": "BK000000000000000000000000", "date_start": "2026/13/99", "date_end": ""},
     )
     assert r.status_code == 400
     assert "YYYY-MM-DD" in r.json()["detail"]
@@ -168,7 +174,7 @@ def test_api_no_config_400(tmp_path, monkeypatch):
     r = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("flow.xlsx", data)},
-        data={"account": _ACC_A, "date_start": "", "date_end": ""},
+        data={"account_token": "BK000000000000000000000000", "date_start": "", "date_end": ""},
     )
     assert r.status_code == 400
     assert "映射" in r.json()["detail"]

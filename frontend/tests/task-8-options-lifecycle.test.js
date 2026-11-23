@@ -32,9 +32,9 @@ const { ensureOption, createRemoteOptionSearch } = await import('../src/utils/re
 const FacilityView = (await import('../src/modules/business-facility/views/FacilityView.vue')).default
 const OperationsView = (await import('../src/modules/business-operations/views/OperationsView.vue')).default
 const SkillPackView = (await import('../src/views/SkillPackView.vue')).default
-const TableListView = (await import('../src/modules/finance-vault/views/TableListView.vue')).default
+const TablesPanel = (await import('../src/modules/finance-vault/views/parts/TablesPanel.vue')).default
 const vaultQuerySource = readFileSync(
-  new URL('../src/modules/finance-vault/views/QueryView.vue', import.meta.url), 'utf8')
+  new URL('../src/modules/finance-vault/views/parts/SqlPanel.vue', import.meta.url), 'utf8')
 const facilitySource = readFileSync(
   new URL('../src/modules/business-facility/views/FacilityView.vue', import.meta.url), 'utf8')
 const operationsSource = readFileSync(
@@ -245,7 +245,7 @@ describe('卸载清理（L-135）', () => {
 
 describe('长任务与下载（Task 8 补充）', () => {
   it('数据仓入仓上传使用 120s 超时，避免大表被全局 10s 截断', async () => {
-    const ctx = mount(TableListView)
+    const ctx = mount(TablesPanel)
     ctx.form.table = 't_upload'
     ctx.form.file = new File(['x'], 'x.xlsx')
     api.post.mockResolvedValueOnce({ data: { rows: 1 } })

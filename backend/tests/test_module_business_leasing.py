@@ -43,8 +43,11 @@ def test_manifest_loaded():
     assert "business_leasing" in loaded
     m = loaded["business_leasing"]
     assert m.prefix == "/api/business/leasing"
-    assert m.tables == ["mod_leasing_unit", "mod_leasing_lead", "mod_leasing_followup"]
-    assert m.menu["group"] == "经营"
+    from app.modules.business_leasing import models as leasing_models
+
+    assert {leasing_models.LeasingUnit.__tablename__, leasing_models.LeasingLead.__tablename__,
+            leasing_models.LeasingFollowup.__tablename__} == {
+        "mod_leasing_unit", "mod_leasing_lead", "mod_leasing_followup"}
 
 
 def test_unit_crud_and_summary(client):

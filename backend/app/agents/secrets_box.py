@@ -93,3 +93,27 @@ def migrate_seal_keys() -> int:
         if count:
             db.commit()
     return count
+
+
+def purge_legacy_agent_settings_keys() -> int:
+    """一次性清除旧版 ``agent_settings.api_key`` 明文残留，返回清除行数。
+
+    该列在当前版本已不再被读取（模型密钥由 model_providers/api_key 承载），
+    但历史库可能仍躺着明文 Key。迁移只按「非空」条件执行 UPDATE，不 SELECT
+    旧值、不写日志——避免已泄漏的 Key 再次进入进程内存、日志或接口响应。
+    幂等：没有残留时返回 0。
+    """
+    # 延迟导入避免循环依赖
+    from sqlalchemy import update
+
+    from ..database import SessionLocal
+    from ..models import AgentSettings
+
+    with SessionLocal() as db:
+        result = db.execute(
+            update(AgentSettings)
+            .where(AgentSettings.api_key != "")
+            .values(api_key="")
+        )
+        db.commit()
+        return int(result.rowcount or 0)

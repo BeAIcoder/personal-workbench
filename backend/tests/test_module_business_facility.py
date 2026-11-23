@@ -43,7 +43,12 @@ def test_manifest_loaded_and_tool_preset():
     assert "business_facility" in loaded
     manifest = loaded["business_facility"]
     assert manifest.prefix == P
-    assert manifest.tables == ["mod_fac_equipment", "mod_fac_compliance"]
+    # 表清单以 models.__tablename__ 为准（manifest 不再声明 tables）
+    from app.modules.business_facility import models as facility_models
+
+    assert {facility_models.FacilityEquipment.__tablename__,
+            facility_models.FacilityCompliance.__tablename__} == {
+        "mod_fac_equipment", "mod_fac_compliance"}
     assert manifest.preset_experts == ["property"]
     tool = next(item for item in manifest.agent_tools if item["name"] == "facility_summary")
     assert tool["readonly"] is True

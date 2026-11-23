@@ -330,5 +330,86 @@ class Memory(Base):
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     # 使用统计（检索命中）
     hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 可选：显式引用的知识库文档 id（kb_docs.id）；不自动从文档生成记忆，
+    # 文档删除时由 knowledge.store.delete_doc 置空引用（记忆本体保留）
+    source_doc_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
+
+class KbDoc(TimestampMixin, Base):
+    """知识库文档：公司制度、流程指引、软件手册等长文档（区别于手写笔记）。"""
+
+    __tablename__ = "kb_docs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(200), index=True)
+    # 制度规范 / 流程指引 / 软件手册 / 模板表单 / 其他（自由文本，界面给建议值）
+    category: Mapped[str] = mapped_column(String(50), default="制度规范", index=True)
+    department: Mapped[str] = mapped_column(String(100), default="", index=True)
+    # 制度编号（可选）；doc_key 为空时由标题规范化生成，用于版本链
+    doc_no: Mapped[str] = mapped_column(String(100), default="")
+    doc_key: Mapped[str] = mapped_column(String(200), default="", index=True)
+    version: Mapped[str] = mapped_column(String(50), default="v1.0")
+    # draft / effective / superseded / archived
+    status: Mapped[str] = mapped_column(String(20), default="effective", index=True)
+    # 生效/废止日期（YYYY-MM-DD，空 = 未填）；ISO 字符串可直接字典序比较
+    effective_from: Mapped[str] = mapped_column(String(10), default="")
+    effective_to: Mapped[str] = mapped_column(String(10), default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    owner: Mapped[str] = mapped_column(String(100), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    # 原始文件（原件存放于 UPLOAD_DIR/knowledge/，相对路径入库）
+    source_name: Mapped[str] = mapped_column(String(255), default="")
+    source_rel_path: Mapped[str] = mapped_column(String(500), default="")
+    source_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    source_size: Mapped[int] = mapped_column(Integer, default=0)
+    page_count: Mapped[int] = mapped_column(Integer, default=0)
+    char_count: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 实际走 OCR 的页数（0 = 纯文本层解析）；界面提示「含 OCR N 页，建议核对」
+    ocr_pages: Mapped[int] = mapped_column(Integer, default=0)
+    # ok / truncated / keyword_only / embedding / embedding_failed
+    index_status: Mapped[str] = mapped_column(String(20), default="ok")
+    index_error: Mapped[str] = mapped_column(Text, default="")
+    supersedes_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("uq_kb_docs_key_version", "doc_key", "version", unique=True),
+        Index("ix_kb_docs_status_category", "status", "category"),
+    )
+
+
+class KbChunk(Base):
+    """知识库文档块：按章节切分，保留标题路径与页码，供检索与引用定位。"""
+
+    __tablename__ = "kb_chunks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    doc_id: Mapped[int] = mapped_column(Integer, index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    heading: Mapped[str] = mapped_column(String(300), default="")
+    page_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    text: Mapped[str] = mapped_column(Text, default="")
+    char_len: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (Index("ix_kb_chunks_doc_seq", "doc_id", "seq"),)
+
+
+class KbSettings(Base):
+    """知识库设置（单行，id 恒为 1）：OCR 开关、向量检索开关与 embedding 端点。"""
+
+    __tablename__ = "kb_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # 扫描件 OCR（默认关；仅对无文本层的 PDF 页生效）
+    ocr_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    embedding_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    embedding_model: Mapped[str] = mapped_column(String(120), default="")
+    # 0 = 首次调用自动探测；与已有向量表维度不一致时需重建
+    embedding_dim: Mapped[int] = mapped_column(Integer, default=0)
+    # 空 = 跟随当前激活模型供应商的 base_url / api_key
+    embedding_base_url: Mapped[str] = mapped_column(String(300), default="")
+    embedding_api_key: Mapped[str] = mapped_column(String(300), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

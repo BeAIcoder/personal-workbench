@@ -93,14 +93,32 @@ def _config_version() -> str:
     return match.group(1)
 
 
+def _menu_block(text: str, start: int) -> str | None:
+    """取 menu 字面量：支持单行对象、多行对象与 null。"""
+    if text[start - 4:start] == "null":
+        return "null"
+    begin = start - 1
+    depth = 0
+    for idx in range(begin, len(text)):
+        char = text[idx]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[begin:idx + 1]
+    return None
+
+
 def _frontend_menus() -> list[dict[str, str]]:
-    """解析前端 manifest.js 的单行 menu 对象，返回全部可见菜单。"""
+    """解析前端 manifest.js 的 menu 对象（单行/多行/null），返回全部可见菜单。"""
     menus: list[dict[str, str]] = []
     for path in sorted(FRONTEND_MODULES.glob("*/manifest.js")):
         text = path.read_text(encoding="utf-8")
-        match = re.search(r"menu:\s*(\{[^\n]*\}|null)", text)
+        match = re.search(r"menu:\s*(null|\{)", text)
         assert match, f"{path.name} 缺少 menu 定义"
-        raw = match.group(1)
+        raw = _menu_block(text, match.end())
+        assert raw is not None, f"{path.name} 的 menu 对象括号不完整"
         if raw == "null":
             continue
         menu: dict[str, str] = {"module": path.parent.name}
@@ -170,7 +188,8 @@ def test_versions_stay_on_config_single_source():
     assert f"v{version}" in spec_head, f"spec 封面未使用 config.py 的版本 v{version}"
     for path in (USAGE, DATA_DOC, API_DOC, README, SPEC, ALGO, TOPOLOGY, NOTES, TEMPLATE_README):
         text = _read(path)
-        for future in ("v1.17.0", "v1.18.0"):
+        major, minor = (int(part) for part in version.split(".")[:2])
+        for future in (f"v{major}.{minor + 1}.0", f"v{major}.{minor + 2}.0"):
             assert future not in text, f"{path.name} 声明了 config 之外的版本 {future}"
 
 
@@ -280,7 +299,7 @@ def test_data_doc_names_every_template_file():
 def test_data_doc_covers_import_export_sections():
     text = _read(DATA_DOC)
     for keyword in (
-        "数据仓",
+        "数据池清洗",
         "费用分类",
         "POS 对账",
         "现金流填报",
@@ -592,7 +611,7 @@ def test_topology_security_and_finance_counts():
     topo = _read(TOPOLOGY)
     assert "503" in topo, "拓扑未写非回环 503"
     assert "启动告警" not in topo, "拓扑仍写非回环仅告警"
-    assert "财务 14" in topo, "拓扑未把财务模块数更新为 14"
+    assert "财务 19" in topo, "拓扑未把财务模块数更新为 19"
 
 
 def test_board_retry_wording_is_attempt_count():

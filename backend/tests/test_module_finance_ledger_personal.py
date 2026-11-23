@@ -86,8 +86,11 @@ def test_manifest_loaded(client):
     loaded = {m.name: m for m in get_loaded_modules()}
     m = loaded["finance_ledger_personal"]
     assert m.prefix == "/api/finance/ledger/personal"
-    assert m.tables == ["mod_pl_account", "mod_pl_category", "mod_pl_transaction", "mod_pl_budget"]
-    assert m.menu == {"group": "财务", "icon": "Notebook", "order": 40}
+    from app.modules.finance_ledger_personal import models as pl_models
+
+    assert {pl_models.PlAccount.__tablename__, pl_models.PlCategory.__tablename__,
+            pl_models.PlTransaction.__tablename__, pl_models.PlBudget.__tablename__} == {
+        "mod_pl_account", "mod_pl_category", "mod_pl_transaction", "mod_pl_budget"}
     assert {t["name"] for t in m.agent_tools} == {"pl_add_transaction", "pl_monthly_summary", "pl_recent"}
 
 

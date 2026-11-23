@@ -4,6 +4,12 @@
 产物为内嵌 ECharts 的单文件 HTML 看板，脱敏由原项目 masking.py 保证）。
 本模块只做三件事：按需触发管线（子进程）、把产物复制为自包含快照留档、
 提供快照清单与最新快照访问。换机/移目录后配置 finance_board_pipeline_path。
+
+计划任务通道契约（外部 `run_service.py`）：启动即创建 `logs/run.lock`，正常/异常
+退出都在 finally 删除，随后写 `logs/last_run.json`（只在结束时写）。本模块以
+run.lock 的出现/消失作为「管线已启动/已退出」的唯一在途信号；自定义的计划任务
+动作必须沿用该 run_service（或至少遵守同样的 run.lock 生命周期与状态落盘顺序），
+否则只能退回按计划任务模式（schtasks）判断，可能误判。
 """
 from __future__ import annotations
 
@@ -21,7 +27,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
-from ...utils import engine_subprocess_env, find_sibling_project, resolve_engine_root
+from ...utils import decode_engine_output, engine_subprocess_env, find_sibling_project, resolve_engine_root
 from ...database import SessionLocal
 from .models import BoardSnapshot
 
@@ -35,9 +41,27 @@ DASHBOARD_NAME = "经营财务报表监控看板.html"
 STEP_TIMEOUT = 600
 # 计划任务通道整条管线的等待上限（秒）：m02 脱敏抽取约 80-90s，给足余量
 TASK_CHANNEL_TIMEOUT = 600
+# 直接回退（无计划任务通道）单次尝试总预算（秒）：4 步共用一个预算，按剩余时间
+# 收紧每步 subprocess 超时，避免 4×STEP_TIMEOUT 撑爆前端 1500s 超时（集成审查 I2）
+DIRECT_ATTEMPT_BUDGET_SECONDS = 600
+# schtasks 查询/触发子进程的超时（秒）；前端 1500s 预算按这两项 + 单次尝试计入
+TASK_QUERY_TIMEOUT_SECONDS = 15
+TASK_TRIGGER_TIMEOUT_SECONDS = 30
 # 失败自动重试（2026-11-02）：总尝试次数与重试间隔（秒）；进程内锁仍在整套重试期间持有
 _PIPELINE_ATTEMPTS = 2
 _RETRY_DELAY_SECONDS = 5
+# 计划任务通道轮询参数（秒）：run.lock 是管线「正在运行」的唯一在途信号
+# （run_service.py 启动即建、结束/异常退出时在 finally 删除），last_run.json 只在
+# 跑完后写；因此用锁的出现/消失判断「已启动/已提前退出」，不能只看状态文件。
+TASK_POLL_INTERVAL_SECONDS = 2
+# 触发计划任务后必须在该宽限内看到 run.lock，否则判定为未启动（快速失败）
+TASK_START_GRACE_SECONDS = 60
+# run.lock 消失后等待 last_run.json 落盘的宽限；超过仍无记录 = 脚本崩溃提前退出
+TASK_EXIT_GRACE_SECONDS = 10
+# 启动宽限后查询计划任务模式的复查间隔：排队/运行不误判失败（独立审查 M7）
+TASK_STATE_RECHECK_SECONDS = 30
+# 重试前等待上一次失败尝试残留 run.lock 释放的上限（秒）
+RETRY_LOCK_WAIT_SECONDS = 60
 # 本机计划任务名兜底默认（微信报表监控项目的 服务安装.ps1 注册）；
 # 生效值经 _task_name() 取 settings.finance_board_task_name，配置为空才回落到这里
 BOARD_TASK_NAME = "微信报表监控"
@@ -45,6 +69,9 @@ BOARD_TASK_NAME = "微信报表监控"
 # 管线互斥锁：stamp 精度到秒且是快照目录名，并发 /run 会共用同一快照目录互相踩踏；
 # 非阻塞抢占，抢不到即视为「运行中」由路由层返回 409。
 _PIPELINE_LOCK = threading.Lock()
+# 直接执行本次尝试的截止时间（线程本地）：_run_steps_directly 设置，_run_step 读取
+# 并按剩余预算收紧单步超时；保持 _run_step(script) 的单参数调用/补丁接缝不变。
+_DIRECT_DEADLINE = threading.local()
 
 
 class PipelineUnavailableError(RuntimeError):
@@ -99,20 +126,32 @@ def _snapshots_dir() -> Path:
 
 
 def _run_step(script: Path) -> str:
-    """执行单个管线脚本（cwd=管线目录），返回输出尾部；失败抛 CalledProcessError。"""
+    """执行单个管线脚本（cwd=管线目录），返回输出尾部；失败抛 CalledProcessError。
+
+    单步超时默认 STEP_TIMEOUT；直接执行设置了本次尝试截止时间时按剩余预算收紧，
+    预算耗尽抛 subprocess.TimeoutExpired（由调用方统一落失败快照）。
+    """
+    timeout = STEP_TIMEOUT
+    deadline = getattr(_DIRECT_DEADLINE, "value", None)
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(cmd=script.name, timeout=STEP_TIMEOUT)
+        timeout = min(STEP_TIMEOUT, remaining)
+    # 统一字节捕获后经 decode_engine_output 解码（UTF-8 优先、GB18030 回退）：
+    # 引擎直写 GBK buffer 时 text=True + errors="replace" 会丢中文（M-7 残余）。
     proc = subprocess.run(
         [sys.executable, script.name],
         cwd=str(script.parent),
         capture_output=True,
-        text=True,
-        timeout=STEP_TIMEOUT,
-        encoding="utf-8",
-        errors="replace",
+        timeout=timeout,
         env=engine_subprocess_env(),
     )
+    stdout = decode_engine_output(proc.stdout)
+    stderr = decode_engine_output(proc.stderr)
     if proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, script.name, proc.stdout, proc.stderr)
-    return (proc.stdout or "")[-2000:]
+        raise subprocess.CalledProcessError(proc.returncode, script.name, stdout, stderr)
+    return stdout[-2000:]
 
 
 def _scheduled_task_available() -> bool:
@@ -120,12 +159,49 @@ def _scheduled_task_available() -> bool:
     try:
         proc = subprocess.run(
             ["schtasks", "/query", "/tn", _task_name()],
-            capture_output=True, timeout=15,
+            capture_output=True, timeout=TASK_QUERY_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError):
         logger.warning("schtasks 查询计划任务超时或不可执行", exc_info=True)
         return False
     return proc.returncode == 0
+
+
+def _scheduled_task_state() -> str | None:
+    """查询计划任务当前模式：running / queued / ready / disabled / unknown。
+
+    查询失败或输出不可解析返回 None。用于启动宽限后区分「排队中/运行中」与
+    「未启动」，避免把 Task Scheduler 排队或刚启动误判为失败（独立审查 M7）。
+    兼容中文「模式: 就绪」与英文「Status: Ready」两种 schtasks 输出。
+    """
+    try:
+        proc = subprocess.run(
+            ["schtasks", "/query", "/tn", _task_name(), "/fo", "LIST", "/v"],
+            capture_output=True, timeout=TASK_QUERY_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    text = _decode_console(proc.stdout or b"")
+    mode = ""
+    for line in text.splitlines():
+        m = re.match(r"^\s*(?:模式|Status)\s*[:：]\s*(.+?)\s*$", line, re.IGNORECASE)
+        if m:
+            mode = m.group(1).strip()
+            break
+    if not mode:
+        return None
+    lowered = mode.lower()
+    for state, markers in (
+        ("running", ("正在运行", "running")),
+        ("queued", ("已排队", "queued")),
+        ("ready", ("就绪", "ready")),
+        ("disabled", ("已禁用", "disabled")),
+    ):
+        if any(marker in mode or marker in lowered for marker in markers):
+            return state
+    return "unknown"
 
 
 def _scheduled_run_state() -> dict:
@@ -140,26 +216,41 @@ def _scheduled_run_state() -> dict:
 PIPELINE_STALE_LOCK_SECONDS = 3 * 3600
 
 
+def _lock_mtime() -> float | None:
+    """管线运行锁 mtime（不存在/不可读返回 None）；锁本身是「在跑」的唯一在途信号。"""
+    lock = pipeline_dir() / "logs" / "run.lock"
+    try:
+        return lock.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _pipeline_lock_fresh() -> bool:
     """以管线自己的 logs/run.lock 判「正在运行」（mtime 新鲜）。
 
     run_service.py 只在结束时写 last_run.json，运行中只有 run.lock 留痕；
     因此不能用 last_run.json 的 finished 字段判运行中（BUGfix BRD-01）。
     """
-    lock = pipeline_dir() / "logs" / "run.lock"
-    try:
-        if not lock.is_file():
+    mtime = _lock_mtime()
+    return mtime is not None and (time.time() - mtime) < PIPELINE_STALE_LOCK_SECONDS
+
+
+def _wait_pipeline_lock_release(timeout: float) -> bool:
+    """等待上一次失败尝试残留的 run.lock 释放；超时返回 False。"""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if not _pipeline_lock_fresh():
+            return True
+        if time.monotonic() >= deadline:
             return False
-        return (time.time() - lock.stat().st_mtime) < PIPELINE_STALE_LOCK_SECONDS
-    except OSError:
-        return False
+        time.sleep(min(1.0, TASK_POLL_INTERVAL_SECONDS))
 
 
 def _run_steps_via_scheduled_task() -> str:
     """经计划任务通道跑完整管线并等待结束，返回日志摘要。
 
     本机终端安全软件（QQ管家/透明加密过滤驱动）按进程树拦截写入：工作台后端
-    （venv python）派生的进程禁止写 D:\\AssetLib 区域，直接跑管线脚本必
+    （venv python）派生的进程禁止写 <项目根目录> 区域，直接跑管线脚本必
     PermissionError。计划任务实例由任务计划服务派生、不在被拦截的进程树内，
     实测可稳定跑通（每日定时任务一直走此通道）。无计划任务的机器走直接执行。
     """
@@ -172,7 +263,7 @@ def _run_steps_via_scheduled_task() -> str:
     try:
         proc = subprocess.run(
             ["schtasks", "/run", "/tn", _task_name()],
-            capture_output=True, timeout=30,
+            capture_output=True, timeout=TASK_TRIGGER_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         raise PipelineChannelUnavailableError("触发计划任务超时（schtasks 无响应）") from None
@@ -188,12 +279,51 @@ def _run_steps_via_scheduled_task() -> str:
             raise PipelineBusyError("报表监控管线正在运行中（计划任务），请等待结束后再试")
         raise PipelineChannelUnavailableError(f"触发计划任务失败：{msg[:200]}")
     deadline = time.monotonic() + TASK_CHANNEL_TIMEOUT
+    triggered_at = time.time()
+    next_state_check = time.monotonic() + TASK_START_GRACE_SECONDS
+    seen_running = False
+    exited_at: float | None = None
     last: dict = {}
     while time.monotonic() < deadline:
-        time.sleep(2)
+        time.sleep(TASK_POLL_INTERVAL_SECONDS)
         last = _scheduled_run_state()
         if last.get("started") and last.get("started") != before_started and last.get("finished"):
             break
+        lock_mtime = _lock_mtime()
+        if lock_mtime is not None and lock_mtime >= triggered_at - 1:
+            seen_running = True
+            exited_at = None
+            continue
+        if seen_running:
+            # 锁已出现又消失 = 管线实例结束；正常结束会紧接着写 last_run.json，
+            # 超过落盘宽限仍无记录说明脚本崩溃/被强杀，立即失败而不是等满通道超时。
+            if exited_at is None:
+                exited_at = time.monotonic()
+            elif time.monotonic() - exited_at > TASK_EXIT_GRACE_SECONDS:
+                raise PipelineUnavailableError(
+                    "计划任务已提前结束但未写入运行记录（run.lock 已消失、"
+                    "logs/last_run.json 未更新），管线脚本可能崩溃，"
+                    "请查看微信报表监控 logs\\service_*.log"
+                )
+        elif time.monotonic() >= next_state_check:
+            # 宽限内既没看到新锁也没看到状态更新：查一次计划任务模式，区分
+            # 「排队中（busy，不是失败）」「运行中（run.lock 尚未落盘，继续等）」
+            # 与明确未启动（就绪/禁用/未知 → 快速失败）（独立审查 M7）。
+            next_state_check = time.monotonic() + TASK_STATE_RECHECK_SECONDS
+            if _pipeline_lock_fresh():
+                raise PipelineBusyError("报表监控管线正在运行中（计划任务），请等待结束后再试")
+            state = _scheduled_task_state()
+            if state == "queued":
+                raise PipelineBusyError(
+                    "报表监控计划任务正在排队等待启动，本次未执行，请稍后刷新或重试"
+                )
+            if state == "running":
+                continue
+            mode = f"任务模式：{state}" if state else "任务模式查询不可用"
+            raise PipelineUnavailableError(
+                f"计划任务已触发，但超过 {TASK_START_GRACE_SECONDS} 秒仍未检测到管线启动"
+                f"（run.lock 未出现，{mode}），请查看微信报表监控 logs 目录"
+            )
     else:
         raise PipelineUnavailableError(
             f"计划任务运行超时（>{TASK_CHANNEL_TIMEOUT}s），请查看微信报表监控 logs 目录"
@@ -214,29 +344,39 @@ def _run_steps_directly(pdir: Path, stamp: str, t0: float, save_failed: bool = T
     """直接以子进程执行四步管线（无计划任务的机器/换机场景）。
 
     save_failed=False 时不在本函数落失败快照（由重试循环在最终失败时统一落盘），
-    日志挂在异常的 logs 属性上供调用方收集。
+    日志挂在异常的 logs 属性上供调用方收集；整次尝试共用
+    DIRECT_ATTEMPT_BUDGET_SECONDS 总预算，按剩余时间收紧每步 subprocess 超时。
     """
     logs: list[str] = []
+    deadline = time.monotonic() + DIRECT_ATTEMPT_BUDGET_SECONDS
+    previous_deadline = getattr(_DIRECT_DEADLINE, "value", None)
+    _DIRECT_DEADLINE.value = deadline
     try:
         for step in PIPELINE_STEPS:
             script = pdir / "scripts" / step
             if not script.is_file():
                 raise PipelineUnavailableError(f"缺少管线脚本：{script}")
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(cmd=step, timeout=DIRECT_ATTEMPT_BUDGET_SECONDS)
             logs.append(f"== {step} ==\n{_run_step(script)}")
     except subprocess.TimeoutExpired as exc:
         tail = "\n".join(logs) + f"\n超时：{exc}"
         if save_failed:
-            _save_snapshot(stamp, "failed", "", tail, time.perf_counter() - t0)
-        err = PipelineUnavailableError(f"管线执行超时（>{STEP_TIMEOUT}s）")
+            _try_save_snapshot(stamp, "failed", "", tail, time.perf_counter() - t0)
+        err = PipelineUnavailableError(
+            f"管线执行超时（本次尝试总预算 {DIRECT_ATTEMPT_BUDGET_SECONDS}s）"
+        )
         err.logs = tail
         raise err from exc
     except subprocess.CalledProcessError as exc:
         tail = "\n".join(logs) + f"\n{exc.stderr[-2000:] if exc.stderr else ''}"
         if save_failed:
-            _save_snapshot(stamp, "failed", "", tail, time.perf_counter() - t0)
+            _try_save_snapshot(stamp, "failed", "", tail, time.perf_counter() - t0)
         err = PipelineUnavailableError(f"管线步骤失败：{exc.cmd}")
         err.logs = tail
         raise err from exc
+    finally:
+        _DIRECT_DEADLINE.value = previous_deadline
     return "\n".join(logs)
 
 
@@ -283,6 +423,32 @@ def _notify_failure(message: str) -> None:
         logger.warning("看板失败告警登记失败", exc_info=True)
 
 
+def _try_save_snapshot(stamp: str, status: str, html_path: str, log_tail: str, elapsed: float) -> str:
+    """失败快照尽力入库；入库失败只记日志并返回说明，绝不覆盖原始管线错误。"""
+    try:
+        _save_snapshot(stamp, status, html_path, log_tail, elapsed)
+    except Exception as exc:  # noqa: BLE001  失败快照与告警都不得掩盖真实失败
+        logger.exception("看板失败快照入库失败：stamp=%s", stamp)
+        return f"失败快照未能入库（{type(exc).__name__}）"
+    return ""
+
+
+def _final_failure(stamp: str, t0: float, attempt: int,
+                   exc: PipelineUnavailableError, extra: str = "") -> PipelineUnavailableError:
+    """构造最终失败（503）：登记失败快照 + 调试中心告警，返回异常供 raise。"""
+    detail = getattr(exc, "logs", "") or str(exc)
+    msg = f"尝试 {attempt} 次（重试 {attempt - 1} 次）后仍失败：{exc}"
+    if extra:
+        msg += f"；{extra}"
+    note = _try_save_snapshot(stamp, "failed", "", f"{msg}\n{detail}"[:4000], time.perf_counter() - t0)
+    if note:
+        msg += f"；{note}"
+    _notify_failure(str(exc))
+    err = PipelineUnavailableError(msg)
+    err.logs = detail
+    return err
+
+
 def run_pipeline() -> dict:
     """触发一次完整管线并归档快照。返回快照信息；管线不可用/失败抛异常。
 
@@ -305,38 +471,59 @@ def _run_pipeline_locked() -> dict:
     stamp = _unique_stamp()
     t0 = time.perf_counter()
     attempt = 0
+    first_error: PipelineUnavailableError | None = None
+    busy_waited = False
     while True:
         attempt += 1
         try:
             log_text = _execute_attempt(pdir, stamp, t0)
             break
-        except PipelineBusyError:
-            raise
+        except PipelineBusyError as exc:
+            if first_error is None:
+                # 首轮就忙 = 确有其它的管线在跑，按 409 上报
+                raise
+            # 重试阶段的忙态来自上一次失败尝试残留的 run.lock：有界等待释放后继续；
+            # 等不到就报首轮真实失败（503），绝不能用 409 把真实原因掩盖掉。
+            if busy_waited or not _wait_pipeline_lock_release(RETRY_LOCK_WAIT_SECONDS):
+                # 本次忙态并未真正执行：按已执行次数（attempt-1）计，避免文案虚增尝试数
+                raise _final_failure(
+                    stamp, t0, attempt - 1, first_error,
+                    extra=f"重试被残留运行锁阻塞（{exc}），本次未执行",
+                ) from exc
+            busy_waited = True
+            attempt -= 1  # 忙态不是一次真实执行，不重复计数
+            continue
         except PipelineUnavailableError as exc:
+            if first_error is None:
+                first_error = exc
             if attempt < _PIPELINE_ATTEMPTS:
                 logger.warning("看板管线第 %s/%s 次执行失败，%s 秒后重试：%s",
                                attempt, _PIPELINE_ATTEMPTS, _RETRY_DELAY_SECONDS, exc)
                 time.sleep(_RETRY_DELAY_SECONDS)
                 continue
-            detail = getattr(exc, "logs", "") or str(exc)
-            msg = f"尝试 {attempt} 次（重试 {attempt - 1} 次）后仍失败：{exc}"
-            _save_snapshot(stamp, "failed", "", f"{msg}\n{detail}"[:4000], time.perf_counter() - t0)
-            _notify_failure(str(exc))
-            err = PipelineUnavailableError(msg)
-            err.logs = detail
-            raise err from exc
+            raise _final_failure(stamp, t0, attempt, exc) from exc
 
     # 产物复制为自包含快照（原文件保持不动）
     src_html = pdir / "output" / DASHBOARD_NAME
     if not src_html.is_file():
-        _save_snapshot(stamp, "failed", "", log_text, time.perf_counter() - t0)
-        raise PipelineUnavailableError(f"管线完成但未找到看板产物：{src_html}")
+        note = _try_save_snapshot(stamp, "failed", "", log_text, time.perf_counter() - t0)
+        msg = f"管线完成但未找到看板产物：{src_html}"
+        if note:
+            msg += f"；{note}"
+        raise PipelineUnavailableError(msg)
     dest_dir = _snapshots_dir() / stamp
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_html = dest_dir / DASHBOARD_NAME
     shutil.copy2(src_html, dest_html)
 
-    snap = _save_snapshot(stamp, "ok", str(dest_html), log_text, time.perf_counter() - t0)
+    try:
+        snap = _save_snapshot(stamp, "ok", str(dest_html), log_text, time.perf_counter() - t0)
+    except Exception as exc:  # noqa: BLE001  HTML 已落盘：给出可恢复状态，不吞成 500
+        logger.exception("看板快照入库失败：stamp=%s", stamp)
+        raise PipelineUnavailableError(
+            f"管线已成功且快照文件已生成（stamp={stamp}，目录 {dest_dir}），"
+            f"但快照入库失败：{exc}；产物已保留，请刷新快照列表或稍后重新运行"
+        ) from exc
     out = _out(snap)
     out["attempts"] = attempt  # 定时任务/前端可据此展示重试结果（2026-11-02 v5）
     return out
@@ -415,71 +602,83 @@ _VERIFY_CACHE: dict[str, dict] = {}
 _VERIFY_CACHE_MAX = 8
 
 
-def _walk_diff(expected, actual, path: str, out: list, limit: int = 20) -> None:
-    """递归比对 JSON（数值容差 0.01），差异最多收集 limit 条。"""
-    if len(out) >= limit:
-        return
+def _walk_diff(expected, actual, path: str, out: list, limit: int = 20,
+               stats: dict | None = None) -> None:
+    """递归比对 JSON（数值容差 0.01）；明细最多 limit 条，stats["count"] 累计真实总数。"""
+    if stats is None:
+        stats = {"count": 0}
+
+    def _push(item: dict) -> None:
+        stats["count"] += 1
+        if len(out) < limit:
+            out.append(item)
+
     if isinstance(expected, dict) and isinstance(actual, dict):
         for k in expected:
-            if len(out) >= limit:
-                return
             if k not in actual:
-                out.append({"path": f"{path}.{k}", "expected": expected[k], "actual": "<缺失>"})
+                _push({"path": f"{path}.{k}", "expected": expected[k], "actual": "<缺失>"})
             else:
-                _walk_diff(expected[k], actual[k], f"{path}.{k}", out, limit)
+                _walk_diff(expected[k], actual[k], f"{path}.{k}", out, limit, stats)
         return
     if isinstance(expected, list) and isinstance(actual, list):
         if len(expected) != len(actual):
-            out.append({"path": path, "expected": f"len={len(expected)}", "actual": f"len={len(actual)}"})
+            _push({"path": path, "expected": f"len={len(expected)}", "actual": f"len={len(actual)}"})
         for i, (x, y) in enumerate(zip(expected, actual)):
-            if len(out) >= limit:
-                return
-            _walk_diff(x, y, f"{path}[{i}]", out, limit)
+            _walk_diff(x, y, f"{path}[{i}]", out, limit, stats)
         return
     if isinstance(expected, bool) or isinstance(actual, bool):
         if expected != actual:
-            out.append({"path": path, "expected": expected, "actual": actual})
+            _push({"path": path, "expected": expected, "actual": actual})
         return
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
         if abs(float(expected) - float(actual)) > 0.01:
-            out.append({"path": path, "expected": expected, "actual": actual})
+            _push({"path": path, "expected": expected, "actual": actual})
         return
     if expected != actual:
-        out.append({"path": path, "expected": expected, "actual": actual})
+        _push({"path": path, "expected": expected, "actual": actual})
 
 
 def verify_snapshot(snapshot_id: int | None = None) -> dict:
     """看板产物内容级巡检：HTML 内嵌数据 vs 管线 data/report_data.json（只读）。
 
     校验项：① HTML 文件规模；② 内嵌 `const R` 数据块可解析；③ 顶层键集合一致；
-    ④ 递归数值比对（容差 0.01，最多 20 处差异）；⑤ 关键 KPI（出租率/开业率/收缴率/空铺数）齐全。
+    ④ 递归数值比对（容差 0.01；明细最多 20 处，`mismatch_total` 为真实总数，
+    `truncated` 标明是否截断）；⑤ 关键 KPI（出租率/开业率/收缴率/空铺数）齐全。
     结果按（快照 id、HTML 大小、数据文件 mtime）缓存，dq 巡检可复用。
+    所有返回（含 available=false 的早退）都固定带 mismatch_total/truncated，
+    调用方可以直接下标读取而不必先判分支。
     """
     with SessionLocal() as db:
         snap = (db.get(BoardSnapshot, snapshot_id) if snapshot_id
                 else db.query(BoardSnapshot).filter(BoardSnapshot.status == "ok")
                 .order_by(BoardSnapshot.id.desc()).first())
         if snap is None:
-            return {"available": False, "gap_reasons": ["暂无可巡检的快照"], "checks": [], "mismatches": []}
+            return {"available": False, "gap_reasons": ["暂无可巡检的快照"],
+                    "checks": [], "mismatches": [], "mismatch_total": 0, "truncated": False}
         snap_view = {"id": snap.id, "stamp": snap.stamp, "status": snap.status}
         html_path = Path(snap.html_path or "")
     if not snap.html_path or not html_path.is_file():
-        return {"available": False, "gap_reasons": ["快照 HTML 文件不存在"], "snapshot": snap_view, "checks": [], "mismatches": []}
+        return {"available": False, "gap_reasons": ["快照 HTML 文件不存在"], "snapshot": snap_view,
+                "checks": [], "mismatches": [], "mismatch_total": 0, "truncated": False}
     try:
         data_path = pipeline_dir() / "data" / "report_data.json"
         src_mtime = data_path.stat().st_mtime if data_path.is_file() else 0
         size = html_path.stat().st_size
     except (OSError, PipelineUnavailableError) as exc:
-        return {"available": False, "gap_reasons": [f"管线数据不可用：{exc}"], "snapshot": snap_view, "checks": [], "mismatches": []}
+        return {"available": False, "gap_reasons": [f"管线数据不可用：{exc}"], "snapshot": snap_view,
+                "checks": [], "mismatches": [], "mismatch_total": 0, "truncated": False}
     cache_key = f"{snap.id}:{size}:{src_mtime}"
     if cache_key in _VERIFY_CACHE:
         return _VERIFY_CACHE[cache_key]
     checks: list[dict] = []
     mismatches: list[dict] = []
+    mismatch_total = 0
+    truncated = False
     try:
         html = html_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        return {"available": False, "gap_reasons": [f"读取快照失败：{exc}"], "snapshot": snap_view, "checks": [], "mismatches": []}
+        return {"available": False, "gap_reasons": [f"读取快照失败：{exc}"], "snapshot": snap_view,
+                "checks": [], "mismatches": [], "mismatch_total": 0, "truncated": False}
     checks.append({"name": "文件规模", "ok": size > _MIN_HTML_BYTES, "detail": f"{size / 1e6:.2f} MB"})
     m = _DATA_MARKER_RE.search(html)
     embedded = None
@@ -509,8 +708,15 @@ def verify_snapshot(snapshot_id: int | None = None) -> dict:
             extra = sorted(set(actual_view) - set(expected_view))
             checks.append({"name": "顶层键一致", "ok": not missing and not extra,
                            "detail": f"缺 {missing} 多 {extra}" if (missing or extra) else "一致"})
-            _walk_diff(expected_view, actual_view, "", mismatches, limit=20)
-            checks.append({"name": "数值一致性", "ok": not mismatches, "detail": f"差异 {len(mismatches)} 处"})
+            diff_stats = {"count": 0}
+            _walk_diff(expected_view, actual_view, "", mismatches, limit=20, stats=diff_stats)
+            mismatch_total = diff_stats["count"]
+            truncated = mismatch_total > len(mismatches)
+            detail = (
+                f"差异 {mismatch_total} 处" if not truncated
+                else f"至少 {len(mismatches)} 处（已截断，总数 {mismatch_total} 处）"
+            )
+            checks.append({"name": "数值一致性", "ok": mismatch_total == 0, "detail": detail})
         kpi = embedded.get("kpi") or {}
         required = ["出租率", "开业率", "收缴率", "空铺数"]
         missing_kpi = [k for k in required if k not in kpi]
@@ -518,6 +724,7 @@ def verify_snapshot(snapshot_id: int | None = None) -> dict:
                        "detail": "缺失：" + "、".join(missing_kpi) if missing_kpi else "齐全"})
     fail = sum(1 for c in checks if not c["ok"])
     result = {"available": True, "snapshot": snap_view, "checks": checks, "mismatches": mismatches,
+              "mismatch_total": mismatch_total, "truncated": truncated,
               "kpi": (embedded or {}).get("kpi") or {}, "summary": {"ok": len(checks) - fail, "fail": fail}}
     if len(_VERIFY_CACHE) >= _VERIFY_CACHE_MAX:
         _VERIFY_CACHE.clear()

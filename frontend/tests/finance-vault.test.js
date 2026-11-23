@@ -5,10 +5,10 @@ import manifest from '../src/modules/finance-vault/manifest'
 describe('finance-vault 模块注册', () => {
   it('manifest 基本字段（name/title/menu）', () => {
     expect(manifest.name).toBe('finance-vault')
-    expect(manifest.title).toBe('数据仓')
+    expect(manifest.title).toBe('数据池清洗')
     expect(manifest.menu).toMatchObject({
       group: '财务',
-      title: '数据仓',
+      title: '数据池清洗',
       icon: 'Coin',
       path: '/finance/vault',
       order: 30,

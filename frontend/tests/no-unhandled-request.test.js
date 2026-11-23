@@ -18,7 +18,11 @@ import { createRequire } from 'node:module'
 //   3. await 了请求调用即候选：await 的表达式本身是 .catch(...) → 有保护；否则沿父链
 //      找词法包围它的 try 块（await 落在 catch/finally 子句里不算被包住），任一带
 //      catch → 有保护；
-//   4. 只剩 try/finally 无 catch、或压根没有 try 的候选按行报出（附原因）。
+//   4. 只剩 try/finally 无 catch、或压根没有 try 的候选按行报出（附原因）；
+//   5. 不 await 的请求链同样是候选：`.then(...)` 丢弃结果（语句位置）且链尾没有
+//      `.catch` → 报 'then 无 catch'；整条请求调用被当作语句丢弃（含 void 包裹）
+//      且没有 .catch → 报 '未处理的请求调用'。赋给变量 / return 交给调用方的不算
+//      （由调用方负责兜底），避免把 Promise 传递写法误判。
 // 解析器取自 package-lock 已有的 @babel/parser 与 @vue/compiler-sfc（既有依赖，
 // 未新增）；只覆盖本项目写法（标准 ES 模块 + script setup，无 TS），解析失败以
 // parse-error 显式报出而不是静默跳过；模板内联 async 处理器本项目未使用，不在覆盖范围。
@@ -31,6 +35,9 @@ const parseJS = require('@babel/parser').parse
 
 const REQUEST_ROOT = /^(?:api|[A-Za-z]*Api|fetch|axios)$/
 const PROMISE_COMBINATORS = new Set(['all', 'race', 'allSettled'])
+// 只有这些成员名才算「真的发出了 HTTP 请求」——api.interceptors.response.use(...)、
+// api.defaults.baseURL 之类挂在同一个小写 api 根上的用法不算
+const HTTP_VERBS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options'])
 
 const SRC = fileURLToPath(new URL('../src', import.meta.url))
 
@@ -101,6 +108,100 @@ function hasOwnCatch(argument) {
     && argument.callee.property?.name === 'catch'
 }
 
+// 领域 API 根（knowledgeApi / assistantApi / taskApi…）：方法名是业务语义（docs/list/run），
+// 不是 HTTP 动词，但同样是请求；只排除基础设施成员。
+const DOMAIN_API_ROOT = /^[A-Za-z]+Api$/
+const NON_REQUEST_MEMBERS = new Set(['interceptors', 'defaults'])
+
+// 真的发出了 HTTP 请求的调用（排除 api.interceptors.* / api.defaults.* 等同根用法）
+function isHttpRequestCall(node) {
+  if (!node || node.type !== 'CallExpression') return false
+  const { callee } = node
+  if (callee.type === 'Identifier') return callee.name === 'fetch' || callee.name === 'axios'
+  if (callee.type !== 'MemberExpression' || callee.property?.type !== 'Identifier') return false
+  const root = leftmostName(callee)
+  if (!root) return false
+  if (root !== 'api' && DOMAIN_API_ROOT.test(root)) {
+    // knowledgeApi.docs / assistantApi.sessions.list 等：任意业务方法都算请求
+    return !NON_REQUEST_MEMBERS.has(callee.property.name)
+  }
+  return REQUEST_ROOT.test(root) && HTTP_VERBS.has(callee.property.name)
+}
+
+// 从最外层调用沿 callee/object 链取到根，得到整条调用链上的所有调用节点
+function chainCalls(node) {
+  const calls = []
+  let cur = node
+  while (cur && cur.type === 'CallExpression') {
+    calls.push(cur)
+    if (cur.callee.type === 'Identifier') break
+    if (cur.callee.type !== 'MemberExpression') break
+    cur = cur.callee.object
+  }
+  return calls
+}
+
+function chainHasMethod(node, name) {
+  return chainCalls(node).some(
+    (call) => call.callee.type === 'MemberExpression' && call.callee.property?.name === name,
+  )
+}
+
+function chainHasHttpRequest(node) {
+  return chainCalls(node).some(isHttpRequestCall)
+}
+
+// 整条链的结果被当作语句丢弃（赋给变量 / return / await 都不算；void 包裹算丢弃）
+function isDiscardedStatement(node, parents) {
+  let cur = node
+  while (true) {
+    const parent = parents.get(cur)
+    if (!parent) return false
+    if (parent.type === 'MemberExpression' && parent.object === cur) {
+      cur = parent
+      continue
+    }
+    if (parent.type === 'CallExpression' && parent.callee === cur) {
+      cur = parent
+      continue
+    }
+    if (parent.type === 'UnaryExpression' && parent.operator === 'void' && parent.argument === cur) {
+      cur = parent
+      continue
+    }
+    return parent.type === 'ExpressionStatement'
+  }
+}
+
+// .then(onFulfilled, onRejected)：第二个参数就是 rejection 处理器（函数或标识符）
+function hasThenRejectionHandler(node) {
+  const handler = node.arguments?.[1]
+  if (!handler) return false
+  if (handler.type === 'NullLiteral') return false
+  return handler.type === 'ArrowFunctionExpression'
+    || handler.type === 'FunctionExpression'
+    || handler.type === 'Identifier'
+}
+
+// 链上是否有更外层的 .catch：api.get().then(cb).catch(cb) 的 then 节点向上能找到
+function hasCatchAfter(node, parents) {
+  let cur = node
+  while (true) {
+    const parent = parents.get(cur)
+    if (!parent) return false
+    if (parent.type === 'MemberExpression' && parent.object === cur) {
+      cur = parent
+      continue
+    }
+    if (parent.type === 'CallExpression' && parent.callee === cur) {
+      if (parent.callee.type === 'MemberExpression' && parent.callee.property?.name === 'catch') return true
+      cur = parent
+      continue
+    }
+    return false
+  }
+}
+
 function walk(node, parent, visit) {
   visit(node, parent)
   for (const key of Object.keys(node)) {
@@ -118,9 +219,17 @@ function analyzeScript(code, baseLine) {
   const ast = parseJS(code, { sourceType: 'module' })
   const parents = new Map()
   const awaits = []
+  const thens = []
+  const statements = []
   walk(ast, null, (node, parent) => {
     parents.set(node, parent)
     if (node.type === 'AwaitExpression') awaits.push(node)
+    if (node.type === 'ExpressionStatement') statements.push(node)
+    if (
+      node.type === 'CallExpression'
+      && node.callee.type === 'MemberExpression'
+      && node.callee.property?.name === 'then'
+    ) thens.push(node)
   })
   const hits = []
   for (const node of awaits) {
@@ -144,6 +253,27 @@ function analyzeScript(code, baseLine) {
       line: baseLine + node.loc.start.line - 1,
       reason: sawTry ? 'try/finally 无 catch' : '无 try/catch',
     })
+  }
+
+  // .then 链被丢弃且链尾没有 .catch：回调里抛错 / 请求失败都会变成未捕获 rejection
+  for (const node of thens) {
+    if (!chainHasHttpRequest(node.callee.object)) continue
+    if (!isDiscardedStatement(node, parents)) continue
+    if (hasCatchAfter(node, parents)) continue
+    if (hasThenRejectionHandler(node)) continue
+    hits.push({ line: baseLine + node.callee.property.loc.start.line - 1, reason: 'then 无 catch' })
+  }
+
+  // fire-and-forget：整条请求调用被当作语句丢弃，且没有 .catch（.then 由上一条规则管）
+  for (const stmt of statements) {
+    let expr = stmt.expression
+    if (expr.type === 'ChainExpression') expr = expr.expression
+    if (expr.type === 'AwaitExpression') continue
+    while (expr.type === 'UnaryExpression' && expr.operator === 'void') expr = expr.argument
+    if (expr.type !== 'CallExpression') continue
+    if (chainHasMethod(expr, 'then') || chainHasMethod(expr, 'catch')) continue
+    if (!chainHasHttpRequest(expr)) continue
+    hits.push({ line: baseLine + expr.loc.start.line - 1, reason: '未处理的请求调用' })
   }
   return hits
 }

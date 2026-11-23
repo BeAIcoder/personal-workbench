@@ -4,6 +4,7 @@
 - 必须先 `from . import models`：导入即把模块表注册进 Base.metadata，
   宿主 lifespan 的 create_all 才能建出模块表（注册器在 lifespan 之前加载本文件）；
 - agent_tools 元素与宿主 TOOL_SPECS 同构（func/params/required），外加 readonly 标记；
+  params 为 {参数名: (JSON 类型, 中文说明)}，必填参数只写进 required 列表；
   readonly=True 的工具在 Agent 只读模式下也可用（由编排层按此标记放行）；
 - column_patches：给本模块的已有表补列时声明 {表名: {列名: DDL}}，宿主启动时合并执行。
 """
@@ -16,14 +17,12 @@ manifest = ModuleManifest(
     title="模块显示名",
     version="0.1.0",
     prefix="/api/finance/example",         # ← 必须 /api/finance/ 开头
-    tables=["mod_example_entry"],          # ← 模块全部表名（mod_ 前缀）
-    menu={"group": "财务", "icon": "Coin", "order": 100},
     agent_tools=[
         {
             "name": "example_ping",
             "func": example_ping,
             "description": "工具的一句话说明（Agent 按此决定是否调用）",
-            "params": {},                  # {参数名: (JSON类型, 中文说明, 是否必填)}
+            "params": {},                  # {参数名: (JSON类型, 中文说明)}；必填写进 required
             "required": [],
             "readonly": True,              # 只读工具标记
         }

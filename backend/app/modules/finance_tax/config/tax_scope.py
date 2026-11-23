@@ -43,7 +43,7 @@ TAX_SCOPE_REGISTRY: dict[str, TaxScope] = {
     ),
     "value_added_tax": TaxScope(
         "value_added_tax", "增值税", "admitted",
-        "一般/小规模双模式，含附加税口径",
+        "一般/小规模双模式（仅增值税本体；城建税/教育费附加等附加税尚未接入，另行测算）",
         "财政部 税务总局公告2023年第19号",
         "2026-09 真实申报对拍（脱敏）",
     ),

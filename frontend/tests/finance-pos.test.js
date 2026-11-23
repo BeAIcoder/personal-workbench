@@ -80,7 +80,7 @@ describe('finance-pos 上传前大小提示（swarm pos-hardening）', () => {
   }
 
   function pick(files) {
-    return { target: { files, value: 'C:\\fakepath' } }
+    return { target: { files, value: 'C:/path/to/fakepath' } }
   }
 
   it('正常小文件原样进入表单、不弹提示（既有流程不变）', () => {
@@ -147,7 +147,7 @@ describe('finance-pos 执行失败补填项目重试（--project）', () => {
     api.post
       .mockRejectedValueOnce({ ...PROJECT_ERR, response: { ...PROJECT_ERR.response, data: { detail: 'ValueError: 无法从辅助明细账识别项目，请使用 --project 指定' } } })
       .mockResolvedValueOnce(okResp)
-    ElMessageBox.prompt.mockResolvedValue({ value: '脱敏街区' })
+    ElMessageBox.prompt.mockResolvedValue({ value: '项目A' })
 
     const ctx = mount()
     await ctx.execute(row)
@@ -155,7 +155,7 @@ describe('finance-pos 执行失败补填项目重试（--project）', () => {
     expect(ElMessageBox.prompt).toHaveBeenCalledTimes(1)
     expect(ElMessageBox.prompt.mock.calls[0][0]).toContain('识别或匹配项目')
     expect(api.post).toHaveBeenCalledTimes(2)
-    expect(api.post.mock.calls[1][0]).toBe('/finance/pos/runs/7/execute?project=%E8%8C%B6%E9%A9%AC%E8%8A%B1%E8%A1%97')
+    expect(api.post.mock.calls[1][0]).toBe('/finance/pos/runs/7/execute?project=%E9%A1%B9%E7%9B%AEA')
     expect(ElMessage.success).toHaveBeenCalledWith('执行完成，产物 1 个')
   })
 

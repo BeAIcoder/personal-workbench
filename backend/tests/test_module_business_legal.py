@@ -14,7 +14,11 @@ def test_manifest_loaded():
     assert "business_legal" in loaded
     m = loaded["business_legal"]
     assert m.prefix == "/api/business/legal"
-    assert m.tables == ["mod_legal_contract_review", "mod_legal_case", "mod_legal_seal"]
+    from app.modules.business_legal import models as legal_models
+
+    assert {legal_models.LegalContractReview.__tablename__, legal_models.LegalCase.__tablename__,
+            legal_models.LegalSeal.__tablename__} == {
+        "mod_legal_contract_review", "mod_legal_case", "mod_legal_seal"}
 
 
 def test_review_crud_and_summary(client):

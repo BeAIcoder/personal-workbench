@@ -30,7 +30,7 @@ def test_new_agent_tuples_shape():
 
 
 def test_sanitize_masks_paths_and_nickname():
-    text = "参考 D:/AIApps/QwenPaw/data 与 D:\\x\\y，某昵称注意安全。"
+    text = "参考 QwenPaw/data 与 D:/path/to/x/y，某昵称注意安全。"
     out = mod.sanitize(text)
     assert "D:" not in out
     assert "某昵称" not in out

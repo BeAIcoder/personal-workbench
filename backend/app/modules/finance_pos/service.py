@@ -23,7 +23,13 @@ from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
 from ...database import SessionLocal
-from ...utils import engine_subprocess_env, find_sibling_project, repair_upload_mojibake, resolve_engine_root
+from ...utils import (
+    decode_engine_output,
+    engine_subprocess_env,
+    find_sibling_project,
+    repair_upload_mojibake,
+    resolve_engine_root,
+)
 from .models import PosRun
 
 logger = logging.getLogger(__name__)
@@ -52,6 +58,10 @@ _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
 
 class EngineUnavailableError(RuntimeError):
     """引擎目录缺失或不可用。"""
+
+
+class RunBusyError(RuntimeError):
+    """已有 POS 运行在执行（非阻塞占入失败，路由映射 409）。"""
 
 
 def _safe_name(filename: str) -> str:
@@ -134,6 +144,8 @@ def _mark_failed(db: Session, run_id: int, message: str, elapsed: float, log_tai
             row.status = "failed"
             row.error = message[:500]
             row.elapsed_sec = round(elapsed, 2)
+            # 失败运行不得继续提供上一次成功产物（重跑失败同口径）
+            row.artifacts = []
             if log_tail is not None:
                 row.log_tail = log_tail[-4000:]
         db.commit()
@@ -258,21 +270,32 @@ def create_run(db: Session, files: list[tuple[str, bytes]]) -> dict:
 
 
 def _run_script(script: str, args: list[str], cwd: Path) -> str:
+    """执行引擎脚本：字节捕获后按 UTF-8 → GB18030 解码（子进程已强制 UTF-8，
+    但外部引擎可能自带编码/直写 buffer，保留 GB18030 容错避免中文提示丢失）。"""
     proc = subprocess.run(
         [sys.executable, script, *args], cwd=str(cwd),
-        capture_output=True, text=True, timeout=STEP_TIMEOUT,
-        encoding="utf-8", errors="replace",
-        env=engine_subprocess_env(),
+        capture_output=True, timeout=STEP_TIMEOUT,
+        env=engine_subprocess_env(get_finance_data_dir()),
     )
+    stdout = decode_engine_output(proc.stdout)
+    stderr = decode_engine_output(proc.stderr)
     if proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, script, proc.stdout, proc.stderr)
-    return ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
+        raise subprocess.CalledProcessError(proc.returncode, script, stdout, stderr)
+    return (stdout + "\n" + stderr)[-2000:]
 
 
 def execute_run(db: Session, run_id: int, project: str | None = None) -> dict:
-    """执行入口：进程内串行化，避免同一运行被并发执行/同一目录互相覆盖。"""
-    with _EXEC_LOCK:
+    """执行入口：非阻塞占入进程内执行锁，避免排队叠加到前端超时预算。
+
+    同一时刻只允许一个 POS 执行；已有运行在执行时立即抛 RunBusyError（路由 409），
+    不再让第二个请求排队等待（排队 + 单次执行最坏 2×1800s 会超过前端 1900s）。
+    """
+    if not _EXEC_LOCK.acquire(blocking=False):
+        raise RunBusyError("已有 POS 运行正在执行，请稍后重试")
+    try:
         return _execute_run_locked(db, run_id, project)
+    finally:
+        _EXEC_LOCK.release()
 
 
 def _execute_run_locked(db: Session, run_id: int, project: str | None = None) -> dict:
@@ -292,11 +315,20 @@ def _execute_run_locked(db: Session, run_id: int, project: str | None = None) ->
             db.commit()
         else:
             raise ValueError("该运行正在执行中")
-    edir = engine_dir()
-    run_dir = _resolve_run_dir(run)
+    # 新一轮执行先作废旧产物：后续任何失败分支（引擎非零退出/超时/兜底异常）
+    # 都不得继续下载上一次成功结果（与现金流失败重跑同口径）。
+    run.artifacts = []
+    db.commit()
+    try:
+        edir = engine_dir()
+        run_dir = _resolve_run_dir(run)
+    except EngineUnavailableError as exc:
+        _mark_failed(db, run.id, str(exc), 0.0, run.log_tail)
+        raise
     input_dir = run_dir / "input"
     out_dir = run_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(run_dir / "artifacts", ignore_errors=True)
 
     uploaded = {f["name"] for f in (run.input_files or [])}
     before = {p.name for p in input_dir.iterdir() if p.is_file()}
@@ -328,18 +360,35 @@ def _execute_run_locked(db: Session, run_id: int, project: str | None = None) ->
             shutil.rmtree(art_dir, ignore_errors=True)  # 重跑不累积上次残留（避免 _1 副本）
         art_dir.mkdir(parents=True, exist_ok=True)
         artifacts: list[dict] = []
+        empty_names: list[str] = []
         sources = [p for p in out_dir.iterdir() if p.is_file()]
         sources += [p for p in input_dir.iterdir()
                     if p.is_file() and p.name not in before and Path(p.name).name not in uploaded]
         for f in sorted(set(sources)):
             if f.name.startswith("~$"):
                 continue
+            if f.stat().st_size <= 0:
+                # 0 字节产物不归档也不算成功（引擎/磁盘异常时常见），列入日志便于排查
+                empty_names.append(f.name)
+                continue
             dest = _unique_path(art_dir / f.name)
             dest.write_bytes(f.read_bytes())
             artifacts.append({"name": dest.name, "size": dest.stat().st_size, "path": str(dest)})
+        if empty_names:
+            logs.append(f"⚠ 跳过 0 字节产物：{'、'.join(sorted(empty_names))}")
+            run.log_tail = "\n".join(logs)[-4000:]
         run.artifacts = artifacts
-        run.status = "ok" if artifacts else "failed"
-        run.error = "" if artifacts else "引擎执行完成但未产生产物"
+        if not artifacts:
+            if empty_names:
+                message = "引擎执行完成但产物为空文件（0 字节），请检查引擎输出与磁盘写入是否正常"
+            else:
+                message = "引擎执行完成但未产生产物（请检查输入文件是否完整、引擎日志是否报错）"
+            run.status = "failed"
+            run.error = message
+            db.commit()
+            raise EngineUnavailableError(message)
+        run.status = "ok"
+        run.error = ""
         db.commit()
         db.refresh(run)
         return _out(run)
@@ -402,6 +451,19 @@ def get_run(db: Session, run_id: int) -> PosRun:
     if run is None:
         raise HTTPException(status_code=404, detail="运行记录不存在")
     return run
+
+
+def delete_run(db: Session, run_id: int) -> None:
+    """删除运行：running 中拒绝；run_dir 在本模块 runs 根内校验后整目录清理。"""
+    from fastapi import HTTPException
+
+    run = get_run(db, run_id)
+    if run.status == "running":
+        raise HTTPException(status_code=409, detail="该运行正在执行中，不能删除")
+    run_dir = _resolve_run_dir(run)
+    shutil.rmtree(run_dir, ignore_errors=True)
+    db.delete(run)
+    db.commit()
 
 
 def artifact_path(run: PosRun, name: str) -> Path:

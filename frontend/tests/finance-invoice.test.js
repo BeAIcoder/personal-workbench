@@ -30,6 +30,21 @@ describe('finance-invoice 项目拆分与重新归类（静态契约）', () => 
     expect(detailSource).toContain('download_name')
     expect(detailSource).toContain('zip_file')
   })
+
+  it('项目 PDF：下载与打印共用合并接口，落名取后端 pdf_name', () => {
+    expect(detailSource).toContain('/projects/pdf?project=')
+    expect(detailSource).toContain('pdf_name')
+    expect(detailSource).toContain('下载 PDF')
+    expect(detailSource).toContain('打印')
+    expect(detailSource).toContain(':disabled="pdfDisabled || !!projectOps[row.project]"')
+  })
+
+  it('打印先预开新标签页，失败由拦截器提示（catch 不重复弹 error）', () => {
+    expect(detailSource).toContain('openPrintWindow')
+    expect(detailSource).toContain('showPdfInWindow')
+    expect(detailSource).toContain('Ctrl+P')
+    expect(detailSource).not.toContain('ElMessage.error(')
+  })
 })
 
 describe('finance-invoice 模块注册', () => {

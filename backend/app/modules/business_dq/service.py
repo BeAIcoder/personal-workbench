@@ -20,6 +20,10 @@ _DOMAIN_LABELS = {"leasing": "招商", "operations": "营运", "hr": "人事", "
 # 巡检里硬编码的枚举须与模块服务层同源（契约测试锁定，防止模块加状态而巡检静默漏检）
 LEAD_STAGE_VALUES = ("lead", "contact", "offer", "intent", "signed", "lost")
 UNIT_STATUS_VALUES = ("vacant", "negotiating", "reserved", "leased")
+# 四个税种申报表实际会写的状态（模型默认 draft；路由写 calculated/exported；提交态 submitted）。
+# 旧实现只查 status='failed'，但这四个模块从不写 failed → 死检查（R11-084）；
+# 改为白名单后，历史 failed 与任何脏值都会被巡检发现。
+TAX_FILING_STATUS_VALUES = ("draft", "calculated", "exported", "submitted")
 
 
 def _sql_values(values) -> str:
@@ -402,30 +406,45 @@ def _dom_finance(db, as_of):
         ), {"as_of": as_of}).scalar() or 0)
         if n:
             issues.append(_issue("warning", "日期有效性", n, [], "存在未来日期的个人记账；建议核对记账日期"))
-    failed_total = 0
+    bad_status_total = 0
     for tname in ("mod_vat_filing", "mod_dsf_filing", "mod_iit_filing", "mod_stamp_duty_filing"):
         if _exists(db, tname):
             present.append(tname)
-            failed_total += int(db.execute(text(
-                "SELECT COUNT(*) FROM " + tname + " WHERE status = 'failed'"
+            bad_status_total += int(db.execute(text(
+                "SELECT COUNT(*) FROM " + tname + " WHERE status IS NULL OR status NOT IN ("
+                + _sql_values(TAX_FILING_STATUS_VALUES) + ")"
             )).scalar() or 0)
-    if failed_total:
-        issues.append(_issue("warning", "运行状态", failed_total, [], "存在 failed 状态的税种申报记录；建议到对应税种页面复核计算与导出"))
-    # 税务域勾稽（2026-11-02 v4）：申报表 vs 财务数据口径
+    if bad_status_total:
+        issues.append(_issue("warning", "运行状态", bad_status_total, [],
+                             "存在非预期的税种申报状态（仅允许 draft/calculated/exported/submitted）；"
+                             "建议核对该记录来源并修正或重新填报"))
+    # 税务域勾稽（2026-11-02 v4）：申报表 vs 财务数据口径。
+    # R11-007：财务数据整表为空时不能逐条报「无同期财务数据」——那是「未导入」，
+    # 不是勾稽不一致；只有确有财务数据但同企业同年度缺配比才算真实差异。
     if _exists(db, "mod_tax_return") and _exists(db, "mod_tax_financial_data"):
         present.append("tax_returns")
-        n = int(db.execute(text(
-            "SELECT COUNT(*) FROM mod_tax_return r WHERE NOT EXISTS "
-            "(SELECT 1 FROM mod_tax_financial_data f WHERE f.enterprise_id = r.enterprise_id AND f.year = r.year)"
-        )).scalar() or 0)
-        if n:
-            issues.append(_issue("warning", "申报勾稽", n, [], "存在无同期财务数据的申报记录；建议补录财务数据或核对申报依据"))
-        n = int(db.execute(text(
-            "SELECT COUNT(*) FROM mod_tax_financial_data f WHERE NOT EXISTS "
-            "(SELECT 1 FROM mod_tax_return r WHERE r.enterprise_id = f.enterprise_id AND r.year = f.year)"
-        )).scalar() or 0)
-        if n:
-            issues.append(_issue("info", "申报勾稽", n, [], "存在财务数据但同年度无申报记录；建议确认是否已申报"))
+        returns_total = int(db.execute(text("SELECT COUNT(*) FROM mod_tax_return")).scalar() or 0)
+        fin_total = int(db.execute(text("SELECT COUNT(*) FROM mod_tax_financial_data")).scalar() or 0)
+        if fin_total == 0:
+            if returns_total:
+                issues.append(_issue(
+                    "info", "申报勾稽", returns_total, [],
+                    "财务数据尚未导入（mod_tax_financial_data 为空），税会勾稽未执行；"
+                    "请先在「财报导入」导入并保存财务数据",
+                ))
+        else:
+            n = int(db.execute(text(
+                "SELECT COUNT(*) FROM mod_tax_return r WHERE NOT EXISTS "
+                "(SELECT 1 FROM mod_tax_financial_data f WHERE f.enterprise_id = r.enterprise_id AND f.year = r.year)"
+            )).scalar() or 0)
+            if n:
+                issues.append(_issue("warning", "申报勾稽", n, [], "存在无同期财务数据的申报记录；建议补录财务数据或核对申报依据"))
+            n = int(db.execute(text(
+                "SELECT COUNT(*) FROM mod_tax_financial_data f WHERE NOT EXISTS "
+                "(SELECT 1 FROM mod_tax_return r WHERE r.enterprise_id = f.enterprise_id AND r.year = f.year)"
+            )).scalar() or 0)
+            if n:
+                issues.append(_issue("info", "申报勾稽", n, [], "存在财务数据但同年度无申报记录；建议确认是否已申报"))
         n = int(db.execute(text(
             "SELECT COUNT(*) FROM mod_tax_return WHERE tax_amount > 0.01 AND (taxable_income IS NULL OR taxable_income <= 0)"
         )).scalar() or 0)
@@ -475,6 +494,22 @@ def _dom_finance(db, as_of):
                 days = 0
             if days > 7:
                 issues.append(_issue("warning", "陈旧快照", days, [str(latest)], "看板最近成功快照已超过 7 天未更新；建议运行管线刷新"))
+            # R11-034：快照时间早于管线数据文件 mtime = 快照未包含最新数据（跑管线后未归档）。
+            # 60 秒容差覆盖「写数据 → 生成 HTML → 归档」的正常先后关系。
+            try:
+                from ..finance_board import service as board_service
+                data_path = board_service.pipeline_dir() / "data" / "report_data.json"
+                if data_path.is_file():
+                    src_mtime = datetime.fromtimestamp(data_path.stat().st_mtime)
+                    if (src_mtime - latest).total_seconds() > 60:
+                        issues.append(_issue(
+                            "warning", "快照落后", 1,
+                            [f"快照 {latest:%Y-%m-%d %H:%M} 早于数据源 {src_mtime:%Y-%m-%d %H:%M}"],
+                            "看板最新成功快照早于管线数据文件 report_data.json；快照未包含最新数据，"
+                            "建议重新运行管线并归档新快照",
+                        ))
+            except Exception:  # 管线目录不可用/时钟异常不拖垮财务域
+                pass
         # 连续失败（2026-11-02 v4）：最近两条快照均 failed → error（告警会同步登记问题记录）
         try:
             from ..finance_board.models import BoardSnapshot

@@ -9,8 +9,6 @@ manifest = ModuleManifest(
     title="工程物业",
     version="0.1.0",
     prefix="/api/business/facility",
-    tables=["mod_fac_equipment", "mod_fac_compliance"],
-    menu={"group": "经营", "icon": "Tools", "order": 74},
     agent_tools=[
         {
             "name": "facility_summary",

@@ -171,7 +171,48 @@ class BalanceSummaryOut(BaseModel):
     debit_total: float
     credit_total: float
     entries_without_subject: int = 0
+    # 数据来源：entries=凭证分录聚合 / balances=仅余额表回退 / none=无数据
+    source: str = "entries"
+    balance_row_count: int = 0
     note: str = ""
+
+
+class BalanceRowOut(BaseModel):
+    """科目余额表行（期初/本期/期末借贷六列 + 方向无关余额两列）。"""
+
+    id: int
+    ledger: str
+    period: str
+    subject_code: str
+    subject_name: str
+    opening_debit: float
+    opening_credit: float
+    period_debit: float
+    period_credit: float
+    closing_debit: float
+    closing_credit: float
+    opening_balance: float
+    closing_balance: float
+
+
+class BalanceTotalsOut(BaseModel):
+    opening_debit: float = 0.0
+    opening_credit: float = 0.0
+    period_debit: float = 0.0
+    period_credit: float = 0.0
+    closing_debit: float = 0.0
+    closing_credit: float = 0.0
+    opening_balance: float = 0.0
+    closing_balance: float = 0.0
+
+
+class BalanceListOut(BaseModel):
+    period: str
+    total: int
+    page: int
+    page_size: int
+    items: list[BalanceRowOut]
+    totals: BalanceTotalsOut
 
 
 class ExportIn(BaseModel):

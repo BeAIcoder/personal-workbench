@@ -95,6 +95,28 @@ def test_engine_unavailable_503(client, monkeypatch):
     assert r.status_code == 503 and "引擎" in r.json()["detail"]
 
 
+def test_delete_run_removes_dir_and_row(client):
+    """删除运行：DB 行与运行目录一并清理；再删 404。"""
+    r = client.post(f"{P}/runs", files=[("files", _xlsx("a.xlsx"))])
+    assert r.status_code == 201, r.text
+    run = r.json()
+    from pathlib import Path
+
+    from app.database import SessionLocal
+    from app.modules.finance_pos.models import PosRun
+
+    with SessionLocal() as db:
+        row = db.get(PosRun, run["id"])
+        run_dir = Path(row.run_dir)
+    assert Path(run_dir).is_dir()
+
+    resp = client.delete(f"{P}/runs/{run['id']}")
+    assert resp.status_code == 204
+    assert not Path(run_dir).exists()
+    assert client.get(f"{P}/runs/{run['id']}").status_code == 404
+    assert client.delete(f"{P}/runs/{run['id']}").status_code == 404
+
+
 def test_full_flow_with_stub_engine(client, pos_dir):
     r = client.post(f"{P}/runs", files=[
         ("files", _xlsx("SHOP对账单.xlsx")),
@@ -366,11 +388,11 @@ p.add_argument("--root", type=Path)
 p.add_argument("--project", default=None)
 p.add_argument("--pos", type=Path, default=None)
 a = p.parse_args()
-sys.stderr.write("项目汇总: 脱敏街区:2天 / 园城:0天 / 金阶:0天\\n")
+sys.stderr.write("项目汇总: 项目A:2天 / 项目B:0天 / 项目C:0天\\n")
 if not a.project:
     sys.stderr.write("ValueError: 无法从辅助明细账识别项目，请使用 --project 指定\\n")
     sys.exit(1)
-if a.project not in ("脱敏街区", "园城", "金阶"):
+if a.project not in ("项目A", "项目B", "项目C"):
     sys.stderr.write("ValueError: POS 台账里未找到项目 %s 的原始明细。\\n" % a.project)
     sys.exit(1)
 (a.root / "POS差异分析_标注.xlsx").write_text("stub-diff", encoding="utf-8")
@@ -394,16 +416,16 @@ def test_execute_project_inference_failure_marks_error_for_retry(client, pos_dir
     ex = client.post(f"{P}/runs/{run_id}/execute")
     assert ex.status_code == 503
     detail = ex.json()["detail"]
-    assert "识别项目" in detail and "可用项目名：脱敏街区/园城/金阶" in detail, detail
+    assert "识别项目" in detail and "可用项目名：项目A/项目B/项目C" in detail, detail
 
     runs = {x["id"]: x for x in client.get(f"{P}/runs").json()["items"]}
     assert "需指定项目名" in runs[run_id]["error"]
 
     # 带错误项目名重试：仍失败但再次给出可用项目名（可继续修正）
-    ex_bad = client.post(f"{P}/runs/{run_id}/execute?project=脱敏街区")
+    ex_bad = client.post(f"{P}/runs/{run_id}/execute?project=不存在项目")
     assert ex_bad.status_code == 503 and "可用项目名" in ex_bad.json()["detail"]
 
     # 带正确项目名重试：--project 透传引擎，执行成功、可重跑
-    ex2 = client.post(f"{P}/runs/{run_id}/execute?project=脱敏街区")
+    ex2 = client.post(f"{P}/runs/{run_id}/execute?project=项目A")
     assert ex2.status_code == 200, ex2.text
     assert ex2.json()["status"] == "ok"

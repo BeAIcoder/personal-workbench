@@ -1,5 +1,6 @@
 <template>
   <div class="page">
+    <HelpLink section="6.2" />
     <el-card shadow="never" v-loading="running" element-loading-text="正在执行费用分类，请稍候...">
       <template #header>
         <div class="card-head">
@@ -96,6 +97,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import HelpLink from '../../../components/HelpLink.vue'
 import api from '../../../api'
 import TemplateLinks from '../../../components/TemplateLinks.vue'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'

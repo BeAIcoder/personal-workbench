@@ -8,14 +8,12 @@ manifest = ModuleManifest(
     title="费用分类",
     version="0.1.0",
     prefix="/api/finance/expense",
-    tables=["mod_expense_run", "mod_expense_row"],
-    menu={"group": "财务", "icon": "Histogram", "order": 10},
     agent_tools=[
         {
             "name": "expense_runs_summary",
             "func": expense_runs_summary,
             "description": "费用分类模块最近运行统计：返回最近 N 次分类执行的行数/命中数/命中率/状态（只读）",
-            "params": {"limit": ("integer", "最多返回最近几次运行，默认5，上限20", False)},
+            "params": {"limit": ("integer", "最多返回最近几次运行，默认5，上限20")},
             "required": [],
             "readonly": True,
         }

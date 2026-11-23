@@ -96,6 +96,7 @@ class ProjectSummary(BaseModel):
     count: int
     amount: float  # 项目净额（冲红为负）
     manual: int = 0  # 其中人工修正过的张数
+    pdf_name: str = ""  # 单项目合并 PDF 的下载文件名（后端统一命名，未导出也可用）
     zip_file: str = ""  # 单项目 ZIP 文件名（未导出为空）
     zip_ready: bool = False
 

@@ -66,7 +66,7 @@ describe('凭证查询筛选（B4：改筛选必须复位页码）', () => {
 
 describe('文件选择输入框（B5：取值后必须重置，否则复选同一文件不触发 change）', () => {
   function fakeEvent(files) {
-    return { target: { files, value: 'C:\fakepath\a.xlsx' } }
+    return { target: { files, value: 'C:/path/to/fakepath\a.xlsx' } }
   }
 
   it('takeFile 返回首个文件并清空 input.value', () => {
@@ -93,7 +93,7 @@ describe('文件选择输入框（B5：取值后必须重置，否则复选同�
     const e = fakeEvent([{ name: 'same.xlsx' }])
     takeFile(e)
     e.target.files = [{ name: 'same.xlsx' }]
-    e.target.value = 'C:\fakepath\same.xlsx'
+    e.target.value = 'C:/path/to/fakepath\same.xlsx'
     expect(takeFile(e)).toEqual({ name: 'same.xlsx' })
     expect(e.target.value).toBe('')
   })
@@ -139,8 +139,8 @@ describe('错误提示（B6：拦截器统一弹窗，业务 catch 不再重复�
       'finance-ledger-bip/views/VoucherListView.vue',
       'finance-ledger-bip/views/ImportWizardView.vue',
       'finance-ledger-bip/views/BalanceSummaryView.vue',
-      'finance-vault/views/TableListView.vue',
-      'finance-vault/views/QueryView.vue',
+      'finance-vault/views/parts/TablesPanel.vue',
+      'finance-vault/views/parts/SqlPanel.vue',
       'finance-invoice/views/BatchListView.vue',
       'finance-invoice/views/BatchDetailView.vue',
       'finance-pos/views/PosRunView.vue',

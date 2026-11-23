@@ -46,6 +46,9 @@ _TEST_DB = _TEMP_ROOT / f"workbench_test_{os.getpid()}.db"
 _DEBUG_DIR = _TEMP_ROOT / f"workbench_debug_{os.getpid()}"
 _FINANCE_DIR = _TEMP_ROOT / f"workbench_finance_{os.getpid()}"
 _TEST_DATA = _TEMP_ROOT / f"workbench_data_{os.getpid()}"
+_CORE_TABLE = "tasks"
+# 上一次 client 用例 teardown 已重建好空表：紧邻的下一个 client 用例可跳过重复 DDL
+_SCHEMA_PRISTINE = False
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB.as_posix()}"
 os.environ["SEED_ON_STARTUP"] = "0"
 # 调试中心数据目录指向临时目录：测试不碰真实 backend/data/debug
@@ -61,6 +64,7 @@ for _k in ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect
 
 from app.database import Base, engine
 from app.main import app
@@ -85,16 +89,55 @@ def _isolate_database(request):
     会把上一个用例的 memory/mcp/skill 行带进下一个文件。这里按「是否请求
     client（含 sclient 等依赖它的夹具）」统一重置；纯函数/单元测试不做 DDL，
     避免全量回归被无谓拖慢。
+
+    teardown 必须重建空表（T7A）：只 drop 不重建时，排在 client 重文件之后的
+    非 client 触库用例会撞「no such table」。重建后置 `_SCHEMA_PRISTINE`，
+    紧邻的下一个 client 用例即可跳过重复 DDL，整体 DDL 次数不增。
     """
+    global _SCHEMA_PRISTINE
     if "client" not in request.fixturenames:
+        # 非 client 用例也可能直接触库；若上一个用例把表 drop 了（自定义 client
+        # 夹具、用例内显式清理等），这里先补建，避免按文件顺序或并行分片时无表可用。
+        if not _schema_present():
+            _rebuild_schema()
+        _SCHEMA_PRISTINE = False
         yield
         return
-    engine.dispose()
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    if not _SCHEMA_PRISTINE:
+        _rebuild_schema()
+    _SCHEMA_PRISTINE = False
     yield
-    Base.metadata.drop_all(bind=engine)
+    _rebuild_schema()
+    _SCHEMA_PRISTINE = True
+
+
+def _rebuild_schema() -> None:
+    """drop 后立即重建：用例之间保持「空表」而不是「无表」。"""
     engine.dispose()
+    Base.metadata.drop_all(bind=engine)
+    _drop_kb_virtual_tables()
+    Base.metadata.create_all(bind=engine)
+    _ensure_kb_schema()
+
+
+def _schema_present() -> bool:
+    return inspect(engine).has_table(_CORE_TABLE)
+
+
+def _drop_kb_virtual_tables() -> None:
+    """FTS5/vec 虚拟表不在 ORM metadata 里，drop_all 管不到，需显式清理。
+
+    否则上一个用例的索引行会残留到下一个用例，造成「删了文档还能搜到」的假象。
+    """
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE IF EXISTS kb_fts")
+        conn.exec_driver_sql("DROP TABLE IF EXISTS kb_vec")
+
+
+def _ensure_kb_schema() -> None:
+    from app.knowledge.index import ensure_schema
+
+    ensure_schema()
 
 
 @pytest.fixture()

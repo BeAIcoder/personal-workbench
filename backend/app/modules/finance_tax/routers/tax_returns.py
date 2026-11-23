@@ -120,11 +120,14 @@ def calculate_tax(
     10000，导致小微误判（1000 万被判成 0.1 万、税率从 25% 变 5%）与税额量级
     错误（导出少 1 万倍）。此处只在边界换算一次。
     """
+    from ..config.tax_scope import require_tax_scope
     from ..services.corporate_income_tax_calculator import (
         CorporateIncomeTaxCalculator,
         EnterpriseTaxType,
     )
 
+    # 准入门禁首行：下面的「零所得直接返回 0 税」分支不得绕过未准入税种
+    require_tax_scope("corporate_income_tax")
     taxable_income_wan = float(
         return_data.get("total_revenue", 0)
         + return_data.get("other_income", 0)

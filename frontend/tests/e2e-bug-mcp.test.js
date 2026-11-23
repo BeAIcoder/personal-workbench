@@ -79,8 +79,8 @@ describe('接口错误文案提取', () => {
 
 describe('args 空格往返', () => {
   it('解析尊重双引号（含空格参数不再被拆坏）', () => {
-    expect(parseArgsText('-y @scope/pkg "D:\\my docs\\root"')).toEqual([
-      '-y', '@scope/pkg', 'D:\\my docs\\root',
+    expect(parseArgsText('-y @scope/pkg "D:/tmp/my docs/root"')).toEqual([
+      '-y', '@scope/pkg', 'D:/tmp/my docs/root',
     ])
   })
 
@@ -94,12 +94,12 @@ describe('args 空格往返', () => {
   })
 
   it('formatArgs 给含空白/引号的参数加引号并转义', () => {
-    expect(formatArgs(['-y', '@scope/pkg', 'D:\\my docs\\root'])).toBe('-y @scope/pkg "D:\\\\my docs\\\\root"')
+    expect(formatArgs(['-y', '@scope/pkg', 'D:/tmp/my docs/root'])).toBe('-y @scope/pkg "D:/tmp/my docs/root"')
     expect(formatArgs([])).toBe('')
   })
 
   it('formatArgs → parseArgsText 往返无损', () => {
-    const args = ['-y', '@scope/pkg', 'D:\\my docs\\root', 'a"b', 'plain']
+    const args = ['-y', '@scope/pkg', 'D:/tmp/my docs/root', 'a"b', 'plain']
     expect(parseArgsText(formatArgs(args))).toEqual(args)
   })
 })

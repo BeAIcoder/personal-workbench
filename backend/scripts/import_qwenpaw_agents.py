@@ -13,9 +13,9 @@ QwenPaw 的每个 Agent 工作区 = 一个角色定义（SOUL.md 灵魂 / AGENTS
     python backend/scripts/import_qwenpaw_agents.py --dry-run   # 预览不写入
     python backend/scripts/import_qwenpaw_agents.py             # 执行导入
     python backend/scripts/import_qwenpaw_agents.py --overwrite # 覆盖历史导入内容再跑
-    python backend/scripts/import_qwenpaw_agents.py --from "D:/AIApps/QwenPaw/data/workspaces"
+    python backend/scripts/import_qwenpaw_agents.py --from "<QwenPaw workspaces 目录>"
 
-- 源目录定位顺序：--from 参数 > 环境变量 QWENPAW_WORKSPACES > 本机默认路径；都没有则退出。
+- 源目录定位顺序：--from 参数 > 环境变量 QWENPAW_WORKSPACES；都没有则退出。
 - 幂等：角色提示词带导入标记，重复执行不会叠加；--overwrite 会剥掉旧导入内容重写。
 - 脱敏：本脚本会把「某昵称」等称呼、本机绝对路径替换为通用占位。
 - 导入后 60 秒内自动生效（团队列表有 TTL 缓存），也可重启服务立即生效。
@@ -115,10 +115,10 @@ def main() -> int:
     ap.add_argument("--overwrite", action="store_true", help="剥掉旧导入内容后重写（默认追加/更新）")
     args = ap.parse_args()
 
-    src = args.src or os.environ.get("QWENPAW_WORKSPACES") or r"D:/AIApps/QwenPaw/data/workspaces"
-    WORKSPACES_DIR = Path(src)
-    if not WORKSPACES_DIR.is_dir():
-        print(f"未找到 QwenPaw workspaces 目录：{src}")
+    src = args.src or os.environ.get("QWENPAW_WORKSPACES") or ""
+    WORKSPACES_DIR = Path(src) if src else None
+    if WORKSPACES_DIR is None or not WORKSPACES_DIR.is_dir():
+        print(f"未找到 QwenPaw workspaces 目录：{src or '（未指定）'}")
         print("请用 --from 指定目录，或设置环境变量 QWENPAW_WORKSPACES。")
         return 1
 

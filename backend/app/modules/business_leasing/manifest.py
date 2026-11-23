@@ -9,8 +9,6 @@ manifest = ModuleManifest(
     title="招商管理",
     version="0.1.0",
     prefix="/api/business/leasing",
-    tables=["mod_leasing_unit", "mod_leasing_lead", "mod_leasing_followup"],
-    menu={"group": "经营", "icon": "Shop", "order": 71},
     agent_tools=[
         {
             "name": "leasing_summary",

@@ -1,5 +1,6 @@
 <template>
   <div class="page">
+    <HelpLink section="5.1" />
     <div class="toolbar">
       <div class="title-block">
         <div class="page-title">定时任务</div>
@@ -96,6 +97,14 @@
             <el-option label="深度研究" value="deep" />
           </el-select>
           <el-alert
+            v-if="dialog.modeFallback"
+            :title="`历史任务的工作模式「${dialog.modeFallback}」无效，已按只读咨询处理；保存后生效`"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mode-warning"
+          />
+          <el-alert
             v-if="modeWarning(form.mode)"
             :title="modeWarning(form.mode)"
             type="warning"
@@ -112,9 +121,9 @@
         </el-form-item>
         <el-form-item label="调度类型">
           <el-radio-group v-model="form.schedule_type">
-            <el-radio-button label="interval">间隔执行</el-radio-button>
-            <el-radio-button label="daily">每天定时</el-radio-button>
-            <el-radio-button label="cron">Cron</el-radio-button>
+            <el-radio-button value="interval">间隔执行</el-radio-button>
+            <el-radio-button value="daily">每天定时</el-radio-button>
+            <el-radio-button value="cron">Cron</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="form.schedule_type === 'interval'" label="执行间隔" prop="interval_minutes">
@@ -177,9 +186,10 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import HelpLink from '../components/HelpLink.vue'
 import { jobApi, assistantApi } from '../api'
 import { fmtDT, snippet } from '../utils/format'
-import { agentLabel, agentOptionLabel, formatSchedule, modeWarning, runStatusLabel, runStatusTag } from '../utils/jobs'
+import { JOB_MODES, agentLabel, agentOptionLabel, formatSchedule, modeWarning, normalizeJobMode, runStatusLabel, runStatusTag } from '../utils/jobs'
 
 const rows = ref([])
 const agents = ref([])
@@ -198,7 +208,7 @@ function onActionChange(value) {
 }
 
 const formRef = ref(null)
-const dialog = reactive({ visible: false, id: null, saving: false })
+const dialog = reactive({ visible: false, id: null, saving: false, modeFallback: '' })
 const form = reactive({
   name: '',
   prompt: '',
@@ -286,17 +296,19 @@ function resetForm() {
 
 function openCreate() {
   dialog.id = null
+  dialog.modeFallback = ''
   resetForm()
   dialog.visible = true
 }
 
 function openEdit(row) {
   dialog.id = row.id
+  dialog.modeFallback = row.mode && !JOB_MODES.includes(row.mode) ? row.mode : ''
   Object.assign(form, {
     name: row.name,
     prompt: row.prompt,
     agent_name: row.agent_name,
-    mode: row.mode,
+    mode: normalizeJobMode(row.mode),
     schedule_type: row.schedule_type,
     interval_minutes: row.interval_minutes ?? 60,
     daily_at: row.daily_at || '09:00',
@@ -326,7 +338,7 @@ async function save() {
       name: form.name.trim(),
       prompt: form.prompt.trim(),
       agent_name: form.agent_name || null,
-      mode: form.mode,
+      mode: normalizeJobMode(form.mode),
       schedule_type: form.schedule_type,
       interval_minutes: form.schedule_type === 'interval' ? form.interval_minutes : null,
       daily_at: form.schedule_type === 'daily' ? form.daily_at : null,

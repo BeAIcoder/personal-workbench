@@ -32,7 +32,7 @@ def test_manifest_loaded_and_tool_preset():
     assert "business_dq" in loaded
     manifest = loaded["business_dq"]
     assert manifest.prefix == "/api/business/dq"
-    assert manifest.tables == []
+    assert manifest.removed_fields == ()
     assert manifest.preset_experts == ["realestate"]
     tool = next(item for item in manifest.agent_tools if item["name"] == "dq_summary")
     assert tool["readonly"] is True

@@ -68,7 +68,9 @@ def calc_filing(period: str, items: list[dict], half_discount: bool) -> dict:
     返回 {total_tax, raw_total, half_saved, details, policy, warnings}
     """
     from ..finance_tax.config.policy_validity import policy_status
+    from ..finance_tax.config.tax_scope import require_tax_scope
 
+    require_tax_scope("stamp_duty")  # 准入门禁首行
     year = str(period)[:4]
     warnings: list[str] = []
     policy = policy_status("six_tax_two_fee_half", year) if half_discount else None

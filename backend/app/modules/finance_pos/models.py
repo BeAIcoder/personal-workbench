@@ -25,3 +25,29 @@ class PosRun(Base):
     elapsed_sec: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class PosVoucherBatch(Base):
+    """POS 刷卡凭证批次：回单×对账单匹配合并生成的凭证文件批次。
+
+    文件落 get_finance_data_dir()/finance_pos/vouchers/<批次目录>/，
+    元数据（文件清单/匹配统计）存本表 JSON 列，列表接口直接读库。
+    """
+
+    __tablename__ = "mod_pos_voucher_batch"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # 统计月份 "YYYY-MM"
+    month: Mapped[str] = mapped_column(String(7), index=True)
+    # 状态：running / ok / failed
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    log_tail: Mapped[str] = mapped_column(Text, default="")
+    # 凭证文件清单 [{name, size, kind, ...}]
+    stats: Mapped[list] = mapped_column(JSON, default=list)
+    # 匹配统计 {receipts_total, matched, unmatched, ..., unmatched_list}
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    batch_dir: Mapped[str] = mapped_column(String(500), default="")
+    elapsed_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)

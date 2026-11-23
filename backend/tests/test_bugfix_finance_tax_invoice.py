@@ -13,6 +13,7 @@ from urllib.parse import quote
 import pytest
 
 from app.config import settings
+from app.modules.finance_invoice import invoice_parse
 from app.modules.finance_invoice import service as invoice_service
 
 P = "/api/finance/tax"
@@ -166,12 +167,12 @@ def invoice_tmp_dir(tmp_path, monkeypatch):
 
 def test_b4_batch_parse_failure_marks_failed_and_no_5xx(client, invoice_tmp_dir, monkeypatch):
     """B4：解析流程抛异常 → 批次置 failed+error 留痕，接口返回明确错误而非 500。"""
-    monkeypatch.setattr(invoice_service, "_require_engine", lambda: None)
+    monkeypatch.setattr(invoice_parse, "_require_engine", lambda: None)
 
     def boom(pdf_path):
         raise OSError("disk gone")
 
-    monkeypatch.setattr(invoice_service, "_parse_pdf_with_engine", boom)
+    monkeypatch.setattr(invoice_parse, "_parse_pdf_with_engine", boom)
 
     resp = client.post(
         f"{PI}/batches",

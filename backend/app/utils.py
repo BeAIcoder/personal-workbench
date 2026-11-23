@@ -77,7 +77,7 @@ def find_sibling_project(dirname: str, start: Path) -> Path | None:
     """从 start 向上定位锚点目录，返回其下的兄弟项目路径。
 
     锚点目录名取 settings.finance_asset_anchor（为空时兜底「01-财税自动化」）：
-    财务引擎多与 personal-workbench 同级存放在AssetLib锚点目录下（如
+    财务引擎多与 personal-workbench 同级存放在示例主体22锚点目录下（如
     01-财税自动化/现金流滚动预测/费用分类汇总系统-v2.0）。
     dirname 支持多级相对路径（如「现金流滚动预测/费用分类汇总系统-v2.0」）；
     目录链上找不到锚点目录时返回 None，由调用方决定回退或给出中文不可用提示，
@@ -94,23 +94,45 @@ def find_sibling_project(dirname: str, start: Path) -> Path | None:
     return None
 
 
-def engine_subprocess_env() -> dict:
-    """引擎子进程环境：显式指定可用的 TEMP/TMP/TMPDIR。
+def engine_subprocess_env(data_dir=None) -> dict:
+    """引擎子进程环境：固定 TEMP/TMP/TMPDIR 并统一 UTF-8 文本编码。
 
     服务经 Git Bash 等非 Windows 原生气壳启动时，继承的 TEMP/TMP 可能指向
     Windows Python 无法创建文件的位置，引擎内 openpyxl 等库创建临时文件时
     tempfile.gettempdir() 会因全部候选目录失败而抛
     「No usable temporary directory found」。这里固定到应用自建临时目录。
+
+    data_dir 可注入（服务层传自己的数据目录，测试 monkeypatch 才会生效；
+    未传时回退全局配置，兼容既有调用方）。子进程强制 UTF-8 文本输出，
+    避免中文 Windows 下引擎按 GBK 写 stderr 导致关键字匹配失效。
     """
     import os
+    from pathlib import Path as _Path
 
     from .config import get_finance_data_dir
 
-    tmp = get_finance_data_dir() / "_engine_tmp"
+    base = _Path(data_dir) if data_dir is not None else get_finance_data_dir()
+    tmp = base / "_engine_tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     return env
+
+
+def decode_engine_output(data) -> str:
+    """解码引擎子进程输出：优先 UTF-8，失败回退 GB18030（兼容未受 env 约束的引擎）。"""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 def repair_upload_mojibake(name: str) -> str:

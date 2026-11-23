@@ -186,9 +186,11 @@ def test_provider_config_drives_build_model(client):
 # ---------------- 工作模式 ----------------
 
 def test_resolve_mode():
+    assert orchestrator._resolve_mode("standard") == "standard"
     assert orchestrator._resolve_mode("readonly") == "readonly"
     assert orchestrator._resolve_mode("deep") == "deep"
-    assert orchestrator._resolve_mode("unknown") == "standard"
+    # 非法/历史脏值 fail-closed 为只读，不得回退可写的 standard（R11-016）
+    assert orchestrator._resolve_mode("unknown") == "readonly"
 
 
 def test_work_modes_registry(client):
@@ -205,8 +207,11 @@ def test_readonly_agent_has_query_tools_only(client):
         agent = asyncio.run(orchestrator._build_agent(TEAM["it_finance"], "readonly"))
         schemas = asyncio.run(agent.toolkit.get_tool_schemas())
         names = {s["function"]["name"] for s in schemas}
-        # read_context 是只读资料工具，2026-11-04 起自动补进所有专家
-        assert names and names <= (set(QUERY_TOOLS) | {"read_context"})
+        # read_context / search_knowledge / read_knowledge_doc 是只读资料与知识工具，
+        # 自动补进所有专家（不破坏写工具白名单）
+        readonly_extra = {"read_context", "search_knowledge", "read_knowledge_doc"}
+        assert names and names <= (set(QUERY_TOOLS) | readonly_extra)
+        assert readonly_extra <= names
         assert "create_task" not in names
 
         agent_full = asyncio.run(orchestrator._build_agent(TEAM["it_finance"], "standard"))

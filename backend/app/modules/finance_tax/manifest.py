@@ -14,14 +14,6 @@ manifest = ModuleManifest(
     title="企业所得税",
     version="1.0.0",
     prefix="/api/finance/tax",
-    tables=[
-        "mod_tax_enterprise",
-        "mod_tax_financial_data",
-        "mod_tax_adjustment",
-        "mod_tax_return",
-        "mod_tax_policy",
-    ],
-    menu={"group": "财务", "icon": "OfficeBuilding", "order": 60},
     agent_tools=[
         {
             "name": "tax_returns_summary",

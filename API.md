@@ -296,7 +296,7 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 - Excel 转 CSV 失败时降级：保留 xlsx 本体，`note` 说明失败原因（既有契约）
 - 文档上传保留原文件，`path` 仍指向原件；提取文本写入同会话 `.extracted/<原文件名>.txt`，`kind="document_text"`，`note` 标明提取字数、旧版转换与截断。聊天只传 `{name,path}`，编排层自动读取 sidecar 注入模型，无需视觉模型或 Bash。
 - PDF/DOCX/PPTX 直接提取文字与表格；DOC/PPT 需本机 LibreOffice（可用 `SOFFICE_PATH` 指定）无界面转换为新版后提取。每附件最多 80,000 字符，PDF 最多前 300 页、PPT 最多前 500 页；OOXML 最多 5,000 成员/解压 100MB，旧版转换 60 秒超时，达到提取边界在文本与 `note` 中明示。
-- 无文字扫描件、损坏文件、解析或转换失败返回 400 中文原因并清理原件与 sidecar；当前不做 OCR，不把“仅保存原件”冒充可分析成功。
+- 无文字扫描件、损坏文件、解析或转换失败返回 400 中文原因并清理原件与 sidecar；聊天附件当前不做 OCR（知识库文档库可开启扫描件 OCR），不把“仅保存原件”冒充可分析成功。
 
 #### GET /api/assistant/skills/discover?dir=...
 扫描技能池目录（SKILL.md 格式）：`{ "count", "names" }`（names 最多 30 条）。**安全边界：仅允许配置中已保存的 `skills_dir`**——未保存时返回 `{"count": 0, "names": [], "error": "目录未保存：请先在设置中保存该技能池目录再检测"}`；目录不存在返回 `{"count": 0, "names": [], "error": "目录不存在"}`。
@@ -316,7 +316,7 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 | `name` | string | 任务名称（必填，≤100 字） |
 | `prompt` | string | 到点执行的提示词（必填，≤5000 字） |
 | `agent_name` | string\|null | 指定专家标识；`null` = 智能路由 |
-| `mode` | string | 工作模式：`readonly` / `standard` / `deep`；**新建默认 `readonly`**，历史行保留原值 |
+| `mode` | string | 工作模式：`readonly` / `standard` / `deep`（入参白名单）；**新建默认 `readonly`**；历史非法值仍可读出（列表不 500），执行侧一律回退 `readonly` |
 | `schedule_type` | string | 调度方式：`interval` / `daily` / `cron` |
 | `interval_minutes` | int\|null | 间隔分钟（`interval` 必填，5~10080） |
 | `daily_at` | string\|null | 每天执行时间 HH:MM（`daily` 必填） |
@@ -349,7 +349,7 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 删除任务及其运行事实，不存在返回 404。
 
 ### POST /api/jobs/{id}/run
-立即执行一次（不影响下次到点触发），不存在返回 404。
+立即执行一次（不影响下次到点触发），不存在返回 404。**interval 任务手动运行不顺延下次到点**：只有已到点时才推进 `last_run_at`，提前手动运行不占用调度槽位。
 ```json
 { "status": "ok", "summary": "……（回复摘要，最长 200 字）", "note_id": 12 }
 ```
@@ -370,37 +370,98 @@ multipart 表单：`session_id`（白名单校验）+ `file`。上限 10MB（超
 
 ## 知识与记忆 /api/knowledge
 
-RAG 笔记检索（BM25 + 中文 bigram 分词，零外部依赖离线可用；索引常驻内存，按笔记更新时间失效自动重建）与长期记忆（跨会话事实/偏好存取；每轮对话前自动召回 Top-3 相关记忆注入上下文）。
+知识库由两部分组成：**文档库**（公司制度/流程/软件手册，`kb_docs` + `kb_chunks`，FTS5 关键词索引 + 可选 sqlite-vec 向量索引）与**笔记**（原 BM25）。检索默认合并两者，用 RRF 融合并返回出处；长期记忆保持原行为。前端入口为 `/knowledge` 的「制度与手册 / 知识检索 / 长期记忆」三个页签。
 
-### RAG 知识库
+### 文档库
 
-#### GET /api/knowledge/rag/stats
-索引状态（笔记数 / 块数 / 词表大小）：
+核心字段：`title` / `category` / `department` / `doc_no` / `doc_key` / `version` / `status` / `effective_from` / `effective_to` / `tags` / `owner` / `summary` / `source_name` / `source_size` / `page_count` / `char_count` / `chunk_count` / `ocr_pages` / `index_status` / `index_error` / `supersedes_id`。
+
+- `doc_key` = 制度编号（为空时取规范化标题）；`(doc_key, version)` 唯一。同 key 新版本入库时，旧版自动置 `superseded` 并回填 `effective_to = 新版生效日 - 1 天`。
+- `status`：`draft` / `effective` / `superseded` / `archived`；检索默认只查 `effective`。
+- `index_status`：`ok` / `embedding` / `embedding_failed` / `truncated` / `keyword_only`。
+- `ocr_pages`：实际走 OCR 的页数（0 = 纯文本层解析）；开启 OCR 时只对单页文本少于 20 字的无文本层 PDF 页识别，单文档上限 50 页，超出置 `ocr_truncated` 并写入 `index_error`。
+- 原件存 `UPLOAD_DIR/knowledge/`，数据库只存相对路径；下载时做目录边界校验。
+
+#### GET /api/knowledge/docs
+筛选与分页：`q`（标题/编号/摘要）、`category`、`department`、`status`、`include_inactive`、`page`、`page_size`（≤100）。返回 `{items,total,page,page_size}`；未传 `status` 且 `include_inactive=false` 时只返回 `effective`。
+
+#### GET /api/knowledge/docs/facets
+筛选器计数：`{categories:[{value,count}], departments:[...], statuses:[...], total}`。
+
+#### POST /api/knowledge/docs/upload（201，multipart/form-data）
+`file` + 可选表单字段 `title/category/department/doc_no/version/status/effective_from/effective_to/tags/owner/summary/supersedes_id`。支持 `.pdf/.docx/.doc/.pptx/.ppt/.md/.txt`，单文件 ≤20MB；SHA-256 相同文件返回 409。解析与切块在线程池执行；启用向量检索时返回 `index_status=embedding`，由后台任务补向量。开启扫描件 OCR 后，无文本层 PDF 页会自动识别并累计 `ocr_pages`；OCR 不可用或未开启时，纯图片 PDF 返回 400「请先进行 OCR」。
+
+#### POST /api/knowledge/docs（201，JSON）
+粘贴 Markdown/纯文本建文档（软件手册常用），正文 10~500000 字，落盘为 `.md` 原件后可重解析：
 ```json
-{ "notes_indexed": 5, "chunks": 12, "vocabulary": 486 }
+{ "title": "VPN 登录说明", "content": "# 登录步骤\n1. …", "category": "软件手册", "version": "v1.0" }
 ```
 
-#### POST /api/knowledge/rag/rebuild
-手动重建索引（通常无需——索引随笔记变更自动失效重建），返回结构同 stats。
+#### GET /api/knowledge/docs/{doc_id}
+详情：元数据 + `outline`（块级章节大纲：chunk_id/heading/page_no/preview）+ `versions`（同 doc_key 版本链）。
+
+#### PUT /api/knowledge/docs/{doc_id}
+仅改元数据（标题/分类/部门/编号/版本/状态/生效期/标签/责任人/摘要）；同 key 同版本冲突返回 409。改状态为 `effective` 会把同 key 其它生效版本置为 `superseded`。
+
+#### DELETE /api/knowledge/docs/{doc_id}（204）
+级联删除块、FTS/向量索引与原件；引用该文档的记忆条目**引用置空**（`source_doc_id` 置 null，记忆本体保留，不出孤儿 doc id）。
+
+#### POST /api/knowledge/docs/{doc_id}/reindex
+重解析原件并重建该文档的块与 FTS 索引；启用向量时转 `embedding` 后台补齐。
+
+#### POST /api/knowledge/docs/{doc_id}/embed
+手动重算该文档向量；未启用/未配置 embedding 返回 400。
+
+#### GET /api/knowledge/docs/{doc_id}/file
+下载原件（ASCII `filename` + `filename*=utf-8''` 双文件名）。
+
+#### GET /api/knowledge/docs/{doc_id}/chunks/{chunk_id}?before=1&after=1
+返回命中块及前后各 N 块（0~5），用于「小检索、大上下文」。
+
+### 知识库设置（OCR / 向量）
+
+`GET /api/knowledge/settings` 返回 `{ocr_enabled, ocr_available, embedding_enabled, embedding_model, embedding_dim, embedding_base_url, has_api_key, resolved, resolved_detail, vector_ready}`；`resolved_detail` 是 `resolved` 的中文原因（为何启用/禁用、跟随哪个供应商），界面直接展示，不再自行拼接文案。
+`PUT /api/knowledge/settings` 保存；`ocr_enabled` 控制扫描件 OCR（默认 false，仅对无文本层 PDF 页生效）；`embedding_api_key` 传空保留旧值（DPAPI 加密），`embedding_base_url` 为空表示跟随当前激活模型供应商。
+`ocr_available=false` 表示当前环境未安装 rapidocr/onnxruntime，OCR 开关不可用，上传扫描件仍返回原「请先进行 OCR」提示。
+`POST /api/knowledge/settings/test` 用一个样例文本调 `/embeddings`，返回 `{ok, dim, vectors}`；失败 400 并带中文原因。body 可选 `embedding_model / embedding_base_url / embedding_api_key / embedding_dim` 覆盖已保存配置（用于测试弹窗里尚未保存的值）。**自定义 embedding 地址必须单独填写该地址的 API Key，绝不复用聊天模型 Key**（缺失时 `resolved=false`，原因「自定义向量接口地址必须单独填写该地址的 API Key（不会使用聊天模型 Key）」）；地址变更且未填新 Key 会清空旧 Key。sqlite-vec 不可用时 `vector_ready=false`，检索自动只用关键词。
+
+### 检索与索引
+
+#### GET /api/knowledge/rag/stats
+```json
+{ "notes_indexed": 5, "chunks": 12, "vocabulary": 486,
+  "documents": { "docs": 3, "effective_docs": 2, "chunks": 18, "fts": true, "vector": true, "vector_dim": 1024 } }
+```
+顶层 `notes_indexed/chunks/vocabulary` 是笔记 BM25 口径；文档库在 `documents` 内。
+
+#### POST /api/knowledge/rag/rebuild?with_vectors=false
+重建笔记索引 + 文档 FTS 索引；`with_vectors=true` 时再重建向量（换 embedding 模型/维度后使用，同步执行、可能较慢）。**默认处理全部文档**；显式传 `limit` 时未处理的文档标 `embedding_failed` 并在返回值给出 `remaining`（避免第 201 篇起静默失去向量）。返回 `{notes:{...}, documents:{docs,chunks,fts}, vectors?:{processed,done,failed,remaining}}`。
 
 #### POST /api/knowledge/rag/search
 ```json
-{ "query": "增值税申报", "top_k": 5 }
+{ "query": "住宿标准", "top_k": 5, "scope": "all", "category": "", "status": "", "include_inactive": false }
 ```
-`top_k` 默认 5（1~20）。返回 `{ "items": [ { "note_id": 3, "title": "申报注意事项", "snippet": "…", "score": 2.317 } ] }`；同一笔记只保留最高分块，`snippet` 截断至 220 字。
+`scope`：`all` / `docs` / `notes`；`top_k` 1~20。返回：
+```json
+{ "items": [ { "source": "doc", "id": 1, "title": "差旅管理制度", "snippet": "…",
+  "score": 1.0, "citation": "《差旅管理制度》 · v1.0 · 第三章 · 第 7 页",
+  "doc": { "id": 1, "version": "v1.0", "status": "effective", "category": "制度规范",
+           "heading": "第三章 差旅管理 > 3.2 住宿标准", "page_no": 7, "chunk_id": 4 } } ] }
+```
+制度与笔记用 RRF（`1/(60+rank)`）融合，**每通道每文档只取最佳 rank 参与累加**（同一文档多块命中不重复加分）；展示的命中块在关键词/向量两通道最佳候选中按 rank 择优（并列时关键词优先），保证引用块就是最合适的证据；`score` 归一化到 0~1；向量不可用/失败时 `items[*].vector_note` 会带降级原因。单字查询无 bigram 时自动回退 `LIKE`。
 
 ### 长期记忆
 
-记忆字段：`content` 内容（必填，≤2000 字）、`source` 来源（`manual` 手动 / `auto` 对话抽取）、`tags` 标签数组、`pinned` 是否置顶、`hit_count` 命中次数（召回命中自动累计）、`created_at`。与既有记忆近重复（前 80 字互相包含）时拒存，返回 400。
+记忆字段：`content` 内容（必填，≤2000 字）、`source` 来源（`manual` 手动 / `auto` 对话抽取）、`tags` 标签数组、`pinned` 是否置顶、`hit_count` 命中次数（召回命中自动累计）、`created_at`；另含可选**来源引用**：`source_doc_id`（显式引用的 `kb_docs.id`，可空；非法值或文档不存在返回 400）与 `source_doc_title`（响应字段，由 `source_doc_id` 解析出的文档标题；无引用/旧记录为空字符串，**不自动生成记忆来源**）。与既有记忆近重复（前 80 字互相包含）时拒存，返回 400。
 
 #### GET /api/knowledge/memories?keyword=&type=
-记忆列表（置顶在前、id 倒序，最多 100 条；`keyword` 按内容过滤，`type` 按类型过滤——该能力未发版，随 v1.16.1 提供）：`{ "items": [ { "id", "content", "source", "type", "session_id", "tags", "pinned", "hit_count", "created_at" } ] }`
+记忆列表（置顶在前、id 倒序，最多 100 条；`keyword` 按内容过滤，`type` 按类型过滤）：`{ "items": [ { "id", "content", "source", "type", "session_id", "tags", "pinned", "hit_count", "source_doc_id", "source_doc_title", "created_at" } ] }`；批量按 `source_doc_id` 一次取标题，旧记录（无引用）两项为 `null`/空串，不受影响。
 
 #### POST /api/knowledge/memories（返回 201）
 ```json
-{ "content": "企业所得税汇算清缴截止 5 月 31 日", "tags": ["税务"], "pinned": false, "type": "reference" }
+{ "content": "企业所得税汇算清缴截止 5 月 31 日", "tags": ["税务"], "pinned": false, "type": "reference", "source_doc_id": 1 }
 ```
-`type` 可选：`user`（用户画像）/`feedback`（纠正偏好）/`project`（项目背景）/`reference`（参考线索）/空（未分类）；检索时 user/feedback 类加权 +0.5（未发版，随 v1.16.1）。
+`type` 可选：`user`（用户画像）/`feedback`（纠正偏好）/`project`（项目背景）/`reference`（参考线索）/空（未分类）；检索时 user/feedback 类加权 +0.5。`source_doc_id` 可选：引用的知识库文档 id，**不存在或非法（非正整数/布尔）返回 400**，不静默忽略。
 
 #### GET /api/knowledge/memories/stats（未发版，随 v1.16.1）
 统计：`{ "total", "by_source", "by_type", "pinned", "top_hits": [{id, content, hit_count}] }`。
@@ -415,42 +476,44 @@ RAG 笔记检索（BM25 + 中文 bigram 分词，零外部依赖离线可用；�
 `## 类型节` 解析为 type（仅四类白名单生效），`- 行` 为条目；近重复自动跳过。返回 `{added, skipped}`。
 
 #### PUT /api/knowledge/memories/{id}
-部分更新 `content` / `tags` / `pinned` / `type`；不存在返回 404，内容为空返回 400。
+部分更新 `content` / `tags` / `pinned` / `type` / `source_doc_id`；不存在返回 404，内容为空返回 400。`source_doc_id` 语义：**显式传 `null` = 清空引用**；传正整数 = 换绑文档（不存在/非法 400）；不传该字段 = 既有引用保持原样，`source_doc_title` 按最终生效的 `source_doc_id` 输出。
 
 #### DELETE /api/knowledge/memories/{id}
 返回 `{"ok": true}`；不存在返回 404。
 
 #### POST /api/knowledge/memories/recall
-记忆检索（与 Agent 工具 `recall_memories` 同一实现：bigram 重叠打分 + 置顶/命中数加权）：
+记忆检索（与 Agent 工具 `recall_memories` 同一实现：token 与记忆统一 casefold + bigram 重叠打分 + 置顶/命中数加权，泛词按有限噪声阈值过滤）：
 ```json
 { "query": "申报截止", "top_k": 5 }
 ```
-`top_k` 默认 5（1~10）。返回 `{ "items": [ /* 同记忆字段 */ ] }`。
+`top_k` 默认 5（1~10）。返回 `{ "items": [ /* 同记忆字段（含 source_doc_id / source_doc_title） */ ] }`。
 
 #### POST /api/knowledge/memories/extract
 从对话文本一次性抽取记忆（走 LLM，近重复去重后入库）：
 ```json
 { "conversation": "……（对话全文或最近若干轮，至少 20 字）" }
 ```
-返回 `{ "extracted": 3, "saved": 2 }`；模型未配置或对话太短时返回 `{ "extracted": 0, "saved": 0, "error": "…" }`。
+返回 `{ "extracted": 3, "saved": 2 }`；模型未配置或对话太短时返回 `{ "extracted": 0, "saved": 0, "error": "…" }`。抽取**不会自动**生成记忆来源引用（不自动关联 `kb_docs`），需要来源时在列表/详情里显式挂 `source_doc_id`。
 
 ## MCP 工具 /api/mcp
 
-MCP（Model Context Protocol）服务器管理：仅支持 **stdio** 传输（本地命令起的 MCP Server；HTTP/SSE 预留）。连接成功后服务器工具自动注册为 `mcp_<服务器名>__<工具名>` 进入 Agent 工具白名单（是否只读以工具自带 `annotations.readOnlyHint` 为唯一依据，缺省视为可写）；服务启动时自动拉起全部启用中的服务器，单服务器失败不影响宿主。服务器 `env` 落库前经 DPAPI 密封，接口只回显键名与 `***`；存量明文会在启动时自动迁移。
+MCP（Model Context Protocol）服务器管理：仅支持 **stdio** 传输（本地命令起的 MCP Server；HTTP/SSE 预留）。连接成功后服务器工具自动注册为 `mcp_<服务器名>__<工具名>` 进入 Agent 工具白名单（是否只读以工具自带 `annotations.readOnlyHint` 为唯一依据，缺省视为可写）；服务启动时自动拉起全部启用中的服务器，单服务器失败不影响宿主，自动重连有界退避。服务器 `env` 落库前经 DPAPI 密封，接口只回显键名与 `***`；存量明文会在启动时自动迁移。
+
+入站报文单行上限 **1,048,576 字符**（`MAX_MESSAGE_BYTES // 4`，按 UTF-8 最坏 4 字节/字符折算，等价单行 4MB），超限拒绝该行；**请求已发出后的超时/断流不自动重放**，工具返回 `{ok:false, result_unknown:true, error}`，由调用方先核实服务器端结果再决定是否重试。
 
 服务器字段：`name` 服务器名（必填唯一，≤50 字，即工具前缀）、`command` 启动命令（如 `npx` / `python` / `uv`）、`args` 命令参数数组、`env` 环境变量（敏感值只存本机库，**回显一律脱敏为 `***`**）、`enabled`、`status`（`stopped` / `connected` / `error`）、`last_error`、`tools`（已发现的工具清单）。
 
 ### GET /api/mcp/servers
 服务器列表（按 id 倒序，含工具清单，env 脱敏）：
 ```json
-{ "items": [ { "id": 1, "name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/docs"],
+{ "items": [ { "id": 1, "name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/path/to/docs"],
   "env": { "API_KEY": "***" }, "enabled": true, "status": "connected", "last_error": "",
   "tools": [ { "name": "read_file", "description": "…" } ], "created_at": "2026-10-12 10:00:00" } ] }
 ```
 
 ### POST /api/mcp/servers（返回 201）
 ```json
-{ "name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/docs"], "env": {}, "enabled": true }
+{ "name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/path/to/docs"], "env": {}, "enabled": true }
 ```
 name 重复或必填缺失返回 400。
 
@@ -469,7 +532,7 @@ name 重复或必填缺失返回 400。
 ### POST /api/mcp/servers/{id}/test-call
 对已连接的服务器发一次 `tools/call` 测试调用：
 ```json
-{ "tool": "read_file", "arguments": { "path": "D:/docs/a.txt" } }
+{ "tool": "read_file", "arguments": { "path": "D:/path/to/docs/a.txt" } }
 ```
 返回 `{ "text": "…（拼接的文本块，≤8000 字）", "is_error": false, "raw": { /* 原始 JSON-RPC result */ } }`；服务器未连接或调用失败返回 503。
 
@@ -498,20 +561,23 @@ name 重复或必填缺失返回 400。
 
 | 模块 | 前缀 | 主要接口 |
 |------|------|---------|
-| 数据模板（通用） | `/api/templates` | `GET /`（10 份导入模板清单：名称/模块/大小/是否就位）、`GET /{name}`（白名单模板下载，中文文件名 RFC5987；不在白名单一律 404） |
+| 数据模板（通用） | `/api/templates` | `GET /`（15 份导入模板清单，返回 `{total, items:[{name, module, size, available}]}`）、`GET /{name}`（白名单模板下载，中文文件名 RFC5987；不在白名单一律 404） |
 | finance_expense 费用分类 | `/api/finance/expense` | `POST /classify`（上传 xlsx 分类）、`GET /runs`、`GET /runs/{id}`、`GET /runs/{id}/download`、`GET /rules/summary`、`POST /rules/reload` |
 | finance_invoice 发票处理 | `/api/finance/invoice` | `GET /engine/status`、`POST /batches`（上传 PDF/ZIP）、`GET /batches`、`GET /batches/{id}`、`PATCH /items/{id}`、`POST /batches/{id}/reclassify`（按项目规则重新归类）、`GET /batches/{id}/projects`（项目汇总）、`POST /batches/{id}/export`（重命名 + 清单 + 整批/分项目 ZIP）、`GET /batches/{id}/projects/download?project=`（单项目 ZIP）、`GET /batches/{id}/download`（整批 ZIP） |
-| finance_vault 数据仓 | `/api/finance/vault` | `GET /tables`、`POST /ingest/file`、`POST /query`（只读 SQL）、`GET /tables/{name}/preview` |
+| finance_vault 数据池清洗 | `/api/finance/vault` | `GET /tables`、`POST /ingest/file`、`POST /query`（只读 SQL）、`GET /tables/{table}/preview`（前 100 行）、`GET /tables/{table}/profile`（列画像）、`POST /tables/{table}/clean/*`（清洗预览/应用/日志）、`POST /tables/{table}/aggregate*`（聚合/导出/另存）、`GET /tables/{table}/usage`（删除/重命名前预检）、`DELETE /tables/{table}?confirm=&force=`（二次确认删除）、`POST /tables/{table}/rename`（重命名）；清洗/聚合另存的结果表默认**不得与源表同名、且不得已存在**，否则 409，需显式 `allow_overwrite=true` |
 | finance_ledger_personal 个人记账 | `/api/finance/ledger/personal` | 账户/分类/交易 CRUD、`GET /stats/monthly`、`GET /stats/trend`、`GET/PUT /budgets`、`POST /import/csv`、`GET /export/csv` |
 | finance_ledger_bip 企业记账 | `/api/finance/ledger/bip` | `POST /imports/preview`、`POST /imports/confirm`、`GET /imports`、`GET /vouchers`、`GET /vouchers/{id}`、`GET /entries`、`GET /balances/summary`、`POST /vouchers/export-to-vault` |
-| finance_tax 企业所得税 | `/api/finance/tax` | `/enterprises`（CRUD）、`/financial-import`（导入+模板下载）、`/policies`（政策库）、`/tax-returns`（申报 CRUD/提交/计算/导出 Excel·PDF；**入参万元、落库与导出口径为元**）、`/scope`（税种准入清单：admitted/blocked 及原因）、`/textbook-reference`（教材对照） |
+| finance_tax 企业所得税 | `/api/finance/tax` | `/enterprises`（CRUD；存在已提交申报时删除 409，禁止抹掉申报留痕）、`/financial-import`（导入+模板下载；能识别税号或企业名称才真实落库，无身份仅预览 `persisted=false`；`/import/{enterprise_id}` 指定企业落库）、`/policies`（政策库）、`/tax-returns`（申报 CRUD/提交/计算/导出 Excel·PDF；**入参万元、落库与导出口径为元**；草稿可 `PUT` 受控更正并重算，已提交更正/删除 409，不允许换企业或改成同期间同类型已存在记录）、`/scope`（税种准入清单：admitted/blocked 及原因；CIT 计税入口同样过 `require_tax_scope`）、`/textbook-reference`（教材对照） |
 | finance_board 报表看板 | `/api/finance/board` | `GET /snapshots`（快照列表，最多 50 条，时间倒序）、`POST /run`（触发管线）、`GET /latest`、`GET /snapshots/{id}/html`（iframe 嵌入） |
-| finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行，表单必填 `actual_month` 1~12）、`POST /runs/{id}/execute`、`GET /runs`（分页）、`GET /runs/{id}`（运行详情）、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP） |
-| finance_pos POS 对账 | `/api/finance/pos` | 同上（无 actual_month 参数），含 `GET /runs/{id}` 运行详情 |
-| finance_stamp_duty 印花税填报（未发版，随 v1.16.1） | `/api/finance/stamp-duty` | `GET /tax-items`（税目税率表）、`POST /filings`（period/taxpayer_name/half_discount/items[{tax_item,amount,exempt}] 创建并计算）、`GET /filings`、`GET /filings/{id}`、`DELETE /filings/{id}`、`POST /filings/{id}/export`、`GET /filings/{id}/download` |
-| finance_vat 增值税填报（未发版，随 v1.16.1） | `/api/finance/vat` | `POST /filings`（taxpayer_type=general：output_items[{business_type,amount,rate}] + input_vat；small_scale：sales_amount + levy_rate，季度 30 万免征与 1% 征收率按 19号公告有效期校验）、其余同上 CRUD/导出/下载 |
-| finance_iit 个人所得税填报（未发版，随 v1.16.1） | `/api/finance/iit` | `GET /standards`（专项附加扣除标准，国发〔2023〕13号）、`POST /filings`（year + rows[{month,name,salary,social_insurance,special_additional,other_deductions}]，累计预扣法逐月模拟）、其余同上 CRUD/导出/下载 |
-| finance_dsf 残保金填报（未发版，随 v1.16.1） | `/api/finance/dsf` | `POST /filings`（year/total_employees/total_salary/disabled_employees/ratio 默认 1.5%，30 人免征 + 分档减收按 8号公告校验）、其余同上 CRUD/导出/下载 |
+| finance_cashflow 现金流填报 | `/api/finance/cashflow` | `POST /runs`（上传建运行，必填 `actual_month` 1~12，可选 `actual_year` 2000~2100 缺省当前年）、`POST /runs/{id}/execute`、`GET /runs`（分页）、`GET /runs/{id}`（运行详情；历史 `actual_year=0` 按创建年兜底展示）、`GET /runs/{id}/artifacts/{name}`、`GET /runs/{id}/download`（ZIP）；**任何失败/重跑分支清空 artifacts**，不会给出上一轮产物 |
+| finance_pos POS 对账 | `/api/finance/pos` | 同上（无 actual_month 参数），含 `GET /runs/{id}` 运行详情；同一时刻只允许一个执行，`POST /runs/{id}/execute` 并发 409；**只有 0 字节产物判失败 503**（不归档、不可下载）；刷卡凭证报表日期容差 = `max(10, date_tolerance+7)` 天 |
+| finance_lease 租赁核算 | `/api/finance/lease` | `GET/POST /contracts`、`GET/PATCH/DELETE /contracts/{id}`（归档后只读；有测算历史删除 409）、`GET/PUT /contracts/{id}/payments`（整表替换仅草稿）、`POST /contracts/{id}/payments/import/preview|apply`（字段名 `file`，10MB；预览只解析不落库，apply 无行级错误才整表替换）、`POST|GET /contracts/{id}/calculations`（同输入同规则版本幂等返回，不重复堆积）、`GET /calculations/{id}`（含 `stale`）、`GET /calculations/{id}/assessment|periods|checks`、`POST /calculations/{id}/confirm`（须当前输入 + 规则版本未变 + 全部检查 `ok`）、`GET /calculations/{id}/export.xlsx?allow_stale=`（五页签；当前结果过期或存在 failed/unknown 时 409，历史快照须显式 `allow_stale=true`）、`GET /summary`、**BIP 只读对账**：`GET/PUT /reconciliation/mappings`（只写本模块 `mod_lease_bip_map`，绝不写 BIP）、`GET /reconciliation/context`（承租人取合同、账簿/期间取 BIP 余额表）、`POST /reconciliation/check`（承租人+账簿+期间五科目，容差 0.01，任一合同不可用整批 `unknown`）；合同状态 `draft/archived`，测算状态 `calculated/confirmed` 且只允许单向确认 |
+| finance_deferred 长期待摊 | `/api/finance/deferred` | `POST/GET /items`、`GET/PATCH/DELETE /items/{id}`（归档只读；有测算历史删除 409）、`POST/GET /items/{id}/runs`（同参数同规则版本幂等）、`GET /runs/{id}`（含 `stale`/风险标记）、`GET /runs/{id}/periods|checks`、`POST /runs/{id}/confirm`（须当前输入 + 无 failed/unknown；存在 `warning` 时必须 `risk_acknowledged=true` 且 `risk_note` 非空）、`GET /runs/{id}/export.xlsx`（三页签，过期/差异/风险未确认 409）、`GET /summary`；口径：净额 = 含税 ÷ (1+税率)、月摊 = 净额 ÷ 月数（均 HALF_UP 两位）、末期尾差如实留在末期余额（不吸收/不转销）；仅租入资产改良支出 |
+| finance_union 工会经费计提 | `/api/finance/union` | `POST/GET /batches`（同主体同期间唯一，重复 409）、`GET/PATCH/DELETE /batches/{id}`（PATCH/DELETE 仅草稿）、`GET/PUT /batches/{id}/lines`（部门行三数：本期工资基数/上期已计提/上期实际）、`GET /batches/{id}/preview`（本期计提 / 上期差异 / 本期建议入账）、`GET /batches/{id}/checks`、`POST /batches/{id}/confirm`（缺数据或差异拒绝；确认后只读）、`GET /batches/{id}/export.xlsx`（三页签）、`GET /summary`；费率只来自批次，行级无覆盖；缺输入 `unknown` 不按 0；不读 HR、不做 60/40、凭据、税前扣除判断、支付与 BIP 回写 |
+| finance_stamp_duty 印花税填报（未发版，随 v1.16.1） | `/api/finance/stamp-duty` | `GET /tax-items`（税目税率表）、`POST /filings`（period/taxpayer_name/half_discount/items[{tax_item,amount,exempt}] 创建并计算；同纳税人同期间重复 409）、`GET /filings`、`GET /filings/{id}`、`PUT /filings/{id}`（受控更正，已导出/已提交 409）、`DELETE /filings/{id}`（已提交 409）、`POST /filings/{id}/export`、`GET /filings/{id}/download`；计税入口过 `require_tax_scope` |
+| finance_vat 增值税填报（未发版，随 v1.16.1） | `/api/finance/vat` | `POST /filings`（taxpayer_type=general：output_items[{business_type,amount,rate}] + input_vat；small_scale：sales_amount + levy_rate，季度 30 万免征与 1% 征收率按 19号公告有效期校验；同纳税人同期间重复 409）、`PUT /filings/{id}` 受控更正（已导出/已提交 409、不换纳税人/期间）、其余同上 CRUD/导出/下载（已提交删除 409）；计税入口过 `require_tax_scope` |
+| finance_iit 个人所得税填报（未发版，随 v1.16.1） | `/api/finance/iit` | `GET /standards`（专项附加扣除标准，国发〔2023〕13号：住房贷款利息 1000 元/月最长 240 个月、住房租金 1500/1100/800 元/月按城市档位、学历继续教育 400 元/月×最长 48 个月、职业资格继续教育 3600 元/年）、`POST /filings`（year + rows[{month,name,salary,social_insurance,special_additional,other_deductions}]，累计预扣法逐月模拟）、`PUT /filings/{id}` 受控更正、其余同上 CRUD/导出/下载；计税入口过 `require_tax_scope` |
+| finance_dsf 残保金填报（未发版，随 v1.16.1） | `/api/finance/dsf` | `POST /filings`（year/total_employees/total_salary/disabled_employees/ratio 默认 1.5%，30 人免征 + 分档减收按 8号公告校验；同纳税人同期间重复 409）、`PUT /filings/{id}` 受控更正、其余同上 CRUD/导出/下载（已提交删除 409）；计税入口过 `require_tax_scope` |
 
 ### 财务模块上传与行数护栏
 
@@ -524,8 +590,11 @@ name 重复或必填缺失返回 400。
 | finance_vault `POST /ingest/file` | 20MB | 入仓数据行数超 200000 行 400 |
 | finance_ledger_bip `POST /imports/preview` | 10MB | xlsx/xls；解析阶段即做行数护栏 |
 | finance_cashflow `POST /runs` | 50MB | ZIP 解压后总量上限 200MB（防解压炸弹） |
+| finance_lease `POST /contracts/{id}/payments/import/*` | 10MB | 仅 xlsx；单文件 ≤20,000 行；表头在前 50 行内按标签文本定位（不锁工作表顺序） |
 
 - **现金流 `GET /runs` 分页**：`page`（默认 1）与 `page_size`（默认 20，1~100），返回 `{total, items, page, page_size}`，`total` 为 COUNT(*) 全量计数；`GET /runs/{id}/download` 无产物时返回 `409`
+- **租赁核算检查口径**：`GET /checks` 返回 `{items, counts:{ok,failed,unknown}, all_passed, has_unknown}`，状态只有 `ok/failed/unknown`；缺合同区间/月期等数据一律 `unknown`（不按 0 记 `ok`，也不显示为通过）。金额字段两位小数、序列化为字符串，比率/折现因子单独精度；日期只收 `YYYY-MM-DD`（带时间即 422/400）
+- **租赁核算幂等与快照**：测算唯一键为 `(contract_id, input_hash, rule_version)`，重复提交返回既有批次而非新增；失败计算不落任何结果行；`confirm` 与当前底稿导出在「输入已变化（`stale`）/规则版本变化/存在 failed 或 unknown」时返回 **409**，已确认批次不可再确认或改写
 - **看板快照 `log_tail`**：入库截断至 4000 字符，列表/详情读取时仅返回**尾部 500 字符**（有界暴露，不整文件无界返回）；`POST /run` 管线繁忙返回 `409`、引擎不可用返回 `503`；`GET /latest` 无成功快照返回 `404`；`GET /snapshots/{id}/html` 仅允许读取看板快照目录内文件（越界 `403`），响应带 `Content-Security-Policy: frame-ancestors 'self'` 与 `X-Content-Type-Options: nosniff`
 
 ### 定时任务扩展（v1.11.0）
@@ -534,7 +603,7 @@ name 重复或必填缺失返回 400。
 - 定时任务（`POST /api/jobs`）新增字段：`cron_expr`（schedule_type=cron 时必填，五段表达式）、`action`（模块动作名，空 = Agent 对话任务）
 - 调度语义：cron 同自然分钟不重复触发；模块动作任务走线程池执行、不写笔记
 
-> 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按示例主体22相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级；入仓取数阶段即受 200,000 行上限约束，超限返回 400，不会先全量组装数据。
+> 跨项目引擎路径（费用分类 / 发票工具）经 `finance_expense_engine_path` / `finance_invoice_engine_path` 配置项解析，默认按示例主体22相对位置推导；引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。BIP 导入的 `export-to-vault` 在数据池清洗模块不可用时同样 503 降级；入仓取数阶段即受 200,000 行上限约束，超限返回 400，不会先全量组装数据。
 
 ## 调试中心 /api/debug（v1.16.0）
 
@@ -712,12 +781,44 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `GET /summary?period=YYYY-MM` | 六域 `{available,data,gap_reasons}` + 指标字典 + 缺源说明 + 高优先提醒；失败域不填 0；含 12 个月到期面积集中度（严格 >25% 才 warning） |
 
 `business_gm` 无表、只读；Agent 工具 `gm_summary` 预置 `realestate`/存在的 `cre_gm`。签名与错误码：非法 period 422，缺指标时 value=null 且 reason 非空。
+
+### 经营管理 `/api/business/manage`（2026-10-31 新增，v1.19.0 补齐）
+
+| 端点 | 说明 |
+|---|---|
+| `GET /meta` | 字段字典：报表类型 / 项目 / section / 字段 / 指标键目录 |
+| `POST /imports/preview` | multipart `file`（仅 `.xlsx`，≤10MB）：返回识别出的报表类型/项目/期间、各小节计数与预览 `token`；格式不识别 400 中文，token 有 TTL |
+| `POST /imports/confirm` | `{token, project?, period?}` 确认导入；粒度 = 报表类型+项目+期间，**同粒度整批覆盖**（旧批次的指标/明细/文本一并替换）；token 过期或已用 400「预览已过期，请重新上传」 |
+| `GET/POST /reports` · `GET/PUT/DELETE /reports/{id}` | 报表批次 CRUD（可新建空批次手工填报；删除级联指标/明细/文本） |
+| `GET/PUT /reports/{id}/metrics` | 批量写入/修正指标（键必须在规格内，越界 400） |
+| `POST /reports/{id}/records` · `PUT/DELETE /records/{id}` | 明细行新增 / 修改 / 删除 |
+| `PUT /reports/{id}/texts` | 批量写入叙述小节 |
+| `GET /overview?project=&months=` · `GET /overview/export.xlsx` | 总览指标卡 + 图表序列（出租率/收缴/招商/责任书/诉讼/预警）；`months` 1~36 默认 12；**有源才画、不补 0**；导出 xlsx |
+| `GET /reports/{id}/export.xlsx` | 单份报表导出（指标/明细/文本三表） |
+
+四份模板（内控管理 6 表 / 云南周报 / 曲靖周报 / 月度工作情况）按**标签文本锚点**解析、不锁行号；模板工作表名与标签行不要改。
+
 ## 模板下载 /api/templates
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/templates` | 返回 `{items: [{name, size, download_url}]}`，清单来自仓库 `数据模板/`（固定白名单，不接受用户路径） |
+| `GET /api/templates` | 返回 `{total, items: [{name, module, size, available}]}`（共 14 份），清单来自仓库 `数据模板/`（固定白名单，不接受用户路径）；`size=0`/`available=false` 表示文件缺失 |
 | `GET /api/templates/{name}` | 下载模板；文件名必须在白名单内，未命中返回 404；响应头同时给 ASCII 兜底 `filename="..."` 与 `filename*=utf-8''...` |
+
+## 本机目录浏览 /api/fs
+
+只读目录浏览，供前端「浏览选择目录」弹窗（`DirectoryPicker.vue`）逐层选取财务引擎 / POS 目录；不读文件内容，不提供写入。
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/fs/drives` | 返回 `{drives: ["D:/…", …]}`：允许浏览的根目录（目录浏览起点）。默认根 = 用户主目录 + 数据根 `DATA_DIR` + 财务数据目录（`FINANCE_DATA_DIR`，留空为数据根下 `finance`）+ 已配置的 POS 对账单源目录 / 凭证输出目录，同路径去重；显式配置 `FS_BROWSE_ROOTS`（逗号或分号分隔）后以配置值为准 |
+| `GET /api/fs/browse?path=` | 列出该目录下的**子目录**（不含文件）；`path` 为空返回根目录列表。返回 `{path, parent, entries:[{name, path, is_dir}]}`；单层最多 500 条，跳过 `.` / `$` 开头的隐藏项，指向白名单外的符号链接/目录联接不列出 |
+
+语义要点：
+
+- 绝对路径先 `resolve` 再判白名单，`..` 与符号链接按真实路径判定；越界 **403**，非绝对路径 / 不存在 / 不是目录 **400**（中文）。
+- 该接口是普通 GET，**不在 OriginGuard 拦截范围**（只拦状态变更方法与含 `discover` 的路径）；跨站读取依赖 CORS 与默认仅监听 `127.0.0.1`。本项目无登录鉴权，不要把整个盘符加入 `FS_BROWSE_ROOTS`，也不要绑定 `0.0.0.0`。
+- 非 Windows 平台同样按白名单工作，默认根为用户主目录与数据根，不返回盘符列表。
 
 ## 技能市场 /api/skills/market
 
@@ -740,8 +841,8 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 
 | 端点 | 说明 |
 |---|---|
-| `POST /preview` | multipart `file`（xlsx，≤20MB）：解析全部 sheet 的流水表头，返回 `{total, accounts:[{account, tail, name, ent, rows, date_min, date_max, mapped}], problems, warnings, unmapped_count}`；表头缺失/文件损坏返回 400 中文 |
-| `POST /template` | multipart `file` + `account` + `date_start?` + `date_end?`（`YYYY-MM-DD`）：按账户与日期区间生成 BIP 银行对账单模板并直接下载 xlsx；账号未映射 400，日期格式错 400，骨架缺失 400；响应头 ASCII 兜底 + `filename*` |
+| `POST /preview` | multipart `file`（xlsx，≤20MB）：解析全部 sheet 的流水表头，返回 `{total, accounts:[{account, account_token, tail, name, ent, rows, date_min, date_max, mapped}], problems, warnings, unmapped_count}`；**`account` 只返回掩码**（如 `**** **** **** 1234`），完整账号留在服务端，导出凭 `account_token` 反查；表头缺失/文件损坏返回 400 中文 |
+| `POST /template` | multipart `file` + `account_token`（首选）/`account`（仅兼容预览掩码）+ `date_start?` + `date_end?`（`YYYY-MM-DD`）：按账户与日期区间生成 BIP 银行对账单模板并直接下载 xlsx；令牌只在本批上传流水中反查，**掩码必须在流水中唯一匹配**（同尾号多账户返回 400 要求改用令牌）；账号未映射 400，日期格式错 400，骨架缺失 400；响应头 ASCII 兜底 + `filename*` |
 
 **语义要点**：账号映射来自模块 `config.local.yaml`（全号精确优先、≥4 位尾号兜底）；无流水号时合成稳定 `SYN<20位>`；收入/支出同时有值、均为空、用途为空、坏日期在预览标出并在导出时拒绝；模板格式来自官方骨架 `template_skeleton.xlsx`（表头样式/列宽/数据验证/文本格式），不手改骨架。
 
@@ -749,7 +850,7 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 
 | 端点 | 说明 |
 |---|---|
-| `POST /run` | 刷新管线（优先计划任务通道，最长 600s）；成功归档快照并返回 `{status, stamp, attempts, steps, log_tail}`；并发 409；触发/步骤失败 503 并落 failed 快照 |
+| `POST /run` | 刷新管线（优先计划任务通道）：单次尝试 = 可用性查询 15s + 等待状态查询 15s + 触发 30s + `max(计划任务通道 600s, 直接回退总预算 600s)` = **660s**；最多尝试 2 次（重试 1 次、间隔 5s、残留 `run.lock` 等待上限 60s），最坏 1385s，前端超时 1500s；成功归档快照并返回 `{status, stamp, attempts, steps, log_tail}`；并发 409；触发/步骤失败/超时 503 并落 failed 快照 |
 | `GET /snapshots` · `GET /snapshots/{id}/html` | 快照列表 / 下载 HTML（仅看板目录内文件，带 `nosniff`） |
 | `GET /verify?snapshot_id=` | **看板产物内容级巡检（仅接口，页面无按钮）**：提取 HTML 内嵌 `const R = {...}` 与管线 `data/report_data.json` 对照，返回 `{ok, issues, kpi, checked_at, cached}`；检查文件规模、JSON 可解析、敏感 `map` 剔除、顶层键一致（meta 不参与）、递归数值容差 0.01、关键 KPI 齐全 |
 
@@ -860,6 +961,22 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `PUT` | `/api/business/legal/seals/{seal_id}` | 更新用印记录 |
 | `DELETE` | `/api/business/legal/seals/{seal_id}` | 删除用印记录 |
 | `GET` | `/api/business/legal/summary` | 法务看板（待审/高风险/到期/开庭） |
+| `POST` | `/api/business/manage/imports/confirm` | 确认导入（同类型+项目+期间整批替换） |
+| `POST` | `/api/business/manage/imports/preview` | 上传报表并预览（识别类型/期间/小节计数，10MB） |
+| `GET` | `/api/business/manage/meta` | 字段字典（报表类型/项目/section/字段/指标键目录） |
+| `GET` | `/api/business/manage/overview` | 总览：指标卡 + 图表序列（出租率/收缴/招商/责任书/诉讼/预警） |
+| `GET` | `/api/business/manage/overview/export.xlsx` | 导出总览（指标卡与各图表序列） |
+| `PUT` | `/api/business/manage/records/{record_id}` | 修改明细行 |
+| `DELETE` | `/api/business/manage/records/{record_id}` | 删除明细行 |
+| `GET` | `/api/business/manage/reports` | 报表批次列表（按期间倒序，含指标/明细/文本条数） |
+| `POST` | `/api/business/manage/reports` | 新建空批次（手工填报） |
+| `GET` | `/api/business/manage/reports/{report_id}` | 报表详情（指标 + 明细 + 叙述） |
+| `PUT` | `/api/business/manage/reports/{report_id}` | 更新批次表头（标题/备注/期间） |
+| `DELETE` | `/api/business/manage/reports/{report_id}` | 删除批次（级联明细/指标/文本） |
+| `GET` | `/api/business/manage/reports/{report_id}/export.xlsx` | 导出单份报表（指标/明细/文本三表） |
+| `PUT` | `/api/business/manage/reports/{report_id}/metrics` | 批量写入/修正指标（键必须在规格内） |
+| `POST` | `/api/business/manage/reports/{report_id}/records` | 新增明细行 |
+| `PUT` | `/api/business/manage/reports/{report_id}/texts` | 批量写入叙述小节 |
 | `GET` | `/api/business/operations/bills` | 账单列表（按期间/状态/合同筛选） |
 | `GET` | `/api/business/operations/bills/aging` | 欠费账龄（固定截止日四桶与未清明细） |
 | `POST` | `/api/business/operations/bills/{bill_id}/payments` | 登记收款（累计后自动改状态） |
@@ -914,9 +1031,11 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `GET` | `/api/experts/packs/{name}/content` | 查看专家包 .md 原文 |
 | `GET` | `/api/finance/bankflow/accounts` | 已登记的账号映射（账号仅展示尾 4 位，防止完整卡号外泄） |
 | `POST` | `/api/finance/bankflow/preview` | 解析流水文件并按账号汇总预览（异常行计数 + 中文提示） |
-| `POST` | `/api/finance/bankflow/template` | 按账号与日期区间生成 BIP 银行流水导入模板（直接下载 xlsx） |
+| `POST` | `/api/finance/bankflow/template` | 按账号令牌与日期区间生成 BIP 银行流水导入模板（直接下载 xlsx） |
 | `GET` | `/api/finance/board/latest` | 最新成功快照（无则 404） |
 | `POST` | `/api/finance/board/run` | 运行一次报表监控管线并归档快照 |
+| `POST` | `/api/finance/board/runs` | 异步运行报表监控管线（202 + run_id，轮询 GET /runs/{run_id}） |
+| `GET` | `/api/finance/board/runs/{run_id}` | 查询异步运行状态 |
 | `GET` | `/api/finance/board/snapshots` | 看板快照列表（按时间倒序） |
 | `GET` | `/api/finance/board/snapshots/{snapshot_id}/html` | 看板 HTML（自包含单文件，可直接 iframe 嵌入） |
 | `GET` | `/api/finance/board/verify` | 看板产物内容级巡检（HTML 内嵌数据 vs 管线数据源） |
@@ -926,9 +1045,23 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `GET` | `/api/finance/cashflow/runs/{run_id}/artifacts/{name}` | 下载单个产物（支持子目录相对名） |
 | `GET` | `/api/finance/cashflow/runs/{run_id}/download` | 打包下载全部产物（ZIP） |
 | `POST` | `/api/finance/cashflow/runs/{run_id}/execute` | 执行运行（子进程调引擎，约 1-3 分钟） |
+| `GET` | `/api/finance/deferred/items` | 项目列表（分页/状态/关键词） |
+| `POST` | `/api/finance/deferred/items` | 新建长期待摊项目（草稿） |
+| `GET` | `/api/finance/deferred/items/{item_id}` | 项目详情与计数 |
+| `PATCH` | `/api/finance/deferred/items/{item_id}` | 维护项目参数（归档后只读） |
+| `DELETE` | `/api/finance/deferred/items/{item_id}` | 删除项目（有测算历史 409） |
+| `GET` | `/api/finance/deferred/items/{item_id}/runs` | 测算列表（最新在前） |
+| `POST` | `/api/finance/deferred/items/{item_id}/runs` | 创建/幂等返回摊销测算 |
+| `GET` | `/api/finance/deferred/runs/{run_id}` | 测算详情（含过期标记） |
+| `GET` | `/api/finance/deferred/runs/{run_id}/checks` | 统一校验结果与计数 |
+| `POST` | `/api/finance/deferred/runs/{run_id}/confirm` | 确认测算（风险警告需显式风险说明） |
+| `GET` | `/api/finance/deferred/runs/{run_id}/export.xlsx` | 导出三页签 xlsx 底稿 |
+| `GET` | `/api/finance/deferred/runs/{run_id}/periods` | 月份级摊销行 |
+| `GET` | `/api/finance/deferred/summary` | 长期待摊摘要（按项目或全部） |
 | `GET` | `/api/finance/dsf/filings` | 填报记录列表 |
 | `POST` | `/api/finance/dsf/filings` | 创建并计算残保金填报 |
 | `GET` | `/api/finance/dsf/filings/{filing_id}` | 填报详情 |
+| `PUT` | `/api/finance/dsf/filings/{filing_id}` | 更正残保金填报（重算；已导出/已提交不可覆盖） |
 | `DELETE` | `/api/finance/dsf/filings/{filing_id}` | 删除填报记录 |
 | `GET` | `/api/finance/dsf/filings/{filing_id}/download` | 下载残保金申报底稿 |
 | `POST` | `/api/finance/dsf/filings/{filing_id}/export` | 生成残保金申报底稿 xlsx |
@@ -944,22 +1077,47 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `GET` | `/api/finance/iit/filings` | 填报记录列表 |
 | `POST` | `/api/finance/iit/filings` | 创建并计算个税扣缴填报 |
 | `GET` | `/api/finance/iit/filings/{filing_id}` | 填报详情 |
+| `PUT` | `/api/finance/iit/filings/{filing_id}` | 更正个税扣缴填报（重算；已导出/已提交不可覆盖） |
 | `DELETE` | `/api/finance/iit/filings/{filing_id}` | 删除填报记录 |
 | `GET` | `/api/finance/iit/filings/{filing_id}/download` | 下载扣缴申报底稿 |
 | `POST` | `/api/finance/iit/filings/{filing_id}/export` | 生成扣缴申报底稿 xlsx |
-| `GET` | `/api/finance/iit/standards` | 专项附加扣除标准表（国发〔2023〕13号） |
+| `GET` | `/api/finance/iit/standards` | 专项附加扣除标准表（国发〔2018〕41号 + 国发〔2023〕13号） |
 | `GET` | `/api/finance/invoice/batches` | 批次列表（分页，按 id 倒序） |
 | `POST` | `/api/finance/invoice/batches` | 上传发票建批次并解析（多个 PDF 或一个 ZIP；引擎缺失时 503 降级） |
 | `GET` | `/api/finance/invoice/batches/{batch_id}` | 批次详情（含明细） |
 | `DELETE` | `/api/finance/invoice/batches/{batch_id}` | 删除批次（明细 + inbox 文件 + 导出 ZIP） |
 | `GET` | `/api/finance/invoice/batches/{batch_id}/download` | 下载批次导出 ZIP（未导出返回 409） |
 | `POST` | `/api/finance/invoice/batches/{batch_id}/export` | 导出批次（重命名复制 + 清单 xlsx + ZIP 打包） |
-| `GET` | `/api/finance/invoice/batches/{batch_id}/projects` | 项目汇总（张数/净额/单项目 ZIP） |
+| `GET` | `/api/finance/invoice/batches/{batch_id}/projects` | 项目汇总（张数/净额/单项目 ZIP/PDF 文件名） |
 | `GET` | `/api/finance/invoice/batches/{batch_id}/projects/download` | 下载单个项目 ZIP（未导出 409、项目无包 404） |
+| `GET` | `/api/finance/invoice/batches/{batch_id}/projects/pdf` | 下载单个项目合并 PDF（按当前归类即时合并，无需先导出；缺件整次失败） |
 | `POST` | `/api/finance/invoice/batches/{batch_id}/reclassify` | 按项目归类规则重新归类（人工修正不覆盖） |
 | `GET` | `/api/finance/invoice/engine/status` | 发票解析引擎可用性自检（降级探测，永不 503） |
 | `PATCH` | `/api/finance/invoice/items/{item_id}` | 人工修正发票明细（项目归类/备注） |
-| `GET` | `/api/finance/ledger/bip/balances/summary` | 科目发生额汇总（按期间聚合凭证分录） |
+| `GET` | `/api/finance/lease/calculations/{calculation_id}` | 测算详情（含过期标记） |
+| `GET` | `/api/finance/lease/calculations/{calculation_id}/assessment` | 付款期级评估行 |
+| `GET` | `/api/finance/lease/calculations/{calculation_id}/checks` | 统一校验结果与计数 |
+| `POST` | `/api/finance/lease/calculations/{calculation_id}/confirm` | 确认测算（不可改写快照） |
+| `GET` | `/api/finance/lease/calculations/{calculation_id}/export.xlsx` | 导出五页签 xlsx 底稿 |
+| `GET` | `/api/finance/lease/calculations/{calculation_id}/periods` | 月份级期间行 |
+| `GET` | `/api/finance/lease/contracts` | 合同列表（分页/状态/关键词） |
+| `POST` | `/api/finance/lease/contracts` | 新建租赁合同（draft） |
+| `GET` | `/api/finance/lease/contracts/{contract_id}` | 合同详情与计数 |
+| `PATCH` | `/api/finance/lease/contracts/{contract_id}` | 维护合同（归档后只读） |
+| `DELETE` | `/api/finance/lease/contracts/{contract_id}` | 删除合同（有测算历史 409） |
+| `GET` | `/api/finance/lease/contracts/{contract_id}/calculations` | 测算列表（最新在前） |
+| `POST` | `/api/finance/lease/contracts/{contract_id}/calculations` | 创建/幂等返回测算 |
+| `GET` | `/api/finance/lease/contracts/{contract_id}/payments` | 付款计划列表（按期数升序） |
+| `PUT` | `/api/finance/lease/contracts/{contract_id}/payments` | 整表替换付款计划（仅草稿） |
+| `POST` | `/api/finance/lease/contracts/{contract_id}/payments/import/apply` | 确认导入付款计划 xlsx（无错误才整表替换） |
+| `POST` | `/api/finance/lease/contracts/{contract_id}/payments/import/preview` | 预览付款计划 xlsx（只解析，不落库） |
+| `POST` | `/api/finance/lease/reconciliation/check` | BIP 只读对账（承租人/账簿/期间五科目勾稽） |
+| `GET` | `/api/finance/lease/reconciliation/context` | BIP 对账下拉上下文（合同承租人 + BIP 账簿/期间） |
+| `GET` | `/api/finance/lease/reconciliation/mappings` | BIP 对账科目映射列表（本模块映射表） |
+| `PUT` | `/api/finance/lease/reconciliation/mappings` | 整批替换 BIP 对账科目映射（绝不写 BIP） |
+| `GET` | `/api/finance/lease/summary` | 租赁核算摘要（按合同或全部） |
+| `GET` | `/api/finance/ledger/bip/balances` | 科目余额表行查询（期间 + 科目前缀 / 账簿，含全量合计） |
+| `GET` | `/api/finance/ledger/bip/balances/summary` | 科目发生额汇总（凭证分录优先，仅余额表时回退余额表） |
 | `GET` | `/api/finance/ledger/bip/entries` | 分录查询（科目编码前缀/期间等组合筛选） |
 | `GET` | `/api/finance/ledger/bip/imports` | 导入批次列表（按时间倒序分页） |
 | `POST` | `/api/finance/ledger/bip/imports/confirm` | 确认导入（同来源重导幂等、跨来源合并补写、并发冲突 409） |
@@ -988,12 +1146,52 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `GET` | `/api/finance/pos/runs` | 运行记录列表（按 id 倒序） |
 | `POST` | `/api/finance/pos/runs` | 上传输入文件建运行（SHOP 对账单 + 认领记录 + 辅助明细账 + 凭证列表，或一个 ZIP） |
 | `GET` | `/api/finance/pos/runs/{run_id}` | 运行记录详情 |
+| `DELETE` | `/api/finance/pos/runs/{run_id}` | 删除运行（running 中拒绝；运行目录一并清理） |
 | `GET` | `/api/finance/pos/runs/{run_id}/artifacts/{name}` | 下载单个产物 |
 | `GET` | `/api/finance/pos/runs/{run_id}/download` | 打包下载全部产物（ZIP） |
 | `POST` | `/api/finance/pos/runs/{run_id}/execute` | 执行运行（台账生成 + 四源差异分析） |
+| `GET` | `/api/finance/pos/vouchers` | 凭证批次列表 |
+| `GET` | `/api/finance/pos/vouchers/config` | 凭证目录默认值（源目录/输出目录回退项） |
+| `POST` | `/api/finance/pos/vouchers/generate` | 生成月度刷卡凭证（回单×对账单匹配合并；源目录/输出目录可人工指定） |
+| `DELETE` | `/api/finance/pos/vouchers/{batch_id}` | 删除凭证批次 |
+| `GET` | `/api/finance/pos/vouchers/{batch_id}/files/{name}` | 下载单个凭证文件 |
+| `POST` | `/api/finance/pos/vouchers/{batch_id}/merge` | 合并选中的凭证 PDF 下载 |
+| `GET` | `/api/finance/receipt/batches` | 回单整理批次列表（不含明细） |
+| `GET` | `/api/finance/receipt/batches/{batch_id}` | 批次详情（含逐笔明细） |
+| `GET` | `/api/finance/receipt/batches/{batch_id}/download` | 整批产物打包下载（ZIP，保留账户目录） |
+| `GET` | `/api/finance/receipt/batches/{batch_id}/files/{file_id}` | 下载或预览单个生成文件 |
+| `POST` | `/api/finance/receipt/batches/{batch_id}/generate` | 按已复核的纳入项生成账户×类别 PDF 与清单（原子替换） |
+| `PATCH` | `/api/finance/receipt/batches/{batch_id}/items/{item_id}` | 逐笔复核：修改分类或是否纳入 |
+| `GET` | `/api/finance/receipt/batches/{batch_id}/items/{item_id}/preview` | 单笔原回单预览（PDF） |
+| `POST` | `/api/finance/receipt/batches/{batch_id}/merge` | 合并选中的 PDF 分册并下载 |
+| `GET` | `/api/finance/receipt/config` | 银行回单整理默认目录与五类口径 |
+| `POST` | `/api/finance/receipt/scan` | 按账期扫描回单源目录，建立待复核批次（不生成 PDF） |
+| `GET` | `/api/finance/recon/batches` | 批次列表（最新在前，精简视图） |
+| `POST` | `/api/finance/recon/batches` | 新建商户核销对账批次（draft） |
+| `GET` | `/api/finance/recon/batches/{batch_id}` | 批次详情（含合同范围与子表计数） |
+| `PATCH` | `/api/finance/recon/batches/{batch_id}` | 维护批次（仅 draft/failed：名称、对账日、容差、合同范围） |
+| `DELETE` | `/api/finance/recon/batches/{batch_id}` | 删除批次（仅 draft/failed，级联清理五张子表；ready 为审计留痕） |
+| `POST` | `/api/finance/recon/batches/{batch_id}/check` | 执行勾稽检查（precheck→checking→ready\|failed） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/export/report.docx` | 导出对账报告 Word（通用排版；未决事项显著标注草稿；needs_recheck 409） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/export/report.md` | 导出对账报告 Markdown（与 xlsx/docx 同源；未决事项显著标注草稿） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/export/xlsx` | 导出对账工作底稿 xlsx（五类工作表；口径参数改动未重跑时 409） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/issues` | 问题清单（机检+人工，origin/status/active 过滤） |
+| `POST` | `/api/finance/recon/batches/{batch_id}/issues` | 人工补记问题/待补资料（origin=human；机检永不触碰） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/matches` | 匹配清单（机检建议 + 人工裁定） |
+| `POST` | `/api/finance/recon/batches/{batch_id}/matches` | 人工新增认领↔核销匹配建议（唯一三元组；确认时才校验分摊超额） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/records` | 事实记录分页查询（kind/合同/单据过滤；page_size≤200） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/sources` | 源文件列表（含解析状态/失败原因/检测到的合同；绝不返回存储路径） |
+| `POST` | `/api/finance/recon/batches/{batch_id}/sources/{kind}` | 上传四类源文件之一（仅 draft/failed；重复内容返回 skipped_duplicates 不重复导入） |
+| `DELETE` | `/api/finance/recon/batches/{batch_id}/sources/{source_id}` | 删除源文件（仅 draft/failed；级联 records+suggested matches；人工引用 409） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/summary` | 批次勾稽摘要（统一报告视图，含合计/检查状态/待确认数） |
+| `GET` | `/api/finance/recon/batches/{batch_id}/terms` | 口径参数清单（逐合同完整性与缺失项） |
+| `PUT` | `/api/finance/recon/batches/{batch_id}/terms` | 保存单合同口径参数（ready 批次修改置 needs_recheck） |
+| `PATCH` | `/api/finance/recon/issues/{issue_id}` | 人工裁定问题：状态/级别/说明（确认或排除必须给说明） |
+| `PATCH` | `/api/finance/recon/matches/{match_id}` | 人工裁定匹配：状态/分摊/说明（confirmed/rejected 分摊冻结） |
 | `GET` | `/api/finance/stamp-duty/filings` | 填报记录列表（分页，按 id 倒序） |
 | `POST` | `/api/finance/stamp-duty/filings` | 创建并计算印花税填报 |
 | `GET` | `/api/finance/stamp-duty/filings/{filing_id}` | 填报记录详情 |
+| `PUT` | `/api/finance/stamp-duty/filings/{filing_id}` | 更正印花税填报（重算；已导出/已提交不可覆盖） |
 | `DELETE` | `/api/finance/stamp-duty/filings/{filing_id}` | 删除填报记录 |
 | `GET` | `/api/finance/stamp-duty/filings/{filing_id}/download` | 下载申报表底稿 |
 | `POST` | `/api/finance/stamp-duty/filings/{filing_id}/export` | 生成申报表底稿 xlsx |
@@ -1034,16 +1232,41 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `GET` | `/api/finance/tax/textbook-reference/knowledge-points/{kp_id}` | Get Knowledge Point Detail |
 | `GET` | `/api/finance/tax/textbook-reference/mappings` | Get System Function Mappings |
 | `GET` | `/api/finance/tax/textbook-reference/{textbook_name}` | Get Textbook Detail |
+| `GET` | `/api/finance/union/batches` | 批次列表（分页/主体/期间/状态） |
+| `POST` | `/api/finance/union/batches` | 新建计提批次（draft，主体+期间唯一） |
+| `GET` | `/api/finance/union/batches/{batch_id}` | 批次详情（批次头 + 部门行 + 合计 + 校验） |
+| `PATCH` | `/api/finance/union/batches/{batch_id}` | 维护批次（仅草稿） |
+| `DELETE` | `/api/finance/union/batches/{batch_id}` | 删除批次（仅草稿，连带部门行） |
+| `GET` | `/api/finance/union/batches/{batch_id}/checks` | 校验结论与计数（ok/failed/unknown） |
+| `POST` | `/api/finance/union/batches/{batch_id}/confirm` | 确认批次（draft → confirmed，缺数据拒绝） |
+| `GET` | `/api/finance/union/batches/{batch_id}/export.xlsx` | 导出三页签 xlsx 底稿 |
+| `GET` | `/api/finance/union/batches/{batch_id}/lines` | 部门行列表（含实时派生金额） |
+| `PUT` | `/api/finance/union/batches/{batch_id}/lines` | 整批保存部门行（仅草稿，部门唯一） |
+| `GET` | `/api/finance/union/batches/{batch_id}/preview` | 计算预览（只读，不落库） |
+| `GET` | `/api/finance/union/summary` | 工会经费计提摘要（按主体/期间） |
 | `GET` | `/api/finance/vat/filings` | 填报记录列表 |
 | `POST` | `/api/finance/vat/filings` | 创建并计算增值税填报 |
 | `GET` | `/api/finance/vat/filings/{filing_id}` | 填报详情 |
+| `PUT` | `/api/finance/vat/filings/{filing_id}` | 更正增值税填报（重算；已导出/已提交不可覆盖） |
 | `DELETE` | `/api/finance/vat/filings/{filing_id}` | 删除填报记录 |
 | `GET` | `/api/finance/vat/filings/{filing_id}/download` | 下载申报底稿 |
 | `POST` | `/api/finance/vat/filings/{filing_id}/export` | 生成申报底稿 xlsx |
 | `POST` | `/api/finance/vault/ingest/file` | 上传 xlsx/csv 入仓（扩展名白名单 + 大小限制 + 留档） |
 | `POST` | `/api/finance/vault/query` | 只读 SQL 查询（SELECT-only 校验 + 表名白名单 + 强制限流 + 超时中断） |
 | `GET` | `/api/finance/vault/tables` | 数据集清单（表名/行数/来源/注册时间） |
+| `DELETE` | `/api/finance/vault/tables/{table}` | 安全删除数据集（confirm=数据集名二次确认；被引用需 force=true） |
+| `POST` | `/api/finance/vault/tables/{table}/aggregate` | 单表聚合：维度分组 + 指标汇总 + 过滤 + 排序 |
+| `POST` | `/api/finance/vault/tables/{table}/aggregate/export` | 聚合结果导出 xlsx（safe_cell 防公式注入） |
+| `POST` | `/api/finance/vault/tables/{table}/aggregate/save` | 聚合结果另存为数据池数据集 |
+| `POST` | `/api/finance/vault/tables/{table}/clean/apply` | 应用清洗：结果落新数据集 + 写配方日志（可复用重放） |
+| `GET` | `/api/finance/vault/tables/{table}/clean/log` | 清洗日志（配方+逐算子报告，按 id 倒序） |
+| `POST` | `/api/finance/vault/tables/{table}/clean/preview` | 清洗预览（dry-run，不写库） |
 | `GET` | `/api/finance/vault/tables/{table}/preview` | 已注册表数据预览（前 100 行） |
+| `GET` | `/api/finance/vault/tables/{table}/profile` | 数据集列画像（类型/缺失率/唯一率/高频值 + 清洗建议） |
+| `POST` | `/api/finance/vault/tables/{table}/rename` | 重命名数据集（视图+物理修订表+登记+清洗日志引用同步） |
+| `GET` | `/api/finance/vault/tables/{table}/usage` | 数据集使用情况预检（物理修订表/清洗日志引用/一致性，供删除二次确认） |
+| `GET` | `/api/fs/browse` | 浏览目录（仅子目录，不含文件） |
+| `GET` | `/api/fs/drives` | 允许浏览的根目录（目录浏览起点） |
 | `GET` | `/api/health` | 健康检查 |
 | `HEAD` | `/api/health` | 健康检查 |
 | `GET` | `/api/jobs` | 定时任务列表 |
@@ -1053,6 +1276,17 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `DELETE` | `/api/jobs/{job_id}` | 删除定时任务 |
 | `POST` | `/api/jobs/{job_id}/run` | 立即执行一次（不影响下次到点触发） |
 | `GET` | `/api/jobs/{job_id}/runs` | 定时任务运行时间线（事实重放 + 投影核对） |
+| `GET` | `/api/knowledge/docs` | 知识库文档列表（关键词/分类/部门/状态筛选） |
+| `POST` | `/api/knowledge/docs` | 粘贴 Markdown/纯文本创建知识库文档 |
+| `GET` | `/api/knowledge/docs/facets` | 知识库筛选项计数（分类/部门/状态） |
+| `POST` | `/api/knowledge/docs/upload` | 上传制度/手册文件并建索引 |
+| `GET` | `/api/knowledge/docs/{doc_id}` | 知识库文档详情（大纲/版本链） |
+| `PUT` | `/api/knowledge/docs/{doc_id}` | 编辑知识库文档元数据 |
+| `DELETE` | `/api/knowledge/docs/{doc_id}` | 删除知识库文档（级联块/索引/原件） |
+| `GET` | `/api/knowledge/docs/{doc_id}/chunks/{chunk_id}` | 读取命中块的前后文 |
+| `POST` | `/api/knowledge/docs/{doc_id}/embed` | 手动重算该文档的向量索引 |
+| `GET` | `/api/knowledge/docs/{doc_id}/file` | 下载知识库原件 |
+| `POST` | `/api/knowledge/docs/{doc_id}/reindex` | 重解析原件并重建索引 |
 | `GET` | `/api/knowledge/memories` | 记忆列表（关键词/类型过滤，置顶优先） |
 | `POST` | `/api/knowledge/memories` | 新建记忆 |
 | `GET` | `/api/knowledge/memories/export.md` | 导出记忆为 MEMORY.md 风格 Markdown |
@@ -1062,9 +1296,12 @@ CLI 等价：`backend/scripts/import_workbuddy.py [--dry-run] [--from <目录>] 
 | `GET` | `/api/knowledge/memories/stats` | 记忆统计（总数/来源/类型分布/命中Top） |
 | `PUT` | `/api/knowledge/memories/{memory_id}` | 更新记忆（内容/标签/置顶/类型） |
 | `DELETE` | `/api/knowledge/memories/{memory_id}` | 删除记忆 |
-| `POST` | `/api/knowledge/rag/rebuild` | 重建知识库索引 |
-| `POST` | `/api/knowledge/rag/search` | 知识库检索（BM25） |
-| `GET` | `/api/knowledge/rag/stats` | 知识库索引状态（笔记数/块数/词表） |
+| `POST` | `/api/knowledge/rag/rebuild` | 重建知识库索引（笔记 + 文档；可选重算向量） |
+| `POST` | `/api/knowledge/rag/search` | 知识库检索（关键词 + 向量混合） |
+| `GET` | `/api/knowledge/rag/stats` | 知识库索引状态（笔记/文档/块/向量） |
+| `GET` | `/api/knowledge/settings` | 知识库设置（向量检索开关/模型/维度） |
+| `PUT` | `/api/knowledge/settings` | 保存知识库设置 |
+| `POST` | `/api/knowledge/settings/test` | 测试 embedding 端点连通性（可用未保存的当前表单值） |
 | `GET` | `/api/mcp/catalog` | MCP 服务器目录（内置常用服务器模板，一键添加） |
 | `POST` | `/api/mcp/catalog/{catalog_id}/add` | 按目录模板一键添加 MCP 服务器（默认停用，可先编辑再启用） |
 | `GET` | `/api/mcp/servers` | MCP 服务器列表（含工具清单，env 脱敏） |

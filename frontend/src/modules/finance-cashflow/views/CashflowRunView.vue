@@ -1,5 +1,6 @@
 <template>
   <div class="page" v-loading="loading">
+    <HelpLink section="6.14" />
     <el-card shadow="never">
       <template #header>
         <div class="card-head">
@@ -14,6 +15,7 @@
         title="上传银行辅助明细账、预测模板、上月上报版等（或打一个 ZIP），由本机引擎自动回填「X月实际」列，产物可打包下载。引擎不可用时接口会提示。" />
       <el-table :data="items" size="small" style="margin-top: 12px" empty-text="暂无运行记录">
         <el-table-column prop="id" label="#" width="60" />
+        <el-table-column prop="actual_year" label="回填年份" width="90" align="center" />
         <el-table-column prop="actual_month" label="回填月份" width="90" align="center" />
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
@@ -53,6 +55,10 @@
 
     <el-dialog v-model="dialog.visible" title="新建现金流填报运行" width="520px">
       <el-form label-width="90px">
+        <el-form-item label="回填年份">
+          <el-date-picker v-model="form.actual_year" type="year" value-format="YYYY"
+            placeholder="年份" :clearable="false" style="width: 140px" />
+        </el-form-item>
         <el-form-item label="回填月份">
           <el-select v-model="form.actual_month" style="width: 140px">
             <el-option v-for="m in 12" :key="m" :label="`${m} 月`" :value="m" />
@@ -79,10 +85,11 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import HelpLink from '../../../components/HelpLink.vue'
 import api from '../../../api'
 import TemplateLinks from '../../../components/TemplateLinks.vue'
 import { takeFiles } from '../../_shared/fileInput'
-import { currentMonth } from '../month'
+import { currentMonth, currentYear } from '../month'
 import AskAiButton from '../../../components/assistant/AskAiButton.vue'
 
 const loading = ref(false)
@@ -97,14 +104,16 @@ const dialog = reactive({ visible: false })
 const creating = ref(false)
 // 回填月份口径为 1-12（后端 Form(ge=1, le=12)）；getMonth() 返回 0-11，
 // 直接用它会让 1 月提交 0 被 422 拒绝、其余月份整体偏小一个月。
-const form = reactive({ actual_month: currentMonth(), files: [] })
+// 回填年份默认当前年但必须随请求显式提交：后端缺省会静默取当前年，补录往年会记错年份。
+const form = reactive({ actual_year: currentYear(), actual_month: currentMonth(), files: [] })
 const logDialog = ref(false)
 const logContent = ref('')
 
 const aiPrompt = computed(() => '请分析最近一次现金流自动填报运行：当期 actual_month 的完成情况、可用的产物文件与数据缺口')
 
-// 每次打开新建对话框都取当前月，避免沿用上次选择/上月残留
+// 每次打开新建对话框都取当前年月，避免沿用上次选择/上月残留
 function openDialog() {
+  form.actual_year = currentYear()
   form.actual_month = currentMonth()
   form.files = []
   dialog.visible = true
@@ -152,6 +161,7 @@ async function create() {
   creating.value = true
   try {
     const fd = new FormData()
+    fd.append('actual_year', form.actual_year)
     fd.append('actual_month', form.actual_month)
     for (const f of form.files) fd.append('files', f)
     const { data } = await api.post('/finance/cashflow/runs', fd, {

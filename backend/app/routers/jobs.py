@@ -74,6 +74,7 @@ def delete_job(job_id: DbId, db: Session = Depends(get_db)):
     ).delete(synchronize_session=False)
     db.delete(job)
     db.commit()
+    scheduler.forget_job(job_id)
     scheduler.wake()
 
 

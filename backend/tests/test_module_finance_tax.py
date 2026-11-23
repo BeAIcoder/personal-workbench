@@ -22,10 +22,13 @@ def _create_enterprise(client, tax_number="91110108TEST0001", **kw):
 
 
 def test_module_registration():
+    from app.modules.finance_tax import models as tax_models
+
     loaded = {m.name: m for m in get_loaded_modules()}
     assert "finance_tax" in loaded
     assert loaded["finance_tax"].prefix == "/api/finance/tax"
-    assert "mod_tax_enterprise" in loaded["finance_tax"].tables
+    # 表清单以 models.__tablename__ 为准（manifest 不再声明 tables）
+    assert tax_models.Enterprise.__tablename__ == "mod_tax_enterprise"
 
 
 def test_enterprise_crud(client):

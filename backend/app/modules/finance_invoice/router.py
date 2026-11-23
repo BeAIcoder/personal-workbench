@@ -2,11 +2,13 @@
 import asyncio
 import logging
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from ...database import get_db
 from . import service
@@ -161,11 +163,18 @@ async def reclassify_batch(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-def _attachment(path: Path, filename: str, ascii_fallback: str) -> FileResponse:
+def _attachment(
+    path: Path,
+    filename: str,
+    ascii_fallback: str,
+    media_type: str = "application/zip",
+    background: Optional[BackgroundTask] = None,
+) -> FileResponse:
     """下载响应：同时给出 ASCII filename 与 UTF-8 filename*，避免浏览器/代理丢中文名。
 
     只给 filename* 时部分环境会把中文名丢成随机串（用户实测下载记录里出现 UUID 文件名）；
     两者并存时现代浏览器优先取 filename*（真实中文名），老环境退回 ASCII 兜底名。
+    media_type/background 供项目 PDF 复用：PDF 走响应后清理临时文件的后台任务。
     """
     disposition = (
         f'attachment; filename="{ascii_fallback}"; '
@@ -173,17 +182,47 @@ def _attachment(path: Path, filename: str, ascii_fallback: str) -> FileResponse:
     )
     return FileResponse(
         path,
-        media_type="application/zip",
+        media_type=media_type,
         headers={"Content-Disposition": disposition},
+        background=background,
     )
 
 
-@router.get("/batches/{batch_id}/projects", response_model=list[ProjectSummary], summary="项目汇总（张数/净额/单项目 ZIP）")
+@router.get("/batches/{batch_id}/projects", response_model=list[ProjectSummary], summary="项目汇总（张数/净额/单项目 ZIP/PDF 文件名）")
 def list_projects(batch_id: int, db: Session = Depends(get_db)):
     batch = service.get_batch(db, batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail="批次不存在")
     return service.project_summary(db, batch)
+
+
+@router.get(
+    "/batches/{batch_id}/projects/pdf",
+    summary="下载单个项目合并 PDF（按当前归类即时合并，无需先导出；缺件整次失败）",
+)
+def download_project_pdf(
+    batch_id: int,
+    project: str = Query(..., min_length=1, max_length=100, description="项目名（见项目汇总）"),
+    db: Session = Depends(get_db),
+):
+    # 同步 def 由 FastAPI 线程池执行：合并期间不阻塞事件循环
+    batch = service.get_batch(db, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    try:
+        path, filename = service.merge_project_pdf(db, batch, project)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.ProjectPdfError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    # 临时文件只活到本次响应结束（后台任务删除），不做长期缓存
+    return _attachment(
+        path,
+        filename,
+        "project_invoices.pdf",
+        media_type="application/pdf",
+        background=BackgroundTask(service.cleanup_project_pdf, path),
+    )
 
 
 @router.get("/batches/{batch_id}/projects/download", summary="下载单个项目 ZIP（未导出 409、项目无包 404）")

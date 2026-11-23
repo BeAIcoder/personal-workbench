@@ -41,6 +41,7 @@ from app.modules.finance_expense import router as expense_router
 from app.modules.finance_expense import service as expense_svc
 from app.modules.finance_invoice import engine as invoice_engine
 from app.modules.finance_invoice import projects as invoice_projects
+from app.modules.finance_invoice import invoice_export, invoice_parse
 from app.modules.finance_invoice import service as inv_svc
 from app.modules.finance_pos import router as pos_router
 from app.modules.finance_pos import service as pos_svc
@@ -65,14 +66,14 @@ def _ensure_tables():
 def invoice_env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "finance_data_dir", str(tmp_path / "finance"))
     monkeypatch.setattr(invoice_projects, "load_project_rules", lambda: [])
-    monkeypatch.setattr(inv_svc, "_require_engine", lambda: None)
+    monkeypatch.setattr(invoice_parse, "_require_engine", lambda: None)
     canned: dict[str, dict] = {}
 
     def fake_parse(pdf_path):
         fields = canned.get(Path(pdf_path).name)
         return inv_svc.ParsedInvoice(**fields) if fields is not None else None
 
-    monkeypatch.setattr(inv_svc, "_parse_pdf_with_engine", fake_parse)
+    monkeypatch.setattr(invoice_parse, "_parse_pdf_with_engine", fake_parse)
     return canned
 
 
@@ -195,7 +196,7 @@ def test_invoice_export_artifact_locked_returns_409(client, invoice_env, monkeyp
     def locked(*args, **kwargs):
         raise PermissionError("synthetic lock")
 
-    monkeypatch.setattr(inv_svc.shutil, "rmtree", locked)
+    monkeypatch.setattr(invoice_export.shutil, "rmtree", locked)
     resp = _inv_export(client, batch["id"])
     assert resp.status_code == 409
     assert "占用" in resp.json()["detail"]
@@ -336,7 +337,7 @@ def test_bankflow_template_rejects_bad_rows(client, bank_env, row, needle):
     resp = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("f.xlsx", _flow_xlsx([row]))},
-        data={"account": _ACC, "date_start": "", "date_end": ""},
+        data={"account": bf.mask_account(_ACC), "date_start": "", "date_end": ""},
     )
     assert resp.status_code == 400, resp.text
     assert needle in resp.json()["detail"]
@@ -347,7 +348,7 @@ def test_bankflow_template_never_exports_blank_required(client, bank_env):
     resp = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("f.xlsx", _flow_xlsx(rows))},
-        data={"account": _ACC, "date_start": "", "date_end": ""},
+        data={"account": bf.mask_account(_ACC), "date_start": "", "date_end": ""},
     )
     assert resp.status_code == 200, resp.text
     wb = openpyxl.load_workbook(io.BytesIO(resp.content))
@@ -368,7 +369,7 @@ def test_bankflow_remark_column_uses_attachment_text(client, bank_env):
     resp = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("f.xlsx", _flow_xlsx([row]))},
-        data={"account": _ACC, "date_start": "", "date_end": ""},
+        data={"account": bf.mask_account(_ACC), "date_start": "", "date_end": ""},
     )
     assert resp.status_code == 200, resp.text
     ws = openpyxl.load_workbook(io.BytesIO(resp.content))["银行对账单"]
@@ -932,7 +933,7 @@ def test_bankflow_empty_use_name_rejected_with_row_number(client, bank_env):
     resp = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("f.xlsx", _flow_xlsx([row]))},
-        data={"account": _ACC, "date_start": "", "date_end": ""},
+        data={"account": bf.mask_account(_ACC), "date_start": "", "date_end": ""},
     )
     assert resp.status_code == 400
     detail = resp.json()["detail"]
@@ -996,7 +997,7 @@ def test_bankflow_date_filter_precedes_required_check(client, bank_env):
     resp = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("f.xlsx", _flow_xlsx(rows))},
-        data={"account": _ACC, "date_start": "2026-10-01", "date_end": "2026-10-31"},
+        data={"account": bf.mask_account(_ACC), "date_start": "2026-10-01", "date_end": "2026-10-31"},
     )
     assert resp.status_code == 200, resp.text
     ws = openpyxl.load_workbook(io.BytesIO(resp.content))["银行对账单"]
@@ -1013,7 +1014,7 @@ def test_bankflow_bad_date_reported_separately(client, bank_env):
     resp = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("f.xlsx", _flow_xlsx(rows))},
-        data={"account": _ACC, "date_start": "", "date_end": ""},
+        data={"account": bf.mask_account(_ACC), "date_start": "", "date_end": ""},
     )
     assert resp.status_code == 400
     detail = resp.json()["detail"]
@@ -1060,7 +1061,7 @@ def test_bankflow_warnings_and_errors_mask_account(client, bank_env):
     resp = client.post(
         "/api/finance/bankflow/template",
         files={"file": ("f.xlsx", _flow_xlsx([empty_use]))},
-        data={"account": _ACC, "date_start": "", "date_end": ""},
+        data={"account": bf.mask_account(_ACC), "date_start": "", "date_end": ""},
     )
     assert resp.status_code == 400
     assert _ACC not in resp.json()["detail"] and _ACC[-4:] in resp.json()["detail"]

@@ -157,9 +157,8 @@ def _isolate_lifespan(monkeypatch, events):
     monkeypatch.setattr(main_mod, "scheduler_shutdown", fake_shutdown, raising=False)
     monkeypatch.setattr(main_mod, "ensure_dpapi_available", lambda: None)
     monkeypatch.setattr(mcp, "start_all_from_db", lambda: {})
-    monkeypatch.setattr(mcp, "migrate_env_secrets", lambda db: 0)
     monkeypatch.setattr(mcp, "stop_all", lambda: events.append("mcp"))
-    monkeypatch.setattr(main_mod.secrets_box, "migrate_seal_keys", lambda: 0)
+    # 一次性秘密迁移已移出启动（backend/scripts/migrate.py），启动路径不再需要打桩
 
 
 def test_lifespan_shutdown_awaits_scheduler_before_mcp(monkeypatch):

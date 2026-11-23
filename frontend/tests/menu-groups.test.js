@@ -7,15 +7,15 @@ describe('财务菜单分组聚合', () => {
   const finance = groups.find((g) => g.name === '财务')
   const names = (list) => list.map((x) => x.title)
 
-  it('财务组：直挂数据仓 + 四个子分组', () => {
+  it('财务组：直挂数据池清洗 + 四个子分组', () => {
     expect(finance).toBeTruthy()
-    expect(names(finance.items)).toEqual(['数据仓'])
+    expect(names(finance.items)).toEqual(['数据池清洗'])
     expect(finance.subgroups.map((s) => s.name)).toEqual(['账务处理', '记账', '税务填报', '报表分析'])
   })
 
   it('子分组内容与顺序', () => {
     const byName = Object.fromEntries(finance.subgroups.map((s) => [s.name, names(s.items)]))
-    expect(byName['账务处理']).toEqual(['费用分类', '发票处理', 'POS 对账', '银行流水模板'])
+    expect(byName['账务处理']).toEqual(['费用分类', '发票处理', 'POS 对账', '银行流水模板', '银行回单整理', '商户核销对账', '租赁核算', '长期待摊', '工会经费计提'])
     expect(byName['记账']).toEqual(['个人记账', '企业记账（BIP）'])
     expect(byName['税务填报']).toEqual(['企业所得税', '印花税填报', '增值税填报', '个人所得税填报', '残保金填报'])
     expect(byName['报表分析']).toEqual(['报表看板', '现金流填报'])

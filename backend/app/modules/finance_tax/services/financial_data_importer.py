@@ -4,16 +4,17 @@
 """
 import io
 import logging
+import math
 import re
 import zipfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter
 
 try:
     # 单次导入行数上限由 core 任务提供（app/import_limits.py）；缺失时失败关闭，
@@ -77,6 +78,22 @@ class ValidationError:
     severity: str = "error"  # error, warning
 
 
+class PeriodParseError(ValueError):
+    """报表期间缺失或无法解析：拒绝导入，禁止回退到当前年度/季度。"""
+
+
+_WAN_QUANT = Decimal("0.0001")
+
+
+def quantize_wan(value) -> float:
+    """万元金额按 0.0001 万元（1 元）HALF_UP 取整（全链路唯一金额口径）。"""
+    return float(
+        Decimal(str(value if value is not None else 0)).quantize(
+            _WAN_QUANT, rounding=ROUND_HALF_UP
+        )
+    )
+
+
 @dataclass
 class ImportResult:
     """导入结果"""
@@ -95,6 +112,7 @@ class ParsedBalanceSheet:
     # Header
     company_name: str = ""
     period: str = ""
+    tax_number: str = ""
     currency: str = "CNY"
 
     # Assets (期末余额)
@@ -136,6 +154,7 @@ class ParsedIncomeStatement:
     # Header
     company_name: str = ""
     period: str = ""
+    tax_number: str = ""
     currency: str = "CNY"
 
     operating_revenue: float = 0.0         # 营业收入
@@ -162,6 +181,7 @@ class ParsedCashFlowStatement:
     # Header
     company_name: str = ""
     period: str = ""
+    tax_number: str = ""
     currency: str = "CNY"
 
     cash_from_sales: float = 0.0                    # 销售商品、提供劳务收到的现金
@@ -396,20 +416,73 @@ class FinancialSystemExportParser:
                 return None
         return None
 
+    # 表头标签（顺序敏感：先长后短，避免「编制单位」被当成「单位」）
+    HEADER_LABELS = (
+        ("统一社会信用代码", "tax_number"),
+        ("纳税人识别号", "tax_number"),
+        ("编制单位", "company_name"),
+        ("报表期间", "period"),
+        ("金额单位", "currency"),
+        ("时间", "period"),
+        ("单位", "currency"),
+    )
+
+    @classmethod
+    def _header_label(cls, text: str) -> Optional[Tuple[str, str]]:
+        """按「精确标签 + 冒号」识别表头标签，返回 (字段, 内联值) 或 None。
+
+        纯标签（无冒号）不算值：内联值为空，由调用方读取紧邻右格。
+        """
+        raw = (text or "").strip()
+        for label, field in cls.HEADER_LABELS:
+            if not raw.startswith(label):
+                continue
+            rest = raw[len(label):].strip()
+            if rest and rest[0] not in "：:":
+                continue
+            return field, rest.lstrip("：:").strip()
+        return None
+
+    @staticmethod
+    def _ordered_cells(row: Dict[str, Any]) -> List[Tuple[str, Any]]:
+        """按列坐标排序单元格，保证「标签在左、值在右」时右格取的是相邻值。"""
+        def sort_key(item: Tuple[str, Any]):
+            match = re.match(r"([A-Za-z]+)(\d+)", item[0] or "")
+            if not match:
+                return (0, 0)
+            return (column_index_from_string(match.group(1).upper()), int(match.group(2)))
+
+        return sorted(row.items(), key=sort_key)
+
     @classmethod
     def _parse_header(cls, rows: List[Dict[str, Any]]) -> Dict[str, str]:
-        """解析报表头部信息"""
-        info = {"company_name": "", "period": "", "currency": "CNY"}
+        """解析报表头部信息（单位名称、纳税人识别号、期间、币种）。
+
+        纯标签单元格不赋值；标签/值分列时取紧邻右格，右格若又是标签则忽略。
+        """
+        info = {"company_name": "", "period": "", "tax_number": "", "currency": "CNY"}
         for row in rows[:5]:
-            for val in row.values():
-                if val and isinstance(val, str):
-                    text = val.strip()
-                    if "编制单位" in text:
-                        info["company_name"] = text.replace("编制单位：", "").strip()
-                    if "时间" in text:
-                        info["period"] = text.replace("时间：", "").strip()
-                    if "金额单位" in text or "单位：" in text:
-                        info["currency"] = text.split("：")[-1].strip()
+            cells = cls._ordered_cells(row)
+            for idx, (_coord, val) in enumerate(cells):
+                if not isinstance(val, str):
+                    continue
+                text = val.strip()
+                if not text:
+                    continue
+                matched = cls._header_label(text)
+                if matched is None:
+                    continue
+                field, value = matched
+                if not value and idx + 1 < len(cells):
+                    right = cells[idx + 1][1]
+                    if isinstance(right, str):
+                        candidate = right.strip()
+                        if candidate and cls._header_label(candidate) is None:
+                            value = candidate
+                    elif isinstance(right, (int, float)):
+                        value = str(right)
+                if value:
+                    info[field] = value
         return info
 
     @classmethod
@@ -419,6 +492,7 @@ class FinancialSystemExportParser:
         header_info = cls._parse_header(rows)
         result.company_name = header_info["company_name"]
         result.period = header_info["period"]
+        result.tax_number = header_info["tax_number"]
         result.currency = header_info["currency"]
 
         # The financial system export uses a two-column layout:
@@ -437,15 +511,15 @@ class FinancialSystemExportParser:
                         val = cls._extract_number(cls._get_cell_value(row, value_col))
                         if val is not None:
                             # Values in export are in CNY (元), convert to 万元
-                            setattr(result, attr_name, round(val / 10000, 4))
+                            setattr(result, attr_name, quantize_wan(val / 10000))
 
         # If total_assets is not found, compute from assets = total_current + total_non_current
         if result.total_assets == 0:
-            result.total_assets = round(result.total_current_assets + result.total_non_current_assets, 4)
+            result.total_assets = quantize_wan(result.total_current_assets + result.total_non_current_assets)
         if result.total_liabilities == 0:
-            result.total_liabilities = round(result.total_current_liabilities + result.total_non_current_liabilities, 4)
+            result.total_liabilities = quantize_wan(result.total_current_liabilities + result.total_non_current_liabilities)
         if result.total_equity == 0 and result.total_assets > 0 and result.total_liabilities > 0:
-            result.total_equity = round(result.total_assets - result.total_liabilities, 4)
+            result.total_equity = quantize_wan(result.total_assets - result.total_liabilities)
 
         return result
 
@@ -456,6 +530,7 @@ class FinancialSystemExportParser:
         header_info = cls._parse_header(rows)
         result.company_name = header_info["company_name"]
         result.period = header_info["period"]
+        result.tax_number = header_info["tax_number"]
         result.currency = header_info["currency"]
 
         # The financial system export uses columns:
@@ -471,7 +546,7 @@ class FinancialSystemExportParser:
                         val = cls._extract_number(cls._get_cell_value(row, value_col))
                         if val is not None:
                             # Values in export are in CNY (元), convert to 万元
-                            setattr(result, attr_name, round(val / 10000, 4))
+                            setattr(result, attr_name, quantize_wan(val / 10000))
 
         return result
 
@@ -482,6 +557,7 @@ class FinancialSystemExportParser:
         header_info = cls._parse_header(rows)
         result.company_name = header_info["company_name"]
         result.period = header_info["period"]
+        result.tax_number = header_info["tax_number"]
         result.currency = header_info["currency"]
 
         for row in rows:
@@ -493,7 +569,7 @@ class FinancialSystemExportParser:
                     if attr_name:
                         val = cls._extract_number(cls._get_cell_value(row, value_col))
                         if val is not None:
-                            setattr(result, attr_name, round(val / 10000, 4))
+                            setattr(result, attr_name, quantize_wan(val / 10000))
 
         return result
 
@@ -587,6 +663,7 @@ class StandardTemplateParser:
         import pandas as pd
 
         all_data = {}
+        meta = cls._read_metadata(file_path)
         xls = pd.ExcelFile(file_path)
 
         try:
@@ -620,16 +697,91 @@ class StandardTemplateParser:
         finally:
             xls.close()
 
+        if all_data and meta:
+            all_data["_meta"] = meta
         return all_data
+
+    META_LABELS = {
+        "编制单位": "company_name",
+        "纳税人识别号": "tax_number",
+        "统一社会信用代码": "tax_number",
+        "报表期间": "period",
+        "期间": "period",
+    }
+
+    @classmethod
+    def _read_metadata(cls, file_path: str) -> Dict[str, str]:
+        """读取模板顶部的企业/期间元数据（逐页扫描，标签在左、值在紧邻右格）。
+
+        仅接受以标签开头的单元格，避免把填写说明里的「报表期间」字样当成元数据。
+        """
+        from openpyxl import load_workbook
+
+        meta: Dict[str, str] = {}
+        try:
+            wb = load_workbook(file_path, read_only=True, data_only=True)
+        except Exception:  # .xls 等 openpyxl 不支持：元数据缺失，不影响数据解析
+            return meta
+        try:
+            # 三表模板可能只在某一页填写元数据：逐页合并，取第一个非空值
+            for sheet_name in wb.sheetnames:
+                cls._scan_meta_sheet(wb[sheet_name], meta)
+                if all(meta.get(key) for key in ("company_name", "tax_number", "period")):
+                    break
+        finally:
+            wb.close()
+        return meta
+
+    @classmethod
+    def _meta_label(cls, text: str) -> Optional[Tuple[str, str]]:
+        """标准模板元数据标签：返回 (字段, 内联值)；纯标签的内联值为空。"""
+        raw = (text or "").strip()
+        for label, key in cls.META_LABELS.items():
+            if not raw.startswith(label):
+                continue
+            rest = raw[len(label):].strip()
+            if rest and rest[0] not in "：:":
+                continue
+            return key, rest.lstrip("：:").strip()
+        return None
+
+    @classmethod
+    def _scan_meta_sheet(cls, ws, meta: Dict[str, str]) -> None:
+        for row in ws.iter_rows(min_row=1, max_row=3, max_col=12):
+            for idx, cell in enumerate(row):
+                value = cell.value
+                if not isinstance(value, str):
+                    continue
+                matched = cls._meta_label(value)
+                if matched is None:
+                    continue
+                key, inline = matched
+                if inline:
+                    meta.setdefault(key, inline)
+                    continue
+                # 值只取紧邻右侧单元格；右格若又是标签则忽略（与 _parse_header 同口径）
+                right = row[idx + 1] if idx + 1 < len(row) else None
+                if right is None:
+                    continue
+                if isinstance(right.value, str):
+                    candidate = right.value.strip()
+                    if candidate and cls._meta_label(candidate) is None:
+                        meta.setdefault(key, candidate)
+                elif isinstance(right.value, (int, float)):
+                    meta.setdefault(key, str(right.value))
 
     @staticmethod
     def _extract_number(val: Any) -> Optional[float]:
         if val is None:
             return None
         try:
-            return float(val)
+            number = float(val)
         except (ValueError, TypeError):
             return None
+        # 模板空白单元格经 pandas 变为 NaN：按「未填」处理，不能以 NaN/NULL 落库
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
 
 
 # ============================================================
@@ -795,20 +947,24 @@ class DataMapper:
     """将解析后的财务数据映射到申报数据模型"""
 
     @classmethod
-    def map_to_enterprise_info(cls, balance_sheet: ParsedBalanceSheet) -> Dict[str, Any]:
+    def map_to_enterprise_info(cls, balance_sheet: ParsedBalanceSheet,
+                               company_name: str = "", tax_number: str = "") -> Dict[str, Any]:
         """
         将资产负债表项目映射到企业基本信息。
 
         Returns:
-            dict with keys: total_assets (万元)
+            dict with keys: total_assets (万元)、name/tax_number（报表头有则带出）
         """
-        return {
-            "total_assets": balance_sheet.total_assets,
-        }
+        info: Dict[str, Any] = {"total_assets": quantize_wan(balance_sheet.total_assets)}
+        if company_name:
+            info["name"] = company_name
+        if tax_number:
+            info["tax_number"] = tax_number
+        return info
 
     @classmethod
     def map_to_financial_data(cls, income_statement: ParsedIncomeStatement,
-                              year: int, quarter: int) -> Dict[str, Any]:
+                              year: Optional[int], quarter: Optional[int]) -> Dict[str, Any]:
         """
         将利润表项目映射到财务数据表。
 
@@ -826,10 +982,10 @@ class DataMapper:
         return {
             "year": year,
             "quarter": quarter,
-            "total_revenue": income_statement.operating_revenue,
-            "total_cost": round(total_cost, 4),
-            "total_expense": round(total_expense, 4),
-            "profit": income_statement.total_profit,
+            "total_revenue": quantize_wan(income_statement.operating_revenue),
+            "total_cost": quantize_wan(total_cost),
+            "total_expense": quantize_wan(total_expense),
+            "profit": quantize_wan(income_statement.total_profit),
             "non_taxable_income": 0.0,
             "prior_year_loss": 0.0,
         }
@@ -883,11 +1039,11 @@ class DataMapper:
         taxable_income_before_loss = accounting_profit + tax_adjustment_increase - tax_adjustment_decrease
 
         return {
-            "accounting_profit": accounting_profit,
-            "tax_adjustment_increase": round(tax_adjustment_increase, 4),
-            "tax_adjustment_decrease": round(tax_adjustment_decrease, 4),
-            "taxable_income_before_loss": round(taxable_income_before_loss, 4),
-            "taxable_income_after_loss": round(max(0, taxable_income_before_loss), 4),
+            "accounting_profit": quantize_wan(accounting_profit),
+            "tax_adjustment_increase": quantize_wan(tax_adjustment_increase),
+            "tax_adjustment_decrease": quantize_wan(tax_adjustment_decrease),
+            "taxable_income_before_loss": quantize_wan(taxable_income_before_loss),
+            "taxable_income_after_loss": quantize_wan(max(0, taxable_income_before_loss)),
         }
 
 
@@ -963,6 +1119,24 @@ class TemplateGenerator:
                 cell.number_format = "#,##0.0000"
 
     @classmethod
+    def _write_template_metadata(cls, ws):
+        """模板顶部企业/期间填写位（D1..I1）。
+
+        与项目行分离，不下移 A/B 列既有单元格位置；导入时按此自动建档并落库。
+        """
+        for cell, label in (("D1", "编制单位"), ("F1", "纳税人识别号"), ("H1", "报表期间")):
+            ws[cell] = label
+            ws[cell].font = cls.NOTE_FONT
+        ws.merge_cells("D2:I2")
+        ws["D2"] = (
+            "填写说明：D1/E1 企业名称、F1/G1 纳税人识别号、H1/I1 报表期间"
+            "（如 2026年1季度），用于自动建档与财报落库。"
+        )
+        ws["D2"].font = cls.NOTE_FONT
+        for col, width in (("D", 12), ("E", 26), ("F", 16), ("G", 24), ("H", 12), ("I", 20)):
+            ws.column_dimensions[col].width = width
+
+    @classmethod
     def _create_balance_sheet_template(cls, wb: Workbook):
         """创建资产负债表模板"""
         ws = wb.create_sheet("资产负债表")
@@ -975,6 +1149,7 @@ class TemplateGenerator:
         ws.merge_cells("A2:C2")
         ws["A2"] = "填写说明：请在B列填写各项目的期末金额（单位：万元），不要修改A列的项目名称。"
         ws["A2"].font = cls.NOTE_FONT
+        cls._write_template_metadata(ws)
 
         # 表头
         ws["A3"] = "项目名称"
@@ -1019,6 +1194,7 @@ class TemplateGenerator:
         ws.merge_cells("A2:C2")
         ws["A2"] = "填写说明：请在B列填写各项目的本期累计金额（单位：万元），不要修改A列的项目名称。"
         ws["A2"].font = cls.NOTE_FONT
+        cls._write_template_metadata(ws)
 
         ws["A3"] = "项目名称"
         ws["B3"] = "本期金额（万元）"
@@ -1057,6 +1233,7 @@ class TemplateGenerator:
         ws.merge_cells("A2:C2")
         ws["A2"] = "填写说明：请在B列填写各项目的本期金额（单位：万元），不要修改A列的项目名称。"
         ws["A2"].font = cls.NOTE_FONT
+        cls._write_template_metadata(ws)
 
         ws["A3"] = "项目名称"
         ws["B3"] = "本期金额（万元）"
@@ -1168,12 +1345,41 @@ class FinancialDataImporter:
                 result.errors.append(err)
 
         # Step 3: Map to declaration data
+        header_source = balance_sheet or income_statement or cash_flow
+        enterprise_info: Dict[str, Any] = {}
         if balance_sheet:
-            result.mapped_data["enterprise_info"] = self.mapper.map_to_enterprise_info(balance_sheet)
+            enterprise_info = self.mapper.map_to_enterprise_info(
+                balance_sheet,
+                company_name=balance_sheet.company_name,
+                tax_number=balance_sheet.tax_number,
+            )
+        elif header_source is not None:
+            if header_source.company_name:
+                enterprise_info["name"] = header_source.company_name
+            if header_source.tax_number:
+                enterprise_info["tax_number"] = header_source.tax_number
+        if enterprise_info:
+            result.mapped_data["enterprise_info"] = enterprise_info
 
         if income_statement:
-            # Default: parse year/quarter from period string
-            year, quarter = self._parse_period(income_statement.period or "")
+            period_text = (income_statement.period or "").strip()
+            if period_text:
+                try:
+                    year, quarter = self._parse_period(period_text)
+                except PeriodParseError as exc:
+                    # 期间非法：明确拒绝，绝不回退当前期间（审计 R11-021）
+                    result.success = False
+                    result.errors.append(ValidationError(field="period", message=str(exc)))
+                    result.summary = self._generate_summary(result)
+                    return result
+            else:
+                # 预览允许缺期间，但不编造当前年度/季度；落库由路由层拒绝
+                year = quarter = None
+                result.warnings.append(ValidationError(
+                    field="period",
+                    message="报表未提供期间：已仅解析、不写入期间；落库前请在表头填写期间（如 2026年1季度）",
+                    severity="warning",
+                ))
             result.mapped_data["financial_data"] = self.mapper.map_to_financial_data(
                 income_statement, year, quarter
             )
@@ -1200,6 +1406,7 @@ class FinancialDataImporter:
         try:
             standard_data = StandardTemplateParser.parse(file_path)
             if standard_data:
+                meta = standard_data.pop("_meta", {}) or {}
                 data["format"] = ImportFormat.STANDARD_TEMPLATE.value
                 if StatementType.BALANCE_SHEET.value in standard_data:
                     data["balance_sheet"] = self._dict_to_balance_sheet(
@@ -1213,6 +1420,8 @@ class FinancialDataImporter:
                     data["cash_flow"] = self._dict_to_cash_flow(
                         standard_data[StatementType.CASH_FLOW.value]
                     )
+                for parsed in (data.get("balance_sheet"), data.get("income_statement"), data.get("cash_flow")):
+                    self._apply_meta(parsed, meta)
                 if data.get("balance_sheet") or data.get("income_statement") or data.get("cash_flow"):
                     return data
         except ImportRowLimitExceeded:
@@ -1257,9 +1466,9 @@ class FinancialDataImporter:
                 setattr(bs, attr_name, d[key])
         # Compute totals if not present
         if bs.total_assets == 0 and bs.total_current_assets > 0:
-            bs.total_assets = round(bs.total_current_assets + bs.total_non_current_assets, 4)
+            bs.total_assets = quantize_wan(bs.total_current_assets + bs.total_non_current_assets)
         if bs.total_liabilities == 0 and bs.total_current_liabilities > 0:
-            bs.total_liabilities = round(bs.total_current_liabilities + bs.total_non_current_liabilities, 4)
+            bs.total_liabilities = quantize_wan(bs.total_current_liabilities + bs.total_non_current_liabilities)
         return bs
 
     def _dict_to_income_statement(self, d: Dict[str, float]) -> ParsedIncomeStatement:
@@ -1279,52 +1488,97 @@ class FinancialDataImporter:
         return cf
 
     @staticmethod
+    def _apply_meta(parsed, meta: Dict[str, str]) -> None:
+        """把标准模板顶部的企业/期间元数据补进已解析报表（报表内已有值优先）。"""
+        if parsed is None or not meta:
+            return
+        if not parsed.company_name and meta.get("company_name"):
+            parsed.company_name = meta["company_name"]
+        if not parsed.period and meta.get("period"):
+            parsed.period = meta["period"]
+        if not parsed.tax_number and meta.get("tax_number"):
+            parsed.tax_number = meta["tax_number"]
+
+    @staticmethod
+    def _validate_year_quarter(year: int, quarter: int, raw: str) -> Tuple[int, int]:
+        if not 2000 <= year <= 2100:
+            raise PeriodParseError(f"报表年度 {year} 超出支持范围（2000–2100）：「{raw}」")
+        if not 1 <= quarter <= 4:
+            raise PeriodParseError(f"报表季度 {quarter} 非法（仅支持 1–4）：「{raw}」")
+        return year, quarter
+
+    _CN_QUARTER = {"一": 1, "二": 2, "三": 3, "四": 4}
+
+    @staticmethod
+    def _quarter_of_month(year: int, month: int, raw: str) -> Tuple[int, int]:
+        if not 1 <= month <= 12:
+            raise PeriodParseError(f"报表月份 {month} 非法（仅支持 1–12）：「{raw}」")
+        return FinancialDataImporter._validate_year_quarter(year, (month - 1) // 3 + 1, raw)
+
+    @staticmethod
     def _parse_period(period_str: str) -> Tuple[int, int]:
         """
-        从期间字符串中解析年份和季度。
+        从期间字符串中解析年份和季度（严格模式）。
 
         支持格式：
-        - "2026年1季度"
-        - "2026年Q1"
-        - "2026-03"
-        - "2026年3月"
+        - "2026年1季度" / "2026年第1季度" / "2026年第三季度"
+        - "2026年Q1" / "2026-Q1" / "2026Q1"
+        - "2026-03" / "2026/3" / "2026.03"
+        - "2026年3月" / "2026年1-9月"（区间取结束月份）
 
-        Returns:
-            (year, quarter)
+        Raises:
+            PeriodParseError: 期间缺失、不可解析、月份/季度越界。
+            任何情况下都不回退到当前年度/季度（审计 R11-021）。
         """
-        if not period_str:
-            now = datetime.now()
-            return now.year, (now.month - 1) // 3 + 1
+        text = (period_str or "").strip()
+        if not text:
+            raise PeriodParseError(
+                "未识别到报表期间：请在报表表头填写期间（如 2026年1季度 / 2026-03）后重新导入"
+            )
 
-        # 2026年1季度
-        m = re.search(r"(\d{4})[年](\d+)季度", period_str)
+        # 2026年1季度 / 2026年第1季度 / 2026年第三季度
+        m = re.search(r"(\d{4})\s*年\s*第?\s*([一二三四1-4])\s*季度", text)
         if m:
-            return int(m.group(1)), int(m.group(2))
+            raw_quarter = m.group(2)
+            quarter = (
+                int(raw_quarter) if raw_quarter.isdigit()
+                else FinancialDataImporter._CN_QUARTER[raw_quarter]
+            )
+            return FinancialDataImporter._validate_year_quarter(
+                int(m.group(1)), quarter, text
+            )
 
-        # 2026年Q1
-        m = re.search(r"(\d{4})[年]Q(\d+)", period_str)
+        # 2026年Q1 / 2026-Q1 / 2026Q1
+        m = re.search(r"(\d{4})\s*(?:年|-)?\s*[Qq]\s*(\d{1,2})", text)
         if m:
-            return int(m.group(1)), int(m.group(2))
+            return FinancialDataImporter._validate_year_quarter(
+                int(m.group(1)), int(m.group(2)), text
+            )
 
-        # 2026-03
-        m = re.search(r"(\d{4})-(\d{2})", period_str)
+        # 2026年1-9月：累计区间取结束月份
+        m = re.search(r"(\d{4})\s*年\s*第?\s*(\d{1,2})\s*[-—–~至]\s*(\d{1,2})\s*月", text)
         if m:
-            month = int(m.group(2))
-            return int(m.group(1)), (month - 1) // 3 + 1
+            return FinancialDataImporter._quarter_of_month(
+                int(m.group(1)), int(m.group(3)), text
+            )
+
+        # 2026-03 / 2026/3 / 2026.03
+        m = re.search(r"(\d{4})\s*[-/.]\s*(\d{1,2})(?!\d)", text)
+        if m:
+            return FinancialDataImporter._quarter_of_month(
+                int(m.group(1)), int(m.group(2)), text
+            )
 
         # 2026年3月
-        m = re.search(r"(\d{4})[年](\d+)月", period_str)
+        m = re.search(r"(\d{4})\s*年\s*第?\s*(\d{1,2})\s*月", text)
         if m:
-            month = int(m.group(2))
-            return int(m.group(1)), (month - 1) // 3 + 1
+            return FinancialDataImporter._quarter_of_month(
+                int(m.group(1)), int(m.group(2)), text
+            )
 
-        # Default: try to extract 4-digit year
-        m = re.search(r"(\d{4})", period_str)
-        if m:
-            return int(m.group(1)), 1
-
-        now = datetime.now()
-        return now.year, (now.month - 1) // 3 + 1
+        raise PeriodParseError(
+            f"无法解析报表期间「{text}」：仅支持 2026年1季度 / 2026Q1 / 2026-03 / 2026年3月"
+        )
 
     @staticmethod
     def _generate_summary(result: ImportResult) -> str:

@@ -6,7 +6,8 @@
 文件名公司名泛化；旧版 .xls 用 xlrd 读取后按 xlsx 写出（内容脱敏不变）。
 
 用法：
-    python dev/desensitize_board_data.py [--src <微信file目录>] [--out <输出目录>]
+    set VERIFY_WECHAT_DIR=<微信文件目录>（或在 dev/desensitize.local.json 配 wechat_dir）
+    python dev/desensitize_board_data.py
 """
 from __future__ import annotations
 
@@ -20,7 +21,15 @@ from pathlib import Path
 import openpyxl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from desensitize_finance_data import COMPANY_TOKENS, OUT_DIR, genericize_text, rand_amount, rng  # noqa: E402
+from desensitize_finance_data import (  # noqa: E402
+    COMPANY_TOKENS,
+    OUT_DIR,
+    require_company_tokens,
+    genericize_text,
+    load_local_config,
+    rand_amount,
+    rng,
+)
 
 _TOTAL_LABELS = ("合计", "总计", "小计", "本日合计", "本月合计", "累计", "总额")
 _KWS = ("税金底稿", "资金计划", "付款清单", "周报", "经营", "利润", "资产负债", "现金流量")
@@ -66,14 +75,28 @@ def _desens_grid(grid):
 
 
 def _fake_name(name: str) -> str:
-    """文件名泛化：公司名片段替换，保留期间/类别结构信息。"""
-    return re.sub(r"某商业管理公司[^，,。（(]*", "脱敏单位", name)
+    """文件名泛化：已登记真实串替换 + 残留公司全称兜底，保留期间/类别结构。"""
+    out = name
+    for real, fake in sorted(COMPANY_TOKENS.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if real:
+            out = out.replace(real, fake)
+    return re.sub(
+        r"[\u4e00-\u9fa5]{2,30}(?:有限公司|有限责任公司)(?:[\u4e00-\u9fa5]{0,10}(?:分公司|支公司))?",
+        "合成单位",
+        out,
+    )
 
 
 def main() -> int:
-    src_dir = Path(os.environ.get(
-        "VERIFY_WECHAT_DIR",
-        r"D:\Documents\xwechat_files\wxid_a6mdshqqj7r521_1c1d\msg\file"))
+    require_company_tokens()
+    raw = os.environ.get("VERIFY_WECHAT_DIR") or load_local_config().get("wechat_dir")
+    if not raw:
+        raise SystemExit(
+            "微信文件目录未配置：请设置 VERIFY_WECHAT_DIR 或 dev/desensitize.local.json 的 wechat_dir"
+        )
+    src_dir = Path(str(raw))
+    if not src_dir.is_dir():
+        raise SystemExit("微信文件目录不存在，请检查 VERIFY_WECHAT_DIR 或本地配置")
     out_dir = OUT_DIR / "脱敏数据报表监控源数据"
     out_dir.mkdir(parents=True, exist_ok=True)
     picks: list[Path] = []
@@ -86,13 +109,13 @@ def main() -> int:
                 picks.append(f)
     picks = picks[:14]
     manifest = {}
-    for src in picks:
+    for index, src in enumerate(picks, start=1):
         fake = "脱敏数据" + _fake_name(src.name)
         dst = out_dir / (Path(fake).stem + ".xlsx")  # .xls 统一按 xlsx 写出（内容脱敏不变）
         try:
             sheets = _read_any(src)
         except Exception as exc:  # noqa: BLE001
-            print(f"  ! 跳过（读取失败）：{src.name}（{type(exc).__name__}）")
+            print(f"  ! 跳过（读取失败）：文件 {index:02d}（{type(exc).__name__}）")
             continue
         out = openpyxl.Workbook()
         out.remove(out.active)
@@ -102,8 +125,8 @@ def main() -> int:
             for r in grid:
                 ws.append(r)
         out.save(dst)
-        manifest[dst.name] = {"sha256": hashlib.sha256(dst.read_bytes()).hexdigest()[:16], "source": src.name}
-        print(f"  ok {dst.name[:46]}")
+        manifest[f"文件{index:02d}"] = {"sha256": hashlib.sha256(dst.read_bytes()).hexdigest()[:16], "source": f"源文件{index:02d}"}
+        print(f"  ok 文件 {index:02d}")
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"报表监控源数据 {len(manifest)} 个文件 -> {out_dir}")

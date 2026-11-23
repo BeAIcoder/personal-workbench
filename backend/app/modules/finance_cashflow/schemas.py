@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 
 class CashflowRunCreate(BaseModel):
+    actual_year: int | None = Field(default=None, ge=2000, le=2100, description="回填年份，缺省当前年")
     actual_month: int = Field(ge=1, le=12, description="回填月份（1-12）")
 
 
@@ -13,6 +14,7 @@ class ArtifactOut(BaseModel):
 
 class CashflowRunOut(BaseModel):
     id: int
+    actual_year: int = 0
     actual_month: int
     status: str
     input_files: list = []

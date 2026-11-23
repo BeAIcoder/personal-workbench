@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ...database import get_db
 from . import service
 from .schemas import (
+    BalanceListOut,
     BalanceSummaryOut,
     BatchListOut,
     ConfirmIn,
@@ -148,13 +149,31 @@ def list_entries(
     )
 
 
-@router.get("/balances/summary", response_model=BalanceSummaryOut, summary="科目发生额汇总（按期间聚合凭证分录）")
+@router.get("/balances/summary", response_model=BalanceSummaryOut, summary="科目发生额汇总（凭证分录优先，仅余额表时回退余额表）")
 def balances_summary(
     period: str = Query(..., description="会计期间 YYYY-MM"),
     db: Session = Depends(get_db),
 ):
     try:
         return service.balance_summary(db, period)
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.get("/balances", response_model=BalanceListOut, summary="科目余额表行查询（期间 + 科目前缀 / 账簿，含全量合计）")
+def list_balances(
+    period: str = Query(..., description="会计期间 YYYY-MM"),
+    subject_prefix: str | None = Query(None, description="科目编码前缀，如 1002"),
+    ledger: str | None = Query(None, description="核算账簿（模糊匹配）"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    try:
+        return service.query_balances(
+            db, period=period, subject_prefix=subject_prefix, ledger=ledger,
+            page=page, page_size=page_size,
+        )
     except ValueError as exc:
         raise _bad_request(exc) from exc
 

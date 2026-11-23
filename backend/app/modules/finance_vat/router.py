@@ -1,20 +1,29 @@
 # -*- coding: utf-8 -*-
-"""finance_vat 模块接口：/api/finance/vat。"""
+"""finance_vat 模块接口：/api/finance/vat。
+
+端点、payload、计税与底稿仍在本模块；防重/受控更正/删除与产物清理/导入导出流程
+由 ``FilingRouter`` 收敛（税种差异见 ``FilingSpec``）。
+"""
 from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ...database import get_db
-from ...utils_filing import unlink_export_artifact
+from ...finance_filing_common import FilingRouter, FilingSpec, normalize_taxpayer_name
 from . import service
 from .models import VatFiling
 
 router = APIRouter(tags=["财务模块·增值税填报"])
+
+filings = FilingRouter(FilingSpec(
+    model=VatFiling, tax_label="增值税", subject="纳税人",
+    prefix="/api/finance/vat", period_column="period", period_noun="期间",
+    exports_dir=service.exports_dir,
+))
 
 
 class OutputItemIn(BaseModel):
@@ -44,86 +53,67 @@ def _out(f: VatFiling) -> dict:
     }
 
 
+def _calculate(payload: VatIn) -> dict:
+    if payload.taxpayer_type == "general":
+        return service.calc_general(
+            payload.period, [i.model_dump() for i in payload.output_items],
+            payload.input_vat, payload.input_transfer_out)
+    return service.calc_small_scale(
+        payload.period, payload.sales_amount, payload.levy_rate,
+        payload.filing_period)
+
+
+def _inputs_of(payload: VatIn) -> dict:
+    return {"output_items": [i.model_dump() for i in payload.output_items],
+            "input_vat": payload.input_vat,
+            "input_transfer_out": payload.input_transfer_out,
+            "sales_amount": payload.sales_amount, "levy_rate": payload.levy_rate,
+            "filing_period": payload.filing_period}
+
+
 @router.post("/filings", status_code=201, summary="创建并计算增值税填报")
 def create_filing(payload: VatIn, db: Session = Depends(get_db)):
-    try:
-        if payload.taxpayer_type == "general":
-            calc = service.calc_general(
-                payload.period, [i.model_dump() for i in payload.output_items],
-                payload.input_vat, payload.input_transfer_out)
-        else:
-            calc = service.calc_small_scale(
-                payload.period, payload.sales_amount, payload.levy_rate,
-                payload.filing_period)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    inputs = {"output_items": [i.model_dump() for i in payload.output_items],
-              "input_vat": payload.input_vat,
-              "input_transfer_out": payload.input_transfer_out,
-              "sales_amount": payload.sales_amount, "levy_rate": payload.levy_rate,
-              "filing_period": payload.filing_period}
-    filing = VatFiling(period=payload.period, taxpayer_type=payload.taxpayer_type,
-                       taxpayer_name=payload.taxpayer_name, inputs=inputs,
-                       calc_result=calc, status="calculated")
-    db.add(filing)
-    db.commit()
-    db.refresh(filing)
+    filing = filings.create(
+        db, period=payload.period,
+        taxpayer_name=normalize_taxpayer_name(payload.taxpayer_name),
+        fields={"taxpayer_type": payload.taxpayer_type, "inputs": _inputs_of(payload)},
+        calculate=lambda _period: _calculate(payload))
+    return _out(filing)
+
+
+@router.put("/filings/{filing_id}", summary="更正增值税填报（重算；已导出/已提交不可覆盖）")
+def revise_filing(filing_id: int, payload: VatIn, db: Session = Depends(get_db)):
+    filing = filings.load(db, filing_id)
+    filings.revise(
+        db, filing, period_of=lambda: payload.period,
+        taxpayer_name=normalize_taxpayer_name(payload.taxpayer_name),
+        fields={"inputs": _inputs_of(payload)},
+        calculate=lambda _period: _calculate(payload))
     return _out(filing)
 
 
 @router.get("/filings", summary="填报记录列表")
 def list_filings(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200),
                  db: Session = Depends(get_db)):
-    q = db.query(VatFiling).order_by(VatFiling.id.desc())
-    total = q.count()
-    rows = q.offset((page - 1) * page_size).limit(page_size).all()
-    return {"total": total, "items": [_out(f) for f in rows],
-            "page": page, "page_size": page_size}
+    return filings.page(db, page, page_size, serialize=_out)
 
 
 @router.get("/filings/{filing_id}", summary="填报详情")
 def get_filing(filing_id: int, db: Session = Depends(get_db)):
-    f = db.get(VatFiling, filing_id)
-    if f is None:
-        raise HTTPException(status_code=404, detail="填报记录不存在")
-    return _out(f)
+    return _out(filings.load(db, filing_id))
 
 
 @router.delete("/filings/{filing_id}", summary="删除填报记录")
 def delete_filing(filing_id: int, db: Session = Depends(get_db)):
-    f = db.get(VatFiling, filing_id)
-    if f is None:
-        raise HTTPException(status_code=404, detail="填报记录不存在")
-    # 先落库删除、再清产物：commit 失败时不得先丢掉底稿（复核 M-5）
-    export_path = f.export_path
-    db.delete(f)
-    db.commit()
-    removed = unlink_export_artifact(export_path, service.exports_dir())
-    return {"ok": True, "export_removed": removed}
+    return filings.delete(db, filing_id)
 
 
 @router.post("/filings/{filing_id}/export", summary="生成申报底稿 xlsx")
 def export_filing(filing_id: int, db: Session = Depends(get_db)):
-    f = db.get(VatFiling, filing_id)
-    if f is None:
-        raise HTTPException(status_code=404, detail="填报记录不存在")
-    if not f.calc_result:
-        raise HTTPException(status_code=409, detail="尚未完成计算，无法导出")
-    path = service.export_filing_xlsx(f)
-    f.export_path = str(path)
-    f.status = "exported"
-    db.commit()
-    return {"ok": True, "file": path.name}
+    return filings.export(db, filing_id, exporter=service.export_filing_xlsx,
+                          not_ready_detail="尚未完成计算，无法导出")
 
 
 @router.get("/filings/{filing_id}/download", summary="下载申报底稿")
 def download_filing(filing_id: int, db: Session = Depends(get_db)):
-    f = db.get(VatFiling, filing_id)
-    if f is None:
-        raise HTTPException(status_code=404, detail="填报记录不存在")
-    if not f.export_path:
-        raise HTTPException(status_code=409, detail="尚未导出，请先点「生成底稿」")
-    p = service.exports_dir() / f.export_path.split("/")[-1].split("\\")[-1]
-    if not p.is_file():
-        raise HTTPException(status_code=410, detail="导出文件已不存在，请重新导出")
-    return FileResponse(str(p), filename=p.name)
+    return filings.download(db, filing_id)

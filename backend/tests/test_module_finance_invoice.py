@@ -7,6 +7,8 @@
   扩展名/大小/ZIP 混传校验；
 - 引擎缺失时 POST /batches 503 降级（不留半成品批次）；
 - PATCH 人工修正、导出清单 xlsx + ZIP、下载与未导出 409；
+- 单项目 PDF 即时合并（真实合成 PDF，无需先导出）、pdf_name 命名、缺件/损坏/加密/越界整次失败、
+  响应后临时文件清理、批次未就绪中文提示；
 - invoice_batch_stats 只读 Agent 工具。
 """
 import asyncio
@@ -15,14 +17,17 @@ import sys
 import types
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from openpyxl import load_workbook
+from pypdf import PdfReader, PdfWriter
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import engine
+from app.database import SessionLocal, engine
 from app.modules.finance_invoice import engine as engine_mod
+from app.modules.finance_invoice import invoice_batch, invoice_export, invoice_parse
 from app.modules.finance_invoice import projects as project_rules
 from app.modules.finance_invoice import router as invoice_router
 from app.modules.finance_invoice import service
@@ -65,13 +70,13 @@ def finance_dir(tmp_path, monkeypatch):
 def mock_engine(monkeypatch):
     """打桩引擎：_require_engine 放行；按文件名返回罐头解析结果（未登记的文件返回 None=解析失败）。"""
     canned: dict[str, dict] = {}
-    monkeypatch.setattr(service, "_require_engine", lambda: None)
+    monkeypatch.setattr(invoice_parse, "_require_engine", lambda: None)
 
     def fake_parse(pdf_path):
         fields = canned.get(Path(pdf_path).name)
         return service.ParsedInvoice(**fields) if fields is not None else None
 
-    monkeypatch.setattr(service, "_parse_pdf_with_engine", fake_parse)
+    monkeypatch.setattr(invoice_parse, "_parse_pdf_with_engine", fake_parse)
     return canned
 
 
@@ -91,8 +96,6 @@ def test_module_registered_and_tables_created(client):
     assert "finance_invoice" in loaded
     manifest = loaded["finance_invoice"]
     assert manifest.prefix == "/api/finance/invoice"
-    assert manifest.tables == ["mod_invoice_batch", "mod_invoice_item"]
-    assert manifest.menu == {"group": "财务", "icon": "Tickets", "order": 20}
     with engine.connect() as conn:
         names = {r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
     assert {"mod_invoice_batch", "mod_invoice_item"} <= names
@@ -498,34 +501,34 @@ def pin_rules(monkeypatch, keywords: list[str], mapping: dict | None = None) -> 
 
 
 def test_load_project_rules_longest_first_and_force_mapping(monkeypatch):
-    pin_rules(monkeypatch, ["示例路", "示例北路", "融城"], {"示例北路": "园城项目"})
+    pin_rules(monkeypatch, ["示例路", "示例北路", "品牌"], {"示例北路": "项目B"})
     rules = project_rules.load_project_rules()
-    assert [rule.keyword for rule in rules] == ["示例北路", "示例路", "融城"]  # 长词优先
-    assert rules[0].project == "园城项目"
+    assert [rule.keyword for rule in rules] == ["示例北路", "示例路", "品牌"]  # 长词优先
+    assert rules[0].project == "项目B"
     assert rules[1].project == "示例路"  # 无映射 → 关键词即项目名
 
 
 def test_resolve_project_priority_chain():
     rules = [
-        project_rules.ProjectRule("示例北路", "园城项目"),
+        project_rules.ProjectRule("示例北路", "项目B"),
         project_rules.ProjectRule("示例路", "示例路"),
     ]
     # 1) 引擎项目名命中关键词
     assert project_rules.resolve_project(rules=rules, project_name="示例北路") == (
-        "园城项目",
+        "项目B",
         project_rules.SOURCE_PROJECT_NAME,
     )
     # 2) 项目名不可用（类别/购方兜底）→ 备注命中
     assert project_rules.resolve_project(
         rules=rules, project_name="场地服务费", remark="示例北路项目场地服务"
-    ) == ("园城项目", project_rules.SOURCE_REMARK)
+    ) == ("项目B", project_rules.SOURCE_REMARK)
     # 3) 前两步不命中 → 全文命中
     assert project_rules.resolve_project(
         rules=rules, project_name="某租户", text="地址：示例北路600号"
-    ) == ("园城项目", project_rules.SOURCE_TEXT)
+    ) == ("项目B", project_rules.SOURCE_TEXT)
     # 4) 同批同购方唯一项目 → 继承
-    assert project_rules.resolve_project(rules=rules, project_name="某租户", peer_projects={"园城项目"}) == (
-        "园城项目",
+    assert project_rules.resolve_project(rules=rules, project_name="某租户", peer_projects={"项目B"}) == (
+        "项目B",
         project_rules.SOURCE_PEER,
     )
     # 5) 无任何证据 → 未归类
@@ -542,7 +545,7 @@ def test_resolve_project_priority_chain():
 
 def test_parse_applies_project_rules(client, finance_dir, mock_engine, monkeypatch):
     """上传即归类：地址关键词映射、类别备注改写、同购方继承。"""
-    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "园城项目"})
+    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "项目B"})
     mock_engine["a.pdf"] = make_fields(invoice_number="7001", project_name="示例北路", buyer_name="示例购方")
     mock_engine["b.pdf"] = make_fields(
         invoice_number="7002", project_name="场地服务费", remark="示例北路项目场地服务", buyer_name="另一购方"
@@ -552,16 +555,24 @@ def test_parse_applies_project_rules(client, finance_dir, mock_engine, monkeypat
     assert resp.status_code == 201
     body = resp.json()
     projects = {item["project_name"] for item in body["items"]}
-    assert projects == {"园城项目"}  # c 经同购方继承
+    assert projects == {"项目B"}  # c 经同购方继承
 
     summary = client.get(f"/api/finance/invoice/batches/{body['id']}/projects").json()
     assert summary == [
-        {"project": "园城项目", "count": 3, "amount": 300.0, "manual": 0, "zip_file": "", "zip_ready": False}
+        {
+            "project": "项目B",
+            "count": 3,
+            "amount": 300.0,
+            "manual": 0,
+            "pdf_name": "项目B2026年10月发票.pdf",
+            "zip_file": "",
+            "zip_ready": False,
+        }
     ]
 
 
 def test_reclassify_keeps_manual_and_marks_unclassified(client, finance_dir, mock_engine, monkeypatch):
-    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "园城项目"})
+    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "项目B"})
     mock_engine["a.pdf"] = make_fields(invoice_number="7101", project_name="示例北路", buyer_name="购方甲")
     mock_engine["b.pdf"] = make_fields(invoice_number="7102", project_name="无地址租户", buyer_name="购方乙")
     body = upload(client, [("a.pdf", FAKE_PDF), ("b.pdf", FAKE_PDF)]).json()
@@ -591,38 +602,38 @@ def test_reclassify_requires_rules(client, finance_dir, mock_engine):
 
 
 def test_export_splits_project_zips_and_download(client, finance_dir, mock_engine, monkeypatch):
-    pin_rules(monkeypatch, ["示例北路", "示例南路"], {"示例北路": "园城项目", "示例南路": "金阶项目"})
+    pin_rules(monkeypatch, ["示例北路", "示例南路"], {"示例北路": "项目B", "示例南路": "项目C"})
     mock_engine["a.pdf"] = make_fields(invoice_number="7201", project_name="示例北路", amount="100.00")
     mock_engine["b.pdf"] = make_fields(invoice_number="7202", project_name="示例南路", amount="50.00")
     body = upload(client, [("a.pdf", FAKE_PDF), ("b.pdf", FAKE_PDF)]).json()
 
-    before = client.get(f"/api/finance/invoice/batches/{body['id']}/projects/download?project=园城项目")
+    before = client.get(f"/api/finance/invoice/batches/{body['id']}/projects/download?project=项目B")
     assert before.status_code == 409  # 未导出
 
     result = client.post(f"/api/finance/invoice/batches/{body['id']}/export").json()
-    assert set(result["project_zips"]) == {"园城项目", "金阶项目"}
+    assert set(result["project_zips"]) == {"项目B", "项目C"}
     # 下载文件名 = 项目 + 月份
-    assert result["project_zips"]["园城项目"] == "园城项目2026年10月.zip"
+    assert result["project_zips"]["项目B"] == "项目B2026年10月.zip"
 
     summary = client.get(f"/api/finance/invoice/batches/{body['id']}/projects").json()
     rows = {row["project"]: row for row in summary}
-    assert rows["园城项目"]["zip_ready"] is True and rows["园城项目"]["count"] == 1
-    assert rows["金阶项目"]["amount"] == 50.0
-    assert rows["园城项目"]["zip_file"] == "园城项目2026年10月.zip"
+    assert rows["项目B"]["zip_ready"] is True and rows["项目B"]["count"] == 1
+    assert rows["项目C"]["amount"] == 50.0
+    assert rows["项目B"]["zip_file"] == "项目B2026年10月.zip"
 
     detail = client.get(f"/api/finance/invoice/batches/{body['id']}").json()
     assert detail["download_name"] == "发票汇总2026年10月.zip"
 
-    resp = client.get(f"/api/finance/invoice/batches/{body['id']}/projects/download?project=园城项目")
+    resp = client.get(f"/api/finance/invoice/batches/{body['id']}/projects/download?project=项目B")
     assert resp.status_code == 200 and resp.content[:2] == b"PK"
     # 中文名同时给 filename*（UTF-8）与 ASCII 兜底，避免浏览器丢名成 UUID
     disposition = resp.headers["content-disposition"]
     assert "filename*=utf-8''" in disposition and "project_invoices.zip" in disposition
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         names = zf.namelist()
-    assert any(name.startswith("26年10月园城项目/") for name in names)
+    assert any(name.startswith("26年10月项目B/") for name in names)
     assert any(name.endswith("发票清单.xlsx") for name in names)
-    assert not any("金阶项目" in name for name in names)  # 拆分后互不混装
+    assert not any("项目C" in name for name in names)  # 拆分后互不混装
 
     assert client.get(
         f"/api/finance/invoice/batches/{body['id']}/projects/download?project=不存在项目"
@@ -631,12 +642,12 @@ def test_export_splits_project_zips_and_download(client, finance_dir, mock_engin
 
 def test_project_zip_name_uses_project_and_month(client, finance_dir, mock_engine, monkeypatch):
     """跨月批次：项目 ZIP 名与整批名都带月份区间（文件名口径 项目+月份）。"""
-    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "园城项目"})
+    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "项目B"})
     mock_engine["a.pdf"] = make_fields(invoice_number="7301", project_name="示例北路", invoice_date="2026年10月01日")
     mock_engine["b.pdf"] = make_fields(invoice_number="7302", project_name="示例北路", invoice_date="2026年11月02日")
     body = upload(client, [("a.pdf", FAKE_PDF), ("b.pdf", FAKE_PDF)]).json()
     result = client.post(f"/api/finance/invoice/batches/{body['id']}/export").json()
-    assert result["project_zips"]["园城项目"] == "园城项目2026年10-11月.zip"
+    assert result["project_zips"]["项目B"] == "项目B2026年10-11月.zip"
     detail = client.get(f"/api/finance/invoice/batches/{body['id']}").json()
     assert detail["download_name"] == "发票汇总2026年10-11月.zip"
     # 整批下载响应同样带中文名
@@ -654,7 +665,7 @@ def test_months_suffix_variants():
 
 
 def test_reclassify_invalidates_export(client, finance_dir, mock_engine, monkeypatch):
-    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "园城项目"})
+    pin_rules(monkeypatch, ["示例北路"], {"示例北路": "项目B"})
     mock_engine["a.pdf"] = make_fields(project_name="示例北路")
     body = upload(client, [("a.pdf", FAKE_PDF)]).json()
     assert client.post(f"/api/finance/invoice/batches/{body['id']}/export").status_code == 200
@@ -664,5 +675,277 @@ def test_reclassify_invalidates_export(client, finance_dir, mock_engine, monkeyp
     detail = client.get(f"/api/finance/invoice/batches/{body['id']}").json()
     assert detail["status"] == "parsed" and detail["export_file"] == ""
     assert client.get(
-        f"/api/finance/invoice/batches/{body['id']}/projects/download?project=园城项目"
+        f"/api/finance/invoice/batches/{body['id']}/projects/download?project=项目B"
     ).status_code == 409
+
+
+# ---------------- 单项目 PDF 即时合并（真实合成 PDF） ----------------
+
+def make_pdf(*widths: float) -> bytes:
+    """合成真实 PDF：每页一个空白页，页宽作为页序指纹，合并顺序可精确断言。"""
+    writer = PdfWriter()
+    for width in widths:
+        writer.add_blank_page(width=float(width), height=200.0)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def encrypted_pdf(width: float = 500.0, password: str = "secret") -> bytes:
+    """合成带打开密码的 PDF：合并时必须判为不可读，不得静默跳过。"""
+    writer = PdfWriter()
+    writer.add_blank_page(width=float(width), height=200.0)
+    writer.encrypt(password)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def page_widths(content: bytes) -> list[float]:
+    return [round(float(page.mediabox.width), 2) for page in PdfReader(io.BytesIO(content)).pages]
+
+
+def _upload_pdf_batch(client, mock_engine, spec: list[tuple[str, bytes, dict | None]]) -> dict:
+    """spec: [(文件名, PDF 字节, 罐头解析字段)]；字段为 None 表示不登记（该文件解析失败）。"""
+    files: list[tuple[str, bytes]] = []
+    for fname, content, fields in spec:
+        if fields is not None:
+            mock_engine[fname] = make_fields(**fields)
+        files.append((fname, content))
+    resp = upload(client, files)
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def _project_pdf(client, batch_id: int, project: str):
+    return client.get(
+        f"/api/finance/invoice/batches/{batch_id}/projects/pdf", params={"project": project}
+    )
+
+
+def _tmp_pdfs(finance_dir: Path) -> list[Path]:
+    return sorted((finance_dir / "finance_invoice" / "tmp").glob("*.pdf"))
+
+
+def _inbox(finance_dir: Path, batch_id: int) -> Path:
+    return finance_dir / "finance_invoice" / "inbox" / f"batch_{batch_id}"
+
+
+def test_project_pdf_merges_pages_in_item_order(client, finance_dir, mock_engine):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101, 102), dict(invoice_number="8101", project_name="项目B")),
+        ("b.pdf", make_pdf(201), dict(invoice_number="8102", project_name="项目B")),
+        ("c.pdf", make_pdf(301), dict(invoice_number="8103", project_name="项目C")),
+    ])
+    pdf_name = "项目B2026年10月发票.pdf"
+    resp = _project_pdf(client, body["id"], "项目B")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/pdf"
+    disposition = resp.headers["content-disposition"]
+    assert 'filename="project_invoices.pdf"' in disposition  # ASCII 兜底
+    assert f"filename*=utf-8''{quote(pdf_name)}" in disposition  # 中文名
+    # 明细 ID 升序 + 每个原件保持原页序，不插封面/分隔页
+    assert page_widths(resp.content) == [101.0, 102.0, 201.0]
+
+    # 项目之间互不混装
+    other = _project_pdf(client, body["id"], "项目C")
+    assert other.status_code == 200
+    assert page_widths(other.content) == [301.0]
+
+    # 合并只读：批次状态/明细不变，且不在 outbox 留下导出产物
+    detail = client.get(f"/api/finance/invoice/batches/{body['id']}").json()
+    assert detail["status"] == "parsed" and detail["export_file"] == ""
+    assert detail["items"] == body["items"]
+    outbox = finance_dir / "finance_invoice" / "outbox"
+    assert not any(path.is_file() for path in outbox.rglob("*"))
+
+
+def test_project_pdf_name_single_and_cross_month(client, finance_dir, mock_engine):
+    single = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="8111", project_name="项目B", invoice_date="2026年10月01日")),
+    ])
+    rows = client.get(f"/api/finance/invoice/batches/{single['id']}/projects").json()
+    assert rows[0]["pdf_name"] == "项目B2026年10月发票.pdf"
+    assert rows[0]["zip_file"] == "" and rows[0]["zip_ready"] is False  # 未导出也有 pdf_name
+
+    cross = _upload_pdf_batch(client, mock_engine, [
+        ("c.pdf", make_pdf(102), dict(invoice_number="8112", project_name="项目B", invoice_date="2026年10月01日")),
+        ("d.pdf", make_pdf(103), dict(invoice_number="8113", project_name="项目B", invoice_date="2026年11月02日")),
+    ])
+    rows = client.get(f"/api/finance/invoice/batches/{cross['id']}/projects").json()
+    assert rows[0]["pdf_name"] == "项目B2026年10-11月发票.pdf"
+    resp = _project_pdf(client, cross["id"], "项目B")
+    assert resp.status_code == 200
+    assert f"filename*=utf-8''{quote('项目B2026年10-11月发票.pdf')}" in resp.headers["content-disposition"]
+
+
+def test_project_pdf_available_without_export(client, finance_dir, mock_engine):
+    """未导出即可合并；导出后行为不变（同项目 PDF 与 ZIP 并存）。"""
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="8121", project_name="项目B")),
+    ])
+    assert client.get(f"/api/finance/invoice/batches/{body['id']}/projects/download?project=项目B").status_code == 409
+    assert _project_pdf(client, body["id"], "项目B").status_code == 200
+
+    assert client.post(f"/api/finance/invoice/batches/{body['id']}/export").status_code == 200
+    exported = _project_pdf(client, body["id"], "项目B")
+    assert exported.status_code == 200 and page_widths(exported.content) == [101.0]
+    # 导出后状态仍保留，ZIP 下载不受影响
+    zipped = client.get(f"/api/finance/invoice/batches/{body['id']}/projects/download?project=项目B")
+    assert zipped.status_code == 200 and zipped.content[:2] == b"PK"
+
+
+def test_project_pdf_excludes_duplicate_and_failed_keeps_red(client, finance_dir, mock_engine):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="8201", check_code="c1", project_name="项目B")),
+        ("b.pdf", make_pdf(102), dict(invoice_number="8201", check_code="c1", project_name="项目B")),
+        ("red.pdf", make_pdf(103), dict(
+            invoice_number="8202", amount="-100.00", invoice_direction="冲红发票", project_name="项目B"
+        )),
+        ("bad.pdf", make_pdf(104), None),
+    ])
+    status = {item["source_file"]: item["status"] for item in body["items"]}
+    assert status["b.pdf"] == "duplicate" and status["bad.pdf"] == "failed"
+    resp = _project_pdf(client, body["id"], "项目B")
+    assert resp.status_code == 200
+    # duplicate / failed 排除；红冲票保留在原顺序中
+    assert page_widths(resp.content) == [101.0, 103.0]
+
+
+def test_project_pdf_unclassified_group(client, finance_dir, mock_engine):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(111), dict(invoice_number="8301", project_name="")),
+    ])
+    rows = client.get(f"/api/finance/invoice/batches/{body['id']}/projects").json()
+    assert rows[0]["project"] == "未归类"
+    resp = _project_pdf(client, body["id"], "未归类")
+    assert resp.status_code == 200 and page_widths(resp.content) == [111.0]
+    assert f"filename*=utf-8''{quote('未归类2026年10月发票.pdf')}" in resp.headers["content-disposition"]
+
+
+def test_project_pdf_missing_source_fails_whole_merge(client, finance_dir, mock_engine):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="8401", project_name="项目B")),
+        ("b.pdf", make_pdf(102), dict(invoice_number="8402", project_name="项目B")),
+    ])
+    (_inbox(finance_dir, body["id"]) / "b.pdf").unlink()
+    resp = _project_pdf(client, body["id"], "项目B")
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "8402" in detail and "b.pdf" in detail and "不存在" in detail  # 列明票号/源文件
+    assert "8401" not in detail  # 只列真正有问题的原件
+    assert _tmp_pdfs(finance_dir) == []  # 缺件不生成半成品
+
+
+def test_project_pdf_corrupt_source_fails(client, finance_dir, mock_engine):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="8501", project_name="项目B")),
+    ])
+    (_inbox(finance_dir, body["id"]) / "a.pdf").write_bytes(b"%PDF-1.7 not really a pdf")
+    resp = _project_pdf(client, body["id"], "项目B")
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "8501" in detail and "损坏" in detail
+    assert _tmp_pdfs(finance_dir) == []
+
+
+def test_project_pdf_encrypted_source_fails(client, finance_dir, mock_engine):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", encrypted_pdf(), dict(invoice_number="8601", project_name="项目B")),
+    ])
+    resp = _project_pdf(client, body["id"], "项目B")
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "8601" in detail and "加密" in detail
+    assert _tmp_pdfs(finance_dir) == []
+
+
+def test_project_pdf_rejects_path_outside_batch_inbox(client, finance_dir, mock_engine, tmp_path):
+    first = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="8701", project_name="项目B")),
+    ])
+    second = _upload_pdf_batch(client, mock_engine, [
+        ("b.pdf", make_pdf(102), dict(invoice_number="8702", project_name="项目B")),
+    ])
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(make_pdf(999))
+    samples = {
+        first["items"][0]["id"]: str(outside),  # 任意本机路径
+        second["items"][0]["id"]: str(_inbox(finance_dir, first["id"]) / "a.pdf"),  # 其他批次入库文件
+    }
+    db = SessionLocal()
+    try:
+        for item_id, stored in samples.items():
+            db.get(InvoiceItem, item_id).stored_path = stored
+        db.commit()
+    finally:
+        db.close()
+    for batch_id in (first["id"], second["id"]):
+        resp = _project_pdf(client, batch_id, "项目B")
+        assert resp.status_code == 409
+        assert "超出本批次入库目录" in resp.json()["detail"]
+    assert _tmp_pdfs(finance_dir) == []
+
+
+def test_project_pdf_temp_file_cleaned_after_response(client, finance_dir, mock_engine):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="8801", project_name="项目B")),
+    ])
+    assert _tmp_pdfs(finance_dir) == []
+    resp = _project_pdf(client, body["id"], "项目B")
+    assert resp.status_code == 200 and resp.content[:5] == b"%PDF-"
+    # FileResponse 后台任务在响应结束后删除临时文件（不留长期缓存）
+    assert _tmp_pdfs(finance_dir) == []
+
+
+def test_project_pdf_404_for_unknown_batch_or_project(client, finance_dir, mock_engine):
+    assert _project_pdf(client, 9999, "项目B").status_code == 404
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="8901", project_name="项目B")),
+    ])
+    resp = _project_pdf(client, body["id"], "不存在项目")
+    assert resp.status_code == 404 and "项目" in resp.json()["detail"]
+
+
+def test_project_pdf_batch_not_ready_409(client, finance_dir, mock_engine):
+    db = SessionLocal()
+    try:
+        uploading = InvoiceBatch(name="解析中", status=InvoiceBatch.STATUS_UPLOADED)
+        broken = InvoiceBatch(name="解析失败", status=InvoiceBatch.STATUS_FAILED)
+        db.add_all([uploading, broken])
+        db.commit()
+        db.refresh(uploading)
+        db.refresh(broken)
+        uploading_id, broken_id = uploading.id, broken.id
+    finally:
+        db.close()
+    resp = _project_pdf(client, uploading_id, "项目B")
+    assert resp.status_code == 409 and "解析" in resp.json()["detail"]
+    resp = _project_pdf(client, broken_id, "项目B")
+    assert resp.status_code == 409 and "重新上传" in resp.json()["detail"]
+
+
+def test_project_pdf_requires_project_param(client, finance_dir, mock_engine):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="9001", project_name="项目B")),
+    ])
+    url = f"/api/finance/invoice/batches/{body['id']}/projects/pdf"
+    assert client.get(url).status_code == 422  # 必填
+    assert client.get(url, params={"project": ""}).status_code == 422  # 1–100 字
+    assert client.get(url, params={"project": "x" * 101}).status_code == 422
+
+
+def test_project_pdf_data_dir_unavailable_uses_chinese_error(client, finance_dir, mock_engine, monkeypatch):
+    body = _upload_pdf_batch(client, mock_engine, [
+        ("a.pdf", make_pdf(101), dict(invoice_number="9101", project_name="项目B")),
+    ])
+    db = SessionLocal()
+    try:
+        batch = db.get(InvoiceBatch, body["id"])
+        def unavailable_dirs():
+            raise OSError("synthetic disk unavailable")
+        monkeypatch.setattr(invoice_export, "_ensure_dirs", unavailable_dirs)
+        with pytest.raises(service.ProjectPdfError, match="数据目录不可用"):
+            service.merge_project_pdf(db, batch, "项目B")
+    finally:
+        db.close()

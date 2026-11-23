@@ -22,9 +22,17 @@ def main() -> None:
     load_modules(FastAPI())
     if args.reset:
         Base.metadata.drop_all(bind=engine)
+        # 虚拟表不在 ORM metadata 里，drop_all 清不掉；不删会留下指向已删块的索引行
+        with engine.begin() as conn:
+            conn.exec_driver_sql("DROP TABLE IF EXISTS kb_fts")
+            conn.exec_driver_sql("DROP TABLE IF EXISTS kb_vec")
         print("已清空原有数据。")
 
     Base.metadata.create_all(bind=engine)
+    # 知识库 FTS5/向量虚拟表不在 ORM metadata 内，单独幂等创建
+    from .knowledge.index import ensure_schema
+
+    ensure_schema()
     with SessionLocal() as db:
         seed_agent_specs(db)
         counts = seed_if_empty(db)

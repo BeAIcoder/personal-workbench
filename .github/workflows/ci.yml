@@ -1,13 +1,49 @@
 name: ci
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  # 手动闸门：suite=fast 时跳过 pytest.mark.slow 用例，用于 PR 级快速反馈
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "full=全量；fast=跳过 slow 标记用例"
+        type: choice
+        options: [full, fast]
+        default: full
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  # 秒级门禁：版本/超时/计数/命名 + 模块边界/大文件/金额 round 基线
+  # 只用标准库，不安装后端依赖（本机实测 0.15s / 0.43s）
+  contracts:
     runs-on: windows-latest
-    timeout-minutes: 60
-    # Windows runner 默认代码页会让中文断言/日志 mojibake；显式 UTF-8 与本地一致
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 契约检查
+        timeout-minutes: 5
+        run: python dev/check_contracts.py
+      - name: 架构检查
+        timeout-minutes: 5
+        run: python dev/check_architecture.py
+
+  backend:
+    needs: contracts
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
+      # Windows runner 默认代码页会让中文断言/日志 mojibake；显式 UTF-8 与本地一致
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
     steps:
@@ -17,22 +53,88 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: backend/requirements.txt
+      - name: 安装后端依赖
+        timeout-minutes: 20
+        run: |
+          cd backend
+          python -m venv venv
+          venv/Scripts/python.exe -m pip install --upgrade pip
+          venv/Scripts/python.exe -m pip install -r requirements.txt
+      - name: 后端测试（分片 ${{ matrix.shard }}/4）
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          cd backend
+          # pipefail：让 pytest 失败穿透 `| tee`，避免日志步骤把红变绿
+          set -eo pipefail
+          # fast 闸门（workflow_dispatch 显式选择；push/PR 默认 full）：
+          # 文件级 slow 连 import 都省掉，单例 slow 交给 -m 表达式兜底
+          MODE=full
+          MARK_ARGS=()
+          if [ "${{ github.event.inputs.suite }}" = "fast" ]; then
+            MODE=fast
+            MARK_ARGS=(-m "not slow")
+            echo "suite=fast：跳过 pytest.mark.slow 用例"
+          fi
+          # 脚本每行输出一个文件；mapfile 才能得到真正的数组（单行空格分隔会被当成一个参数）。
+          # 先落文件再读：脚本非 0 退出时 set -e 立即失败，而不是"分片为空"被静默跳过。
+          FILE_LIST=pytest-shard-${{ matrix.shard }}.files
+          python ../dev/shard_tests.py --shard ${{ matrix.shard }} --total 4 --mode "$MODE" > "$FILE_LIST"
+          mapfile -t FILES < "$FILE_LIST"
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "分片 ${{ matrix.shard }} 没有测试文件，跳过"
+            exit 0
+          fi
+          # 分片内按文件分发 fixture 互不影响；--durations 与日志上传留给 42min 类问题定位
+          venv/Scripts/python.exe -m pytest "${FILES[@]}" -q -n 4 --dist loadfile \
+            --timeout=120 --durations=20 "${MARK_ARGS[@]}" \
+            --junitxml=pytest-junit-${{ matrix.shard }}.xml 2>&1 | tee pytest-shard-${{ matrix.shard }}.log
+      - name: 上传后端测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-backend-${{ matrix.shard }}
+          path: |
+            backend/pytest-junit-${{ matrix.shard }}.xml
+            backend/pytest-shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  frontend:
+    needs: contracts
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           # 与 frontend/.nvmrc、package.json engines 同源（安全下限 24.22.1）
           node-version-file: frontend/.nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: 后端测试
-        timeout-minutes: 45
-        run: |
-          cd backend
-          python -m venv venv
-          venv/Scripts/python.exe -m pip install -r requirements.txt
-          venv/Scripts/python.exe -m pytest tests -q -n 12 --durations=15
-      - name: 前端测试与构建
+      - name: 安装前端依赖
+        timeout-minutes: 20
         run: |
           cd frontend
           npm ci
-          npx vitest run
+      - name: 前端测试
+        timeout-minutes: 15
+        run: |
+          cd frontend
+          npx vitest run --maxWorkers=2 --reporter=default --reporter=junit --outputFile=vitest-junit.xml
+      - name: 前端构建
+        timeout-minutes: 15
+        run: |
+          cd frontend
           npm run build
+      - name: 上传前端测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-frontend
+          path: frontend/vitest-junit.xml
+          if-no-files-found: warn
+          retention-days: 7

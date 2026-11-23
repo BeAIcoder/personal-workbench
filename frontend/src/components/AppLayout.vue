@@ -58,6 +58,10 @@
       <el-header class="header" height="60px">
         <div class="page-title">{{ $route.meta.title }}</div>
         <GlobalSearch ref="searchRef" />
+        <router-link class="help-entry" to="/help" title="打开使用说明导航（全菜单章节索引）" aria-label="使用说明帮助">
+          <el-icon><QuestionFilled /></el-icon>
+          <span>使用说明</span>
+        </router-link>
         <div class="today">{{ todayText }}</div>
       </el-header>
       <el-main class="main">
@@ -109,13 +113,12 @@ import { useRoute } from 'vue-router'
 import api from '../api'
 import { getModuleMenuGroups } from '../modules'
 import { createDayClock, todayTextOf } from '../utils/clock'
-import { menuOpenIndices } from '../utils/menuOpen'
+import { menuActivePath, menuOpenIndices } from '../utils/menuOpen'
 import GlobalSearch from './GlobalSearch.vue'
 
 const route = useRoute()
 const searchRef = ref(null)
 const menuRef = ref(null)
-const activeMenu = computed(() => route.path)
 const now = ref(new Date())
 const todayText = computed(() => todayTextOf(now.value))
 const dayClock = createDayClock()
@@ -127,6 +130,11 @@ const tailMenus = TAIL_MENUS
 // 模块菜单按 group 分组渲染（如「财务」组）；组图标取组内首项图标。
 // 组内支持二级折叠子分组（manifest menu.subgroup，如「税务填报」）与直挂项。
 const menuGroups = computed(() => getModuleMenuGroups())
+
+// 详情子路由（/finance/expense/runs/42 等）不在菜单里，按最长前缀高亮其父菜单项。
+const activeMenu = computed(
+  () => menuActivePath(route.path, [...staticMenus, ...tailMenus], menuGroups.value, staticMenuGroups) || route.path,
+)
 
 // 挂载时按当前路由展开（刷新/深链）；挂载后的应用内跳转由 applyRouteOpen 增量展开。
 // 用户手动折叠过的索引记入 userClosed，路由变化不得覆盖用户选择；手动重新展开则清除记录。
@@ -264,6 +272,29 @@ onBeforeUnmount(() => {
   font-weight: 600;
   flex: 1;
   white-space: nowrap;
+}
+
+.help-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.help-entry:hover {
+  color: var(--el-color-primary);
+  background: var(--el-fill-color-light);
+}
+
+@media (max-width: 1024px) {
+  .help-entry span {
+    display: none;
+  }
 }
 
 .today {

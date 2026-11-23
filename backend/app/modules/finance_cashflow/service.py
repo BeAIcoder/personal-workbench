@@ -24,7 +24,13 @@ from sqlalchemy.orm import Session
 
 from ...config import get_finance_data_dir, settings
 from ...database import SessionLocal
-from ...utils import engine_subprocess_env, find_sibling_project, repair_upload_mojibake, resolve_engine_root
+from ...utils import (
+    decode_engine_output,
+    engine_subprocess_env,
+    find_sibling_project,
+    repair_upload_mojibake,
+    resolve_engine_root,
+)
 from .models import CashflowRun
 
 logger = logging.getLogger(__name__)
@@ -129,6 +135,7 @@ def _mark_failed(
     message: str,
     elapsed: float,
     log_tail: str | None = None,
+    artifacts: list | None = None,
 ) -> None:
     """把运行记录置 failed（先 rollback，兼容会话已处于失败事务的状态）。
 
@@ -147,6 +154,8 @@ def _mark_failed(
             row.elapsed_sec = round(elapsed, 2)
             if log_tail is not None:
                 row.log_tail = log_tail[-4000:]
+            if artifacts is not None:
+                row.artifacts = artifacts
         db.commit()
     except Exception:  # 落库失败只记日志，不掩盖原始异常
         logger.warning("现金流运行 %s 失败状态落库失败", run_id, exc_info=True)
@@ -243,10 +252,18 @@ def _save_inputs(run_dir: Path, files: list[tuple[str, bytes]]) -> list[dict]:
     return saved
 
 
-def create_run(db: Session, files: list[tuple[str, bytes]], actual_month: int) -> dict:
-    """建运行记录并归集输入文件（状态 uploaded）。"""
+def create_run(
+    db: Session,
+    files: list[tuple[str, bytes]],
+    actual_month: int,
+    actual_year: int | None = None,
+) -> dict:
+    """建运行记录并归集输入文件（状态 uploaded）；年份缺省取当前年。"""
     if not 1 <= actual_month <= 12:
         raise ValueError("actual_month 需在 1-12 之间")
+    year = datetime.now().year if actual_year is None else int(actual_year)
+    if not 2000 <= year <= 2100:
+        raise ValueError("actual_year 需在 2000-2100 之间")
     if not files:
         raise ValueError("请上传输入文件（银行辅助明细账 + 模板等，或一个 ZIP）")
     if len(files) > MAX_FILES_PER_BATCH:
@@ -260,7 +277,7 @@ def create_run(db: Session, files: list[tuple[str, bytes]], actual_month: int) -
     script = engine_dir() / ENGINE_SCRIPT
     if not script.is_file():
         raise EngineUnavailableError(f"现金流引擎不存在：{script}（配置 finance_cashflow_engine_path 可指定）")
-    run = CashflowRun(actual_month=actual_month, status="uploaded")
+    run = CashflowRun(actual_year=year, actual_month=actual_month, status="uploaded")
     db.add(run)
     db.flush()
     run_dir = _runs_root() / f"{run.id:06d}_{datetime.now():%Y%m%d_%H%M%S}"
@@ -294,17 +311,33 @@ def _execute_run_locked(db: Session, run_id: int) -> dict:
         if age > STALE_RUN_SECONDS:
             run.status = "failed"
             run.error = "上次运行中断（进程退出/重启），已自动标记失败，可重新执行"
+            run.artifacts = []  # 中断运行不得留下上一轮可下载的产物
             db.commit()
         else:
             raise ValueError("该运行正在执行中")
-    edir = engine_dir()
-    script = edir / ENGINE_SCRIPT
-    if not script.is_file():
-        raise EngineUnavailableError(f"现金流引擎不存在：{script}（配置 finance_cashflow_engine_path 可指定）")
+    # 新一轮执行先作废旧产物：后续任何失败分支（引擎缺失/运行目录失效/非零退出/
+    # 超时/兜底异常）都不得继续下载上一次成功结果（与 POS 失败重跑同口径）
+    run.artifacts = []
+    db.commit()
+    try:
+        edir = engine_dir()
+        script = edir / ENGINE_SCRIPT
+        if not script.is_file():
+            raise EngineUnavailableError(
+                f"现金流引擎不存在：{script}（配置 finance_cashflow_engine_path 可指定）"
+            )
+        run_dir = _resolve_run_dir(run)
+    except EngineUnavailableError as exc:
+        _mark_failed(db, run.id, str(exc), 0.0, run.log_tail, artifacts=[])
+        raise
 
-    run_dir = _resolve_run_dir(run)
     out_dir = run_dir / "output"
+    if out_dir.exists():
+        # 重跑先清空输出目录：上一次的产物不得被当成本次结果（尤其零产物失败时）
+        shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True, exist_ok=True)
+    art_dir = run_dir / "artifacts"
+    shutil.rmtree(art_dir, ignore_errors=True)
     run.status = "running"
     run.error = ""
     db.commit()
@@ -317,35 +350,57 @@ def _execute_run_locked(db: Session, run_id: int) -> dict:
     ]
     t0 = time.perf_counter()
     try:
+        # 字节捕获 + 统一解码：UTF-8 优先、GB18030 兜底（与 POS/看板引擎同口径），
+        # 避免引擎直写 GBK buffer 时中文错误信息被替换成乱码
         proc = subprocess.run(
-            args, cwd=str(edir), capture_output=True, text=True,
-            timeout=STEP_TIMEOUT, encoding="utf-8", errors="replace",
-            env=engine_subprocess_env(),
+            args, cwd=str(edir), capture_output=True,
+            timeout=STEP_TIMEOUT, env=engine_subprocess_env(),
         )
 
         run.elapsed_sec = round(time.perf_counter() - t0, 2)
-        run.log_tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
+        stdout = decode_engine_output(proc.stdout)
+        stderr = decode_engine_output(proc.stderr)
+        run.log_tail = ((stdout or "") + "\n" + (stderr or ""))[-4000:]
         if proc.returncode != 0:
-            _mark_failed(db, run.id, f"引擎退出码 {proc.returncode}", run.elapsed_sec, run.log_tail)
+            _mark_failed(
+                db, run.id, f"引擎退出码 {proc.returncode}", run.elapsed_sec, run.log_tail,
+                artifacts=[],
+            )
             raise EngineUnavailableError(f"引擎执行失败（退出码 {proc.returncode}），详见运行记录日志")
 
         # 产物归档：output 下所有文件按相对路径复制到 run_dir/artifacts 并登记。
         # 保留子目录结构：同名文件（不同子目录）不再互相覆盖，下载名也带子路径（L-095）。
-        art_dir = run_dir / "artifacts"
-        if art_dir.exists():
-            shutil.rmtree(art_dir, ignore_errors=True)  # 重跑不累积上次残留
+        # art_dir 已在执行开始处清空，这里只确保目录存在。
         art_dir.mkdir(parents=True, exist_ok=True)
         artifacts: list[dict] = []
+        empty_names: list[str] = []
         for f in sorted(out_dir.rglob("*")):
             if f.is_file() and not f.name.startswith("~$"):
                 rel = f.relative_to(out_dir)
+                if f.stat().st_size <= 0:
+                    # 0 字节产物不归档也不算成功（与 POS 同口径）
+                    empty_names.append(rel.as_posix())
+                    continue
                 dest = art_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(f.read_bytes())
                 artifacts.append({"name": rel.as_posix(), "size": dest.stat().st_size, "path": str(dest)})
+        if empty_names:
+            run.log_tail = (
+                (run.log_tail or "") + "\n" + f"⚠ 跳过 0 字节产物：{'、'.join(sorted(empty_names))}"
+            )[-4000:]
+        if not artifacts:
+            message = (
+                "引擎执行完成但产物为空文件（0 字节），请检查引擎输出与磁盘写入是否正常"
+                if empty_names
+                else "引擎执行完成但未产生产物（请检查输入文件是否完整、引擎日志是否报错）"
+            )
+            # 重跑失败时不得沿用上一次成功的产物清单（_mark_failed 会 rollback 后重载行）
+            _mark_failed(db, run.id, message, run.elapsed_sec, run.log_tail, artifacts=[])
+            raise EngineUnavailableError(message)
         run.artifacts = artifacts
-        run.status = "ok" if artifacts else "failed"
-        run.error = "" if artifacts else "引擎执行完成但未产生产物"
+        run.status = "ok"
+        run.error = ""
         db.commit()
         db.refresh(run)
         return _out(run)
@@ -353,19 +408,18 @@ def _execute_run_locked(db: Session, run_id: int) -> dict:
         message = f"引擎执行超时（>{STEP_TIMEOUT}s）"
         parts = []
         for value in (getattr(exc, "stdout", None), getattr(exc, "stderr", None)):
-            if isinstance(value, bytes):
-                value = value.decode("utf-8", errors="replace")
+            value = decode_engine_output(value)
             if value:
                 parts.append(value)
         tail = "\n".join(parts)[-4000:] or message
-        _mark_failed(db, run.id, message, time.perf_counter() - t0, tail)
+        _mark_failed(db, run.id, message, time.perf_counter() - t0, tail, artifacts=[])
         raise EngineUnavailableError(message) from None
     except EngineUnavailableError:
         raise
     except Exception as exc:
         # 兜底：归档等任何异常都回写 failed，避免运行记录永久卡在 running 无法重试
         message = f"执行异常：{type(exc).__name__}: {exc}"[:500]
-        _mark_failed(db, run.id, message, time.perf_counter() - t0, run.log_tail)
+        _mark_failed(db, run.id, message, time.perf_counter() - t0, run.log_tail, artifacts=[])
         logger.exception("现金流运行 %s 执行异常", run.id)
         raise EngineUnavailableError(message) from exc
 
@@ -373,6 +427,8 @@ def _execute_run_locked(db: Session, run_id: int) -> dict:
 def _out(r: CashflowRun) -> dict:
     return {
         "id": r.id,
+        # 迁移前的历史行 actual_year=0：按创建年份兜底，不把 0 暴露给界面
+        "actual_year": int(r.actual_year or (r.created_at.year if r.created_at else 0)),
         "actual_month": r.actual_month,
         "status": r.status,
         "input_files": r.input_files or [],
@@ -441,6 +497,9 @@ def cashflow_summary_tool() -> dict:
             latest_view = {
                 "id": latest.id,
                 "status": latest.status,
+                "actual_year": int(
+                    latest.actual_year or (latest.created_at.year if latest.created_at else 0)
+                ),
                 "actual_month": latest.actual_month,
                 "elapsed_sec": latest.elapsed_sec,
                 "artifacts": len(latest.artifacts or []),

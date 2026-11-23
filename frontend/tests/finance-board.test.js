@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { getModuleMenus, getModuleRoutes } from '../src/modules'
 import manifest from '../src/modules/finance-board/manifest'
-import { shouldReloadAfterRun } from '../src/modules/finance-board/utils'
+import { isTerminalRunStatus, shouldReloadAfterRun } from '../src/modules/finance-board/utils'
+
+const boardSrc = readFileSync(
+  new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
+  'utf8',
+)
 
 describe('finance-board 模块注册', () => {
   it('manifest 基本字段（name/title/menu）', () => {
@@ -44,37 +49,72 @@ describe('finance-board 管线失败后的列表刷新', () => {
   })
 
   it('run() 的失败分支确实调用 load()（failed 快照立即可见）', () => {
-    const src = readFileSync(
-      new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
-      'utf8',
-    )
-    const runBody = src.match(/async function run\(\) \{[\s\S]*?\n\}/)?.[0] || ''
+    const runBody = boardSrc.match(/async function run\(\) \{[\s\S]*?\n\}/)?.[0] || ''
     expect(runBody).toContain('if (shouldReloadAfterRun(err)) await load()')
   })
 })
 
-// 管线整跑约 80-100s（m02 脱敏抽取为主），全局 axios 超时 10s 不够，run() 必须覆盖
-describe('finance-board 管线运行的请求超时', () => {
-  it('run() 给 /finance/board/run 设置 >=90s 的超时（覆盖全局 10s）', () => {
-    const src = readFileSync(
-      new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
-      'utf8',
-    )
-    const runBody = src.match(/async function run\(\) \{[\s\S]*?\n\}/)?.[0] || ''
-    expect(runBody).toContain('/finance/board/run')
-    const m = runBody.match(/timeout:\s*(\d+)/)
-    expect(m).toBeTruthy()
-    expect(Number(m[1])).toBeGreaterThanOrEqual(90000)
+// 异步运行契约（#4）：POST /finance/board/runs → 202 → 轮询 GET /finance/board/runs/{id}；
+// 旧后端 404 时回退同步 /run。正常路径不再挂一个 1500s 的阻塞请求。
+describe('finance-board 异步运行契约', () => {
+  const runBody = boardSrc.match(/async function run\(\) \{[\s\S]*?\n\}/)?.[0] || ''
+
+  it('先提交异步运行入口，而不是直接调用同步 /run', () => {
+    expect(runBody).toContain("api.post('/finance/board/runs'")
+    expect(runBody).toContain('runSync()')
+  })
+
+  it('异步提交只等短期超时（≤60s），不再把长预算压在一次请求上', () => {
+    expect(runBody).toContain('SUBMIT_TIMEOUT_MS')
+    const submit = boardSrc.match(/const SUBMIT_TIMEOUT_MS = (\d+)/)?.[1]
+    expect(Number(submit)).toBeGreaterThan(0)
+    expect(Number(submit)).toBeLessThanOrEqual(60000)
+    expect(runBody).not.toContain('1500000')
+  })
+
+  it('404/405 时回退同步 /run，且同步回退仍覆盖后端最坏预算', () => {
+    expect(runBody).toContain('status === 404 || status === 405')
+    // 数字字面量是跨层契约：check_contracts / test_engineering_contracts 直接解析这一行
+    const literal = boardSrc.match(/api\.post\('\/finance\/board\/run', \{\}, \{ timeout: (\d+) \}\)/)?.[1]
+    expect(Number(literal)).toBeGreaterThan(1385000)
+    expect(Number(literal)).toBeLessThanOrEqual(1500000)
+  })
+
+  it('轮询入口与短超时，并在终态/记录失效/预算耗尽三条路径收尾', () => {
+    expect(boardSrc).toContain('api.get(`/finance/board/runs/${encodeURIComponent(runId)}`')
+    expect(boardSrc).toContain('POLL_REQUEST_TIMEOUT_MS')
+    const pollTimeout = Number(boardSrc.match(/const POLL_REQUEST_TIMEOUT_MS = (\d+)/)?.[1])
+    expect(pollTimeout).toBeGreaterThan(0)
+    expect(pollTimeout).toBeLessThanOrEqual(30000)
+    expect(boardSrc).toContain('isTerminalRunStatus')
+    expect(boardSrc).toContain('运行记录已失效')
+    expect(boardSrc).toContain('已停止等待')
+  })
+
+  it('卸载时递增轮询代次，旧循环不再回写界面状态', () => {
+    expect(boardSrc).toContain('onBeforeUnmount(() => { pollToken += 1 })')
+    expect(boardSrc).toContain('if (token !== pollToken) return')
+  })
+})
+
+describe('finance-board 运行终态判定', () => {
+  it('running/pending 等继续轮询，ok/failed 与未知非空状态视为终态', () => {
+    for (const s of ['running', 'pending', 'queued', 'started', 'in_progress', 'RUNNING']) {
+      expect(isTerminalRunStatus(s), s).toBe(false)
+    }
+    for (const s of ['ok', 'failed', 'error', 'unknown', 'timeout']) {
+      expect(isTerminalRunStatus(s), s).toBe(true)
+    }
+    // 空状态代表后端还没返回结果，继续等，不能误判成功
+    expect(isTerminalRunStatus('')).toBe(false)
+    expect(isTerminalRunStatus(undefined)).toBe(false)
   })
 })
 
 // 与 bugfix-frontend-finance 同范式的静态断言：无 jsdom/@vue/test-utils，
 // 通过读取 .vue 源码校验失败快照日志查看接线。
 describe('finance-board 失败快照日志查看（log_tail）', () => {
-  const src = readFileSync(
-    new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
-    'utf8',
-  )
+  const src = boardSrc
 
   it('快照表格提供「日志」入口（有 log_tail 才显示，失败快照可点开）', () => {
     expect(src).toMatch(/v-if="row\.log_tail"/)
@@ -102,10 +142,7 @@ describe('finance-board 失败快照日志查看（log_tail）', () => {
 
 // iframe 高度跟随视口：固定 1200px 会造成「页面套小窗再内部滚动」
 describe('finance-board 嵌入页 iframe 高度', () => {
-  const src = readFileSync(
-    new URL('../src/modules/finance-board/views/BoardView.vue', import.meta.url),
-    'utf8',
-  )
+  const src = boardSrc
 
   it('board-frame 不再使用固定 1200px，改为跟随视口且有最小高度', () => {
     expect(src).not.toContain('1200px')

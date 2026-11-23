@@ -334,11 +334,17 @@ class SearchResult(BaseModel):
 
 # ---------- 定时任务（ScheduledJob） ----------
 
+# 工作模式白名单（与 orchestrator.WORK_MODES 同口径）。入参一律 422；历史脏行
+# 仍可被 ScheduledJobOut 读出（读取模型不做白名单，防止旧行把列表打成 500），
+# 执行侧必须把非法值回退为 readonly。
+JobMode = Literal["readonly", "standard", "deep"]
+
+
 class ScheduledJobBase(BaseModel):
     name: str = Field(min_length=1, max_length=100, description="任务名称")
     prompt: str = Field("", max_length=5000, description="到点执行的提示词（模块动作任务可空）")
     agent_name: Optional[str] = Field(None, max_length=50, description="指定专家 name；null 智能路由")
-    mode: str = Field("readonly", description="工作模式：readonly / standard / deep（新建默认只读）")
+    mode: JobMode = Field("readonly", description="工作模式：readonly / standard / deep（新建默认只读）")
     schedule_type: Literal["interval", "daily", "cron"] = Field("interval", description="interval / daily / cron")
     interval_minutes: Optional[int] = Field(None, ge=5, le=10080, description="间隔分钟（interval）")
     daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="每天执行时间 HH:MM（daily）")
@@ -377,7 +383,7 @@ class ScheduledJobUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     prompt: Optional[str] = Field(None, max_length=5000)
     agent_name: Optional[str] = Field(None, max_length=50)
-    mode: Optional[str] = None
+    mode: Optional[JobMode] = None
     schedule_type: Optional[Literal["interval", "daily", "cron"]] = None
     interval_minutes: Optional[int] = Field(None, ge=5, le=10080)
     daily_at: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")

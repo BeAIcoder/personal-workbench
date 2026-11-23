@@ -496,13 +496,15 @@ def test_unlink_export_artifact_ignores_external_paths(tmp_path):
     # 目录内同名文件才会被删除（即便传入的是外部绝对路径）
     inside = exports / "outside.xlsx"
     inside.write_bytes(b"drop")
-    assert unlink_export_artifact("C:\\evil\\outside.xlsx", exports) is True
+    assert unlink_export_artifact("C:/path/to/outside.xlsx", exports) is True
     assert not inside.exists()
     assert outside.exists()
 
 
 def test_filing_delete_unlinks_only_after_commit(client, monkeypatch):
-    from app.modules.finance_stamp_duty import router as stamp_router
+    # 删除+产物清理已收敛到 finance_filing_common.FilingRouter（四税种同一条通道），
+    # patch 接缝随之落在该模块；断言不变：spy 被调用时库行必须已删除。
+    from app import finance_filing_common
     from app.modules.finance_stamp_duty.models import StampDutyFiling
 
     created = client.post("/api/finance/stamp-duty/filings", json={
@@ -526,7 +528,7 @@ def test_filing_delete_unlinks_only_after_commit(client, monkeypatch):
 
         return unlink_export_artifact(export_path, exports_dir)
 
-    monkeypatch.setattr(stamp_router, "unlink_export_artifact", spy)
+    monkeypatch.setattr(finance_filing_common, "unlink_export_artifact", spy)
     deleted = client.delete(f"/api/finance/stamp-duty/filings/{fid}")
     assert deleted.status_code == 200, deleted.text
     assert seen["row_exists"] is False, "先删产物后 commit：产物已清而库行未落定"

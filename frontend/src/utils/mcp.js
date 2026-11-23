@@ -67,7 +67,7 @@ export function parseArgsText(text) {
 }
 
 // 编辑回显：含空白/引号的参数加双引号并转义，保证 parseArgsText 往返无损。
-// 旧实现直接 join(' ')，编辑保存时会把 "D:\my docs" 静默拆成两个参数。
+// 旧实现直接 join(' ')，编辑保存时会把 "D:/tmp/my docs" 静默拆成两个参数。
 export function formatArgs(args) {
   return (args || [])
     .map((a) => {

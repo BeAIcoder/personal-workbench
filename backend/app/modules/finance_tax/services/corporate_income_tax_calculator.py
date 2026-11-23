@@ -798,6 +798,9 @@ class CorporateIncomeTaxCalculator:
         Returns:
             税额计算结果（含 policy_status 政策状态，未传 tax_year 时不校验）
         """
+        from ..config.tax_scope import require_tax_scope
+
+        require_tax_scope("corporate_income_tax")  # 准入门禁首行：零所得提前返回之前也要拦
         if taxable_income_wan <= 0:
             return {
                 "taxable_income_wan": taxable_income_wan,
@@ -877,6 +880,9 @@ class CorporateIncomeTaxCalculator:
         Returns:
             完整计算结果
         """
+        from ..config.tax_scope import require_tax_scope
+
+        require_tax_scope("corporate_income_tax")  # 准入门禁首行：封禁时不进入任何计算步骤
         result = CalculationResult()
         result.accounting_profit = accounting_profit_wan
 

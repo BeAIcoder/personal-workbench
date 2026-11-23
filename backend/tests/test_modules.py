@@ -3,7 +3,15 @@
 覆盖：模块发现、manifest 校验（坏 manifest 被跳过且不崩宿主）、路由挂载、
 模块建表与读写、column_patches 合并、register_module_tools 生效、
 build_tools 容错未知工具名、财税专员 seed 行为（只灌空表）。
+
+2026-11-17：ModuleManifest 删除 menu/tables（菜单唯一源是前端 manifest.js，
+表名以 models.__tablename__ 为准）；agent_tools 参数统一为 (JSON 类型, 说明)
+二元组 + 独立 required 列表，非二元组不再静默兜底。
 """
+import logging
+import types
+
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import text
 
@@ -32,25 +40,81 @@ def test_hello_module_loaded():
     assert "finance_hello" in loaded
     manifest = loaded["finance_hello"]
     assert manifest.prefix == "/api/finance/hello"
-    assert manifest.tables == ["mod_hello_entry"]
-    assert manifest.menu["group"] == "财务" and manifest.menu["order"] == 99
+    assert manifest.title == "财务模块示例"
+    # 表清单不再由 manifest 声明：以 models 的 __tablename__ 为准（建表靠 models 导入）
+    from app.modules.finance_hello.models import HelloEntry
+
+    assert HelloEntry.__tablename__ == "mod_hello_entry"
 
 
 # ---------- manifest 校验 ----------
 
 def test_manifest_validate_rules():
-    good = ModuleManifest(name="finance_x", prefix="/api/finance/x", tables=["mod_x_entry"], menu={"group": "财务"})
+    good = ModuleManifest(name="finance_x", prefix="/api/finance/x")
     assert good.validate() == []
     bad = ModuleManifest(
         name="finance_bad",
         prefix="/api/other/",                    # 前缀不合法
-        tables=["plain_table"],                  # 表名缺 mod_ 前缀
-        menu="not-a-dict",                       # menu 类型错误
-        agent_tools=[{"name": "t"}],             # 缺 description/readonly
+        agent_tools=[{"name": "t"}],             # 缺 description/func/params/required/readonly
         requires="finance_x",                    # requires 类型错误
     )
     errors = bad.validate()
-    assert len(errors) >= 4
+    assert any("prefix" in e for e in errors)
+    assert any("缺少字段" in e for e in errors)
+    assert any("requires 必须是 list" in e for e in errors)
+
+
+def test_manifest_validate_rejects_nonstandard_param_definitions():
+    """agent_tools 参数只接受 (JSON 类型, 说明) 二元组，required 必须是 params 子集。"""
+    base = dict(name="finance_x", prefix="/api/finance/x")
+
+    def tool_with(params, required):
+        return [{"name": "t", "description": "d", "readonly": True, "func": lambda: None,
+                 "params": params, "required": required}]
+
+    triple = ModuleManifest(**base, agent_tools=tool_with({"a": ("string", "说明", True)}, ["a"]))
+    assert any("二元组" in e for e in triple.validate())
+
+    mapping = ModuleManifest(**base, agent_tools=tool_with({"a": {"type": "string"}}, []))
+    assert any("二元组" in e for e in mapping.validate())
+
+    bad_type = ModuleManifest(**base, agent_tools=tool_with({"a": ("str", "说明")}, []))
+    assert any("白名单" in e for e in bad_type.validate())
+
+    out_of_range = ModuleManifest(**base, agent_tools=tool_with({"a": ("string", "说明")}, ["b"]))
+    assert any("未声明" in e for e in out_of_range.validate())
+
+    duplicated = ModuleManifest(**base, agent_tools=tool_with({"a": ("string", "说明")}, ["a", "a"]))
+    assert any("重复" in e for e in duplicated.validate())
+
+    ok = ModuleManifest(**base, agent_tools=tool_with({"a": ("string", "说明")}, ["a"]))
+    assert ok.validate() == []
+
+
+def test_removed_manifest_fields_ignored_and_unknown_rejected(caplog):
+    """menu/tables 已删除：过渡期忽略并登记，未知字段直接 TypeError（不静默吞拼写错误）。"""
+    legacy = ModuleManifest(
+        name="finance_legacy", prefix="/api/finance/legacy",
+        menu={"group": "财务"}, tables=["mod_legacy"],
+    )
+    assert legacy.removed_fields == ("menu", "tables")
+    assert not hasattr(legacy, "menu") and not hasattr(legacy, "tables")
+    assert legacy.validate() == []
+
+    with pytest.raises(TypeError):
+        ModuleManifest(name="finance_x", prefix="/api/finance/x", menues={})
+
+    fake = ModuleManifest(name="finance_legacy", prefix="/api/finance/legacy", menu={"group": "财务"})
+    import sys
+
+    module_name = "app.modules.finance_legacy.manifest"
+    sys.modules[module_name] = types.SimpleNamespace(manifest=fake)  # type: ignore[assignment]
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert registry_mod._load_manifest("finance_legacy") is fake
+    finally:
+        sys.modules.pop(module_name, None)
+    assert any("已删除字段 menu" in r.message for r in caplog.records)
 
 
 def test_bad_module_skipped_without_crash(monkeypatch):
@@ -133,42 +197,54 @@ def test_build_tools_skips_unknown_names(caplog):
     assert any("ghost_tool_from_disabled_module" in r.message for r in caplog.records)
 
 
-def test_build_tools_tolerates_nonstandard_param_definitions(caplog):
-    """参数定义写成 dict / 2 元组时只告警并按可用信息构造，不让整个专家构建失败。
+def test_build_tools_rejects_nonstandard_param_definitions(caplog):
+    """参数定义只接受 (JSON 类型, 说明) 二元组；非二元组只跳过该工具并记 ERROR。
 
-    回归：finance_vault 的 vault_query 曾把 sql 参数写成
-    {"type": "string", "description": ...}，旧实现对 3 元组解包直接抛
-    ValueError("not enough values to unpack (expected 3, got 2)")，
-    导致财税专员（唯一引用 vault_query 的专家）全部对话 400。
+    两段回归合并在此：
+    - finance_vault 的 vault_query 曾把 sql 参数写成 {"type": ..., "description": ...}，
+      旧实现对 3 元组解包直接抛 ValueError（not enough values to unpack），
+      导致财税专员全部对话 400 → 现在单工具降级，不让整个专家构建失败；
+    - 3 元组第三位 required 曾被静默忽略（与 required 列表形成第二个必填来源）→
+      现在判为非法定义：绝不生成与声明不一致的 schema。
     """
-    import logging
-
-    name = "param_shape_probe"
-    TOOL_SPECS[name] = {
+    bad_name = "param_shape_probe_bad"
+    ok_name = "param_shape_probe_ok"
+    TOOL_SPECS[bad_name] = {
         "func": lambda **kwargs: {"ok": True},
-        "description": "参数结构探针",
+        "description": "参数结构探针（非法定义）",
         "params": {
-            "triple": ("string", "标准三元组", True),
-            "pair": ("integer", "两元组"),
+            "triple": ("string", "三元组", True),
             "mapping": {"type": "string", "description": "字典写法"},
             "odd": 123,
+            "bogus_type": ("str", "非白名单类型"),
         },
         "required": ["triple"],
     }
+    TOOL_SPECS[ok_name] = {
+        "func": lambda **kwargs: {"ok": True},
+        "description": "参数结构探针（合法定义）",
+        "params": {"sql": ("string", "只读查询"), "limit": ("integer", "条数")},
+        "required": ["sql"],
+        "readonly": True,
+    }
     try:
-        with caplog.at_level(logging.WARNING):
-            tools = build_tools([name])
+        with caplog.at_level(logging.ERROR):
+            tools = build_tools([bad_name, ok_name])
         assert len(tools) == 1
-        props = tools[0].input_schema["properties"]
-        assert props["triple"] == {"type": "string", "description": "标准三元组"}
-        assert props["pair"] == {"type": "integer", "description": "两元组"}
-        assert props["mapping"] == {"type": "string", "description": "字典写法"}
-        assert props["odd"] == {"type": "string", "description": ""}
-        assert tools[0].input_schema["required"] == ["triple"]
-        warnings = " ".join(r.message for r in caplog.records)
-        assert "pair" in warnings and "mapping" in warnings and "odd" in warnings
+        assert tools[0].input_schema == {
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string", "description": "只读查询"},
+                "limit": {"type": "integer", "description": "条数"},
+            },
+            "required": ["sql"],
+        }
+        errors = " ".join(r.message for r in caplog.records)
+        assert "triple" in errors and "mapping" in errors and "odd" in errors
+        assert "bogus_type" in errors
     finally:
-        TOOL_SPECS.pop(name, None)
+        TOOL_SPECS.pop(bad_name, None)
+        TOOL_SPECS.pop(ok_name, None)
 
 
 def _module_tool_contract_offenders(module_names=None, importer=None):
@@ -196,15 +272,20 @@ def _module_tool_contract_offenders(module_names=None, importer=None):
             offenders.append(f"{module_name} 缺少 manifest 对象")
             continue
         for tool in manifest.agent_tools or []:
-            for pname, pval in (tool.get("params") or {}).items():
-                if not (isinstance(pval, tuple) and len(pval) == 3):
+            params = tool.get("params") or {}
+            required = tool.get("required") or []
+            for pname, pval in params.items():
+                if not (isinstance(pval, tuple) and len(pval) == 2):
                     offenders.append(f"{manifest.name}.{tool.get('name')}.{pname}"
                                      f" -> {type(pval).__name__}/{getattr(pval, '__len__', lambda: '?')()}")
+            extra = [name for name in required if name not in params]
+            if extra:
+                offenders.append(f"{manifest.name}.{tool.get('name')} required 越界 -> {extra}")
     return offenders
 
 
-def test_all_module_agent_tools_params_are_triples():
-    """所有模块必须可导入，且 agent_tools 参数均为标准三元组。"""
+def test_all_module_agent_tools_params_are_pairs():
+    """所有模块必须可导入，且 agent_tools 参数为 (JSON 类型, 说明) 二元组、required 不越界。"""
     offenders = _module_tool_contract_offenders()
     assert not offenders, f"模块工具契约或导入失败：{offenders}"
 
@@ -278,7 +359,7 @@ def test_module_tools_preset_into_finance_specialist(client):
 def test_manifest_validate_agent_tools_structure():
     """agent_tools 条目须为 dict 且含 name/description/func/params/required/readonly，
     func 可调用、params 为 dict、required 为 list——残缺 spec 在加载期即被检出。"""
-    base = dict(name="finance_x", prefix="/api/finance/x", tables=["mod_x_entry"], menu={})
+    base = dict(name="finance_x", prefix="/api/finance/x")
     ok_tool = {"name": "t", "description": "d", "readonly": True,
                "func": lambda: None, "params": {}, "required": []}
     assert ModuleManifest(**base, agent_tools=[ok_tool]).validate() == []
@@ -307,7 +388,6 @@ def test_module_tool_stage_failure_does_not_crash_host(monkeypatch, caplog):
     fake = ModuleManifest(
         name="finance_hello",
         prefix="/api/finance/hello",
-        tables=["mod_hello_entry"],
         agent_tools=[{"name": "hello_ping_probe", "description": "d", "readonly": True,
                       "func": lambda: {"ok": True}, "params": {}, "required": []}],
         preset_experts=["finance_specialist"],

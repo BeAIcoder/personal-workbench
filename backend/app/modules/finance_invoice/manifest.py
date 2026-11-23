@@ -8,8 +8,6 @@ manifest = ModuleManifest(
     title="发票处理",
     version="0.1.0",
     prefix="/api/finance/invoice",
-    tables=["mod_invoice_batch", "mod_invoice_item"],
-    menu={"group": "财务", "icon": "Tickets", "order": 20},
     agent_tools=[
         {
             "name": "invoice_batch_stats",

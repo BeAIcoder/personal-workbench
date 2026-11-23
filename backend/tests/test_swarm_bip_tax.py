@@ -291,7 +291,7 @@ def test_bip_subject_prefix_matches_wildcards_literally(client, bip_dir, tmp_pat
 
 def test_tax_import_error_keeps_local_path_out_of_response(client, monkeypatch, caplog):
     """导入异常对外不回带本机异常路径；服务器保留完整异常日志。"""
-    secret = r"C:\Users\someone\AppData\Local\Temp\tmp_secret_123.xlsx"
+    secret = r"C:\Users\<用户名>\AppData\Local\Temp\tmp_secret_123.xlsx"
 
     def boom(file_path):
         raise RuntimeError(f"无法打开文件 {secret}")
@@ -312,7 +312,7 @@ def test_tax_import_error_keeps_local_path_out_of_response(client, monkeypatch, 
 
 def test_bip_preview_parse_error_keeps_local_path_out_of_response(client, bip_dir, monkeypatch, caplog):
     """BIP 预览解析异常对外不回带本机异常路径；服务器保留完整异常日志。"""
-    secret = r"C:\Users\someone\AppData\Local\Temp\tmp_bip_preview_secret.xlsx"
+    secret = r"C:\Users\<用户名>\AppData\Local\Temp\tmp_bip_preview_secret.xlsx"
 
     def boom(path):
         raise RuntimeError(f"无法打开文件 {secret}")
@@ -330,7 +330,7 @@ def test_bip_preview_parse_error_keeps_local_path_out_of_response(client, bip_di
 
 def test_bip_confirm_parse_error_keeps_local_path_out_of_response(client, bip_dir, monkeypatch, caplog):
     """BIP 确认解析异常同样脱敏（400 通用提示）；完整异常进服务器日志。"""
-    secret = r"C:\Users\someone\AppData\Local\Temp\tmp_bip_confirm_secret.xlsx"
+    secret = r"C:\Users\<用户名>\AppData\Local\Temp\tmp_bip_confirm_secret.xlsx"
     _patch_reader(monkeypatch, bip_router)
     token = _bip_preview(client, _xlsx_bytes(_aux_rows()), name="ok.xlsx").json()["token"]
 
@@ -383,7 +383,7 @@ def test_bip_confirm_parse_failure_leaves_no_tmp_residue(client, bip_dir, monkey
 
 def test_tax_template_download_error_keeps_local_path_out_of_response(client, monkeypatch, caplog):
     """模板生成异常对外不回带本机异常路径（三个模板端点同口径）；服务器保留完整日志。"""
-    secret = r"C:\Users\someone\AppData\Local\Temp\tmp_template_secret.xlsx"
+    secret = r"C:\Users\<用户名>\AppData\Local\Temp\tmp_template_secret.xlsx"
 
     def boom(*args, **kwargs):
         raise RuntimeError(f"模板渲染失败：{secret}")

@@ -8,8 +8,6 @@ manifest = ModuleManifest(
     title="POS 对账",
     version="0.1.0",
     prefix="/api/finance/pos",
-    tables=["mod_pos_run"],
-    menu={"group": "财务", "icon": "CreditCard", "order": 90},
     agent_tools=[
         {
             "name": "pos_summary",

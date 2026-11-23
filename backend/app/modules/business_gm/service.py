@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
-"""总经理只读经营聚合：按域守卫导入，失败与缺源均不伪造零值。"""
+"""总经理只读经营聚合：按域守卫导入，失败与缺源均不伪造零值。
+
+各经营域通过 ``register_provider`` 显式注册 ``DomainProvider``（导入路径 +
+汇总口径），``build_summary`` 只遍历注册表，不再为每个域写死分支；新增域时
+只追加一条注册，不改主流程。
+"""
 from __future__ import annotations
 
 import importlib
 import logging
 import re
 from calendar import monthrange
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -16,15 +23,39 @@ from ...database import SessionLocal
 
 logger = logging.getLogger(__name__)
 PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
-DOMAIN_LABELS = {
-    "leasing": "招商",
-    "operations": "营运",
-    "planning": "企划",
-    "legal": "法务",
-    "hr": "人事",
-    "facility": "工程物业",
-}
 _MISSING = object()
+
+DomainBuilder = Callable[[Any, Session, str, date], "tuple[dict | None, list[str]]"]
+
+
+@dataclass(frozen=True)
+class DomainProvider:
+    """一个经营域的只读聚合入口：导入哪个 service、按什么口径汇总。"""
+
+    domain: str
+    label: str
+    module: str
+    builder: DomainBuilder
+    optional: bool = False
+    missing_reason: str | None = None
+
+
+_REGISTRY: dict[str, DomainProvider] = {}
+DOMAIN_LABELS: dict[str, str] = {}
+
+
+def register_provider(provider: DomainProvider, *, replace: bool = False) -> DomainProvider:
+    """注册经营域；重复注册必须显式 ``replace=True``，避免静默覆盖。"""
+    if provider.domain in _REGISTRY and not replace:
+        raise ValueError(f"经营域 {provider.domain} 已注册；如需替换请显式 replace=True")
+    _REGISTRY[provider.domain] = provider
+    DOMAIN_LABELS[provider.domain] = provider.label
+    return provider
+
+
+def registered_providers() -> tuple[DomainProvider, ...]:
+    """当前已注册域（保持注册顺序，决定 summary 的 domains 顺序）。"""
+    return tuple(_REGISTRY.values())
 
 
 def _period(value: str = "") -> str:
@@ -84,8 +115,7 @@ def expiry_concentration(db: Session, as_of=None) -> tuple[dict, str | None]:
     return data, reason
 
 
-def _leasing(db: Session, period: str, as_of: date):
-    service = importlib.import_module("app.modules.business_leasing.service")
+def _leasing(service, db: Session, period: str, as_of: date):
     return {
         "units": service.unit_summary(db),
         "funnel": service.funnel(db),
@@ -93,50 +123,79 @@ def _leasing(db: Session, period: str, as_of: date):
     }, []
 
 
-def _operations(db: Session, period: str, as_of: date):
-    service = importlib.import_module("app.modules.business_operations.service")
+def _operations(service, db: Session, period: str, as_of: date):
     data = service.ops_summary(db, period=period)
     expiry, reason = expiry_concentration(db, as_of=as_of)
     data["expiry_12m"] = expiry
     return data, [reason] if reason else []
 
 
-def _planning(db: Session, period: str, as_of: date):
-    service = importlib.import_module("app.modules.business_planning.service")
+def _planning(service, db: Session, period: str, as_of: date):
     return service.summary(db, year=int(period[:4])), []
 
 
-def _legal(db: Session, period: str, as_of: date):
-    service = importlib.import_module("app.modules.business_legal.service")
+def _legal(service, db: Session, period: str, as_of: date):
     return service.legal_summary(db), []
 
 
-def _hr(db: Session, period: str, as_of: date):
-    service = importlib.import_module("app.modules.business_hr.service")
+def _hr(service, db: Session, period: str, as_of: date):
     return service.hr_summary(db, month=period), []
 
 
-def _facility(db: Session, period: str, as_of: date):
-    try:
-        service = importlib.import_module("app.modules.business_facility.service")
-    except ModuleNotFoundError as exc:
-        if exc.name and exc.name.startswith("app.modules.business_facility"):
-            return None, ["工程物业模块尚未提供 facility_summary；Task 9 接入后自动汇总"]
-        raise
+def _facility(service, db: Session, period: str, as_of: date):
     summary = getattr(service, "facility_summary", None)
     if not callable(summary):
         return None, ["工程物业模块尚未提供可调用的 facility_summary；当前不生成工程指标"]
     return summary(db, as_of=as_of), []
 
 
-DOMAIN_LOADERS = {
-    "leasing": _leasing,
-    "operations": _operations,
-    "planning": _planning,
-    "legal": _legal,
-    "hr": _hr,
-    "facility": _facility,
-}
+for _provider in (
+    DomainProvider(
+        domain="leasing", label="招商",
+        module="app.modules.business_leasing.service", builder=_leasing,
+    ),
+    DomainProvider(
+        domain="operations", label="营运",
+        module="app.modules.business_operations.service", builder=_operations,
+    ),
+    DomainProvider(
+        domain="planning", label="企划",
+        module="app.modules.business_planning.service", builder=_planning,
+    ),
+    DomainProvider(
+        domain="legal", label="法务",
+        module="app.modules.business_legal.service", builder=_legal,
+    ),
+    DomainProvider(
+        domain="hr", label="人事",
+        module="app.modules.business_hr.service", builder=_hr,
+    ),
+    DomainProvider(
+        domain="facility", label="工程物业",
+        module="app.modules.business_facility.service", builder=_facility,
+        optional=True,
+        missing_reason="工程物业模块尚未提供 facility_summary；Task 9 接入后自动汇总",
+    ),
+):
+    register_provider(_provider)
+del _provider
+
+
+def _is_missing_own_module(exc: ModuleNotFoundError, module: str) -> bool:
+    """只在“该域自己的包缺失”时降级；缺第三方依赖仍照常抛错。"""
+    package = module.rsplit(".", 1)[0]
+    name = exc.name or ""
+    return bool(name) and (name == module or name == package or name.startswith(package + "."))
+
+
+def _load_domain(provider: DomainProvider, db: Session, period: str, as_of: date):
+    try:
+        service = importlib.import_module(provider.module)
+    except ModuleNotFoundError as exc:
+        if not (provider.optional and _is_missing_own_module(exc, provider.module)):
+            raise
+        return None, [provider.missing_reason or f"{provider.label}模块尚未接入"]
+    return provider.builder(service, db, period, as_of)
 
 
 def _path_value(data: dict, path: str):
@@ -194,20 +253,22 @@ def build_summary(db: Session, period: str = "", as_of=None) -> dict:
     normalized_period = _period(period)
     cutoff = _as_of(as_of)
     domains = {}
-    for domain, loader in DOMAIN_LOADERS.items():
+    for provider in registered_providers():
         try:
-            data, gap_reasons = loader(db, normalized_period, cutoff)
-            domains[domain] = {
+            data, gap_reasons = _load_domain(provider, db, normalized_period, cutoff)
+            domains[provider.domain] = {
                 "available": data is not None,
                 "data": data,
                 "gap_reasons": list(gap_reasons),
             }
         except Exception as exc:
-            logger.exception("GM 域 %s 读取失败，按不可用返回", domain)
-            domains[domain] = {
+            logger.exception("GM 域 %s 读取失败，按不可用返回", provider.domain)
+            domains[provider.domain] = {
                 "available": False,
                 "data": None,
-                "gap_reasons": [f"{DOMAIN_LABELS[domain]}域读取失败（{type(exc).__name__}），未以 0 顶替"],
+                "gap_reasons": [
+                    f"{provider.label}域读取失败（{type(exc).__name__}），未以 0 顶替",
+                ],
             }
     metrics = _metric_items(domains)
     return {

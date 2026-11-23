@@ -54,7 +54,7 @@
           <el-input v-model="form.command" placeholder="如 npx / python / uv / node" />
         </el-form-item>
         <el-form-item label="参数">
-          <el-input v-model="argsText" placeholder="空格分隔，如：-y @modelcontextprotocol/server-filesystem D:\文档" />
+          <el-input v-model="argsText" placeholder="空格分隔，如：-y @modelcontextprotocol/server-filesystem D:/path/to/docs" />
         </el-form-item>
         <el-form-item label="环境变量">
           <el-input v-model="envText" placeholder='JSON，如：{"API_KEY":"xxx"}（仅存本机库）' type="textarea" :rows="2" @input="envTouched = true" />

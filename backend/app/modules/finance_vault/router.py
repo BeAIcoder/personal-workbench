@@ -4,17 +4,26 @@ import logging
 
 import duckdb
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
+from urllib.parse import quote
 from sqlalchemy.orm import Session
 
 from ...database import get_db
+from . import cleaning
 from . import service
 from .schemas import (
+    AggIn,
+    AggOut,
+    AggregateSaveIn,
+    CleanIn,
     DatasetListOut,
     IngestIn,
     IngestOut,
+    ProfileOut,
     PreviewOut,
     QueryIn,
     QueryOut,
+    RenameIn,
 )
 
 try:
@@ -105,3 +114,128 @@ def preview_table(table: str):
             status_code=409,
             detail=f"数据集视图不可用（登记信息与数据仓不一致），请重新入仓该数据集：{exc}",
         ) from exc
+
+
+@router.get("/tables/{table}/profile", response_model=ProfileOut, summary="数据集列画像（类型/缺失率/唯一率/高频值 + 清洗建议）")
+async def table_profile(table: str):
+    try:
+        return await asyncio.to_thread(cleaning.profile_table, table)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=409, detail=f"数据集视图不可用，请重新入仓：{exc}") from exc
+
+
+@router.post("/tables/{table}/clean/preview", summary="清洗预览（dry-run，不写库）")
+async def clean_preview(table: str, payload: CleanIn):
+    try:
+        return await asyncio.to_thread(cleaning.clean_preview, table, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=409, detail=f"数据集视图不可用，请重新入仓：{exc}") from exc
+
+
+@router.post("/tables/{table}/clean/apply", summary="应用清洗：结果落新数据集 + 写配方日志（可复用重放）")
+async def clean_apply(table: str, payload: CleanIn):
+    try:
+        return await asyncio.to_thread(
+            cleaning.clean_apply, table, payload.model_dump(),
+            payload.target_table, payload.allow_overwrite,
+        )
+    except service.DatasetConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=409, detail=f"数据集视图不可用，请重新入仓：{exc}") from exc
+
+
+@router.get("/tables/{table}/clean/log", summary="清洗日志（配方+逐算子报告，按 id 倒序）")
+async def clean_log(table: str, limit: int = Query(20, ge=1, le=50)):
+    try:
+        return {"table": table, "items": await asyncio.to_thread(cleaning.get_clean_logs, table, limit)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/tables/{table}/aggregate", response_model=AggOut, summary="单表聚合：维度分组 + 指标汇总 + 过滤 + 排序")
+async def table_aggregate(table: str, payload: AggIn):
+    try:
+        return await asyncio.to_thread(cleaning.aggregate_query, table, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=409, detail=f"数据集视图不可用，请重新入仓：{exc}") from exc
+
+
+@router.post("/tables/{table}/aggregate/export", summary="聚合结果导出 xlsx（safe_cell 防公式注入）")
+async def table_aggregate_export(table: str, payload: AggIn):
+    try:
+        data, filename = await asyncio.to_thread(cleaning.export_aggregate_xlsx, table, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=409, detail=f"数据集视图不可用，请重新入仓：{exc}") from exc
+    ascii_name = "".join(c for c in filename if 32 <= ord(c) <= 126 and c not in '"\\') or "aggregate.xlsx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'},
+    )
+
+
+@router.post("/tables/{table}/aggregate/save", summary="聚合结果另存为数据池数据集")
+async def table_aggregate_save(table: str, payload: AggregateSaveIn):
+    try:
+        return await asyncio.to_thread(
+            cleaning.save_aggregate_as_dataset, table, payload.model_dump(),
+            payload.target_table, payload.allow_overwrite)
+    except service.DatasetConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=409, detail=f"数据集视图不可用，请重新入仓：{exc}") from exc
+
+
+@router.get("/tables/{table}/usage", summary="数据集使用情况预检（物理修订表/清洗日志引用/一致性，供删除二次确认）")
+def table_usage(table: str):
+    try:
+        return service.dataset_usage(table)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/tables/{table}", summary="安全删除数据集（confirm=数据集名二次确认；被引用需 force=true）")
+def delete_table(
+    table: str,
+    confirm: str = Query(..., description="二次确认：必须与数据集名完全一致"),
+    force: bool = Query(False, description="被清洗日志引用或存在未登记残留时仍需删除"),
+):
+    try:
+        return service.delete_dataset(table, confirm, force=force)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.DatasetConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=409, detail=f"数据仓操作失败，请稍后重试：{exc}") from exc
+
+
+@router.post("/tables/{table}/rename", summary="重命名数据集（视图+物理修订表+登记+清洗日志引用同步）")
+def rename_table(table: str, payload: RenameIn):
+    try:
+        return service.rename_dataset(table, payload.new_table)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.DatasetConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=409, detail=f"数据仓操作失败，请稍后重试：{exc}") from exc

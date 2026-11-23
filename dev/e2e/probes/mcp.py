@@ -668,7 +668,7 @@ def main():
 
         # ---------- TC-MCP-021 args 空格往返（BUG 候选：静默损坏） ----------
         def tc_args_spaces_roundtrip():
-            spaced = ["-y", "@modelcontextprotocol/server-filesystem", "D:\\my docs\\root"]
+            spaced = ["-y", "@modelcontextprotocol/server-filesystem", "D:/tmp/my docs/root"]
             st, body = api("POST", "/mcp/servers", {
                 "name": "spacesrv", "command": PY, "args": spaced,
                 "env": {}, "enabled": True})

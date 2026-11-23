@@ -598,6 +598,94 @@ def test_chat_once_sends_reasoning_effort(monkeypatch):
     assert captured["json"]["model"] == "m"
 
 
+def test_chat_once_injects_session_headers_without_overriding_auth(monkeypatch):
+    """extra_headers 合并进请求头；Authorization/Content-Type 不得被自定义头覆盖。"""
+    captured = {}
+
+    def fake_post(self, url, **kwargs):
+        captured.update(kwargs)
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"choices": [{"message": {"content": "9.9"}, "finish_reason": "stop"}]},
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    real_key = "sk-" + "probe-header-1234"  # 运行时拼装，避免凭据形字面量触发安全扫描误报
+    model_probe._chat_once(
+        "https://opencode.ai/inference/go/openai/v1", real_key, "deepseek-v4.1-flash",
+        [{"role": "user", "content": "hi"}], max_tokens=8,
+        extra_headers={
+            "User-Agent": "personal-workbench/1.0",
+            "x-opencode-session": "wb-abc",
+            "Authorization": "Bearer " + "should-not-win",
+            "Content-Type": "text/evil",
+        },
+    )
+    headers = captured["headers"]
+    assert headers["User-Agent"] == "personal-workbench/1.0"
+    assert headers["x-opencode-session"] == "wb-abc"
+    assert headers["Authorization"] == f"Bearer {real_key}"  # 鉴权头不可被覆盖
+    assert headers["Content-Type"] == "application/json"
+
+
+def test_send_passes_preset_session_headers_for_opencode(monkeypatch):
+    """_send 按供应商预设注入会话头（OpenCode Go）；未声明会话头的预设不注入。"""
+    captured = {}
+
+    def fake(base_url, api_key, model, messages, max_tokens, **kwargs):
+        captured.update(kwargs)
+        return _ok()
+
+    monkeypatch.setattr(model_probe, "_chat_once", fake)
+    prov = ModelProvider(
+        name="OpenCode Go", protocol="openai",
+        base_url="https://opencode.ai/inference/go/openai/v1",
+        api_key=seal("sk-test"), preset_key="opencode_go",
+    )
+    model_probe._send(prov, "sk-test", "deepseek-v4.1-flash", [{"role": "user", "content": "hi"}], 8)
+    headers = captured["extra_headers"]
+    assert headers["x-opencode-session"].startswith("wb-")
+    assert headers["User-Agent"] == "personal-workbench/1.0"
+
+    captured.clear()
+    plain = ModelProvider(
+        name="DeepSeek", protocol="openai", base_url="https://api.deepseek.com/v1",
+        api_key=seal("sk-test"), preset_key="deepseek",
+    )
+    model_probe._send(plain, "sk-test", "deepseek-v4-flash", [{"role": "user", "content": "hi"}], 8)
+    assert "extra_headers" not in captured  # 无会话头声明的预设保持原请求形态
+
+
+def test_messages_once_injects_session_headers_without_overriding_auth(monkeypatch):
+    """anthropic 路径同样合并会话头；x-api-key/anthropic-version 不可被覆盖。"""
+    captured = {}
+
+    def fake_post(self, url, **kwargs):
+        captured.update(kwargs)
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"content": [{"type": "text", "text": "9.9"}], "stop_reason": "end_turn"},
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    real_key = "sk-" + "probe-anthropic-5678"  # 运行时拼装，避免凭据形字面量触发安全扫描误报
+    model_probe._messages_once(
+        "https://opencode.ai/inference/go/anthropic/v1", real_key, "claude-haiku-5-5",
+        [{"role": "user", "content": "hi"}], max_tokens=8,
+        extra_headers={
+            "x-opencode-session": "wb-abc",
+            "x-api-key": "sk-" + "should-not-win",
+            "anthropic-version": "1999-01-01",
+        },
+    )
+    headers = captured["headers"]
+    assert headers["x-opencode-session"] == "wb-abc"
+    assert headers["x-api-key"] == real_key
+    assert headers["anthropic-version"] == "2023-06-01"
+
+
 # ---------------- 模型级 temperature 运行时接线 ----------------
 
 def test_temperature_surfaced_in_active_cfg(client):

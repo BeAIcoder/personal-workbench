@@ -372,10 +372,10 @@ def test_create_run_offloads_sync_work_to_thread(monkeypatch):
                 return b"data"
             return b""
 
-    def _fake_create_run(db, uploads, actual_month):
+    def _fake_create_run(db, uploads, actual_month, actual_year=None):
         seen["work_thread"] = threading.current_thread()
-        return {"id": 1, "actual_month": actual_month, "status": "uploaded",
-                "input_files": [], "artifacts": [], "error": "",
+        return {"id": 1, "actual_year": actual_year or 0, "actual_month": actual_month,
+                "status": "uploaded", "input_files": [], "artifacts": [], "error": "",
                 "elapsed_sec": 0.0, "log_tail": "", "created_at": ""}
 
     monkeypatch.setattr(cf_router.service, "create_run", _fake_create_run)

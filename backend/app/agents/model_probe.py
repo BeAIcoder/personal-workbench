@@ -22,8 +22,10 @@
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 
@@ -35,6 +37,24 @@ from .config_store import validate_base_url
 from .secrets_box import unseal
 
 logger = logging.getLogger(__name__)
+
+
+# 当前探测请求的绝对 deadline（thread-local）：_send 设置，_post_with_retry 的
+# 429 退避据此截断，保证限流重试也不会突破 PRB-01 的总时长预算。
+_request_deadline = threading.local()
+
+
+def _set_request_deadline(deadline: float | None) -> None:
+    _request_deadline.value = deadline
+
+
+def _request_remaining() -> float | None:
+    """当前请求还剩多少秒；未设置 deadline 时返回 None（沿用旧行为）。"""
+    deadline = getattr(_request_deadline, "value", None)
+    if deadline is None:
+        return None
+    return deadline - time.monotonic()
+
 
 # 思考能力探测：固定 prompt 与默认档位（模型未声明档位时的兜底：openai 四档常用值）
 _REASONING_PROMPT = "9.11 和 9.9 哪个大？只输出数字。"
@@ -62,6 +82,39 @@ _RATE_LIMIT_WAIT_SECONDS = 30.0
 _PROBE_MAX_REQUESTS = 6
 # 请求间隔（秒）：避免对厂商造成压力
 _PROBE_INTERVAL = 0.3
+
+# 探测总时长预算（秒）：一次 probe_all / 单步探测共享同一个 deadline。
+# 挂起的厂商响应（每档都等到单请求超时）不能把一次探测拖成数分钟（PRB-01）。
+PROBE_TOTAL_BUDGET_SECONDS = 180.0
+# 单次厂商请求的超时上限（预算充足时）；实际取 min(上限, 剩余预算)
+_PROBE_REQUEST_TIMEOUT = 30
+# 预算耗尽的判定余量（秒）：小于它不再发起新请求
+_BUDGET_EPSILON = 0.05
+
+
+class _ProbeBudget:
+    """一次探测运行的总时长预算（单调时钟 deadline，线程内使用）。"""
+
+    def __init__(self, seconds: float | None = None):
+        budget = PROBE_TOTAL_BUDGET_SECONDS if seconds is None else seconds
+        self.deadline = time.monotonic() + max(0.0, float(budget))
+
+    def remaining(self) -> float:
+        return self.deadline - time.monotonic()
+
+    def exhausted(self) -> bool:
+        return self.remaining() <= _BUDGET_EPSILON
+
+    def request_timeout(self) -> float:
+        """本次请求可用的超时：不超过剩余预算，避免最后一跳拖过 deadline。"""
+        return max(_BUDGET_EPSILON, min(float(_PROBE_REQUEST_TIMEOUT), self.remaining()))
+
+    def sleep(self, seconds: float) -> None:
+        """请求间隔按剩余预算截断，耗尽时不再空等。"""
+        pause = min(float(seconds), max(0.0, self.remaining()))
+        if pause > 0:
+            time.sleep(pause)
+
 
 # 上下文超限错误特征（错误信息小写包含任一即判定为「输入太大」）
 _CONTEXT_ERROR_MARKERS = (
@@ -120,14 +173,17 @@ def _chat_once(
     messages: list,
     max_tokens: int,
     reasoning_effort: str | None = None,
-    timeout: int = 30,
+    timeout: float = 30,
     extra: dict | None = None,
+    extra_headers: dict | None = None,
 ) -> dict:
     """向 OpenAI 兼容 /chat/completions 发一条请求；网络/HTTP/URL 校验错误绝不抛异常。
 
     返回 {ok, status_code, error, content, reasoning_content, finish_reason, usage}：
     ok=True 仅表示 HTTP 2xx 且解析出响应体；错误一律进 error 字段。
     extra：按模型思考风格附加的请求体字段（thinking{type} / enable_thinking+thinking_budget）。
+    extra_headers：预设声明的会话头（OpenCode Go：User-Agent + x-opencode-session）；
+    鉴权头永远由 api_key 决定，extra_headers 不得覆盖 Authorization/Content-Type。
     base_url 先经 config_store.validate_base_url 校验（与 SDK 构造/网关探测同口径：
     仅 http(s)、需主机名、拒绝内嵌凭据与控制字符，允许 Ollama 等私网 http）；
     不合法则就地转为 error 字段，绝不带密钥向该地址发起请求。
@@ -159,6 +215,9 @@ def _chat_once(
     if extra:
         payload.update(extra)
     headers = {"Content-Type": "application/json"}
+    for name, value in (extra_headers or {}).items():
+        if str(name).lower() not in ("authorization", "content-type"):
+            headers[str(name)] = str(value)
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     resp, error = _post_with_retry(url, payload, headers, timeout, out)
@@ -187,7 +246,7 @@ def _chat_once(
     return out
 
 
-def _post_with_retry(url: str, payload: dict, headers: dict, timeout: int, out: dict):
+def _post_with_retry(url: str, payload: dict, headers: dict, timeout: float, out: dict):
     """POST JSON（429 有界退避重试）；返回 (response, None) 或 (None, error 已写入 out)。
 
     网络错误与退避 sleep 被打断等异常就地转换为 out['error']，绝不逃逸。
@@ -195,16 +254,31 @@ def _post_with_retry(url: str, payload: dict, headers: dict, timeout: int, out: 
     try:
         retries = 0
         while True:
+            # 每次重试都按「当前剩余预算」收紧单请求超时：预算快耗尽时，
+            # 429 重试本身也不能再占用一个完整的 timeout（I4）。
+            attempt_timeout = timeout
+            remaining = _request_remaining()
+            if remaining is not None:
+                attempt_timeout = max(_BUDGET_EPSILON, min(timeout, remaining))
             try:
-                with httpx.Client(timeout=timeout) as client:
+                with httpx.Client(timeout=attempt_timeout) as client:
                     resp = client.post(url, json=payload, headers=headers)
             except httpx.HTTPError as exc:
                 out["error"] = f"{type(exc).__name__}: {exc}"[:200]
                 return None, out["error"]
             if resp.status_code == 429 and retries < _RATE_LIMIT_MAX_RETRIES:
+                remaining = _request_remaining()
+                if remaining is not None and remaining <= _BUDGET_EPSILON:
+                    logger.info("探测总时长预算已耗尽，停止 429 重试")
+                    break
+                wait = _RATE_LIMIT_WAIT_SECONDS if remaining is None else min(_RATE_LIMIT_WAIT_SECONDS, remaining)
                 retries += 1
-                logger.info("探测命中限流（429），第 %d/%d 次退避 %.0fs 后重试", retries, _RATE_LIMIT_MAX_RETRIES, _RATE_LIMIT_WAIT_SECONDS)
-                time.sleep(_RATE_LIMIT_WAIT_SECONDS)
+                logger.info(
+                    "探测命中限流（429），第 %d/%d 次退避 %.1fs 后重试",
+                    retries, _RATE_LIMIT_MAX_RETRIES, wait,
+                )
+                if wait > 0:
+                    time.sleep(wait)
                 continue
             break
     except Exception as exc:  # 退避 sleep 被打断等异常：就地转 error，不逃逸
@@ -220,13 +294,15 @@ def _messages_once(
     messages: list,
     max_tokens: int,
     extra: dict | None = None,
-    timeout: int = 30,
+    timeout: float = 30,
+    extra_headers: dict | None = None,
 ) -> dict:
     """向 Anthropic /v1/messages 发一条请求（Task 5：anthropic 协议按 Messages 实测）。
 
     返回与 _chat_once 同构的结果字典：思考痕迹取 content 里 type=thinking 的块，
     finish_reason 取 stop_reason；错误同样就地转换、绝不抛异常。
     extra：output_config.effort（effort 风格）或 thinking（budget/toggle 风格）。
+    extra_headers：预设声明的会话头；鉴权头与协议版本头永远由本函数决定，不得被覆盖。
     """
     out = {
         "ok": False,
@@ -251,6 +327,9 @@ def _messages_once(
     if extra:
         payload.update(extra)
     headers = {"Content-Type": "application/json"}
+    for name, value in (extra_headers or {}).items():
+        if str(name).lower() not in ("authorization", "x-api-key", "content-type", "anthropic-version"):
+            headers[str(name)] = str(value)
     if api_key:
         headers["x-api-key"] = api_key
     headers["anthropic-version"] = "2023-06-01"
@@ -379,22 +458,39 @@ def _probe_request(protocol: str, style: str, level: str) -> tuple[str | None, d
     return lv, None, 64
 
 
-def _send(prov: ModelProvider, api_key: str, model: str, messages: list, max_tokens: int, reasoning_effort=None, extra=None) -> dict:
+def _send(prov: ModelProvider, api_key: str, model: str, messages: list, max_tokens: int,
+          reasoning_effort=None, extra=None, timeout: float | None = None,
+          deadline: float | None = None) -> dict:
     """按协议分发探测请求：anthropic 走 /v1/messages，其余走 /chat/completions。
 
     只传有值的参数（effort/extra 为空时不传），保持与既有探测桩的签名兼容。
+    ``timeout`` 来自本次探测总预算的剩余额度（PRB-01）：挂起厂商最多占用剩余预算。
+    ``deadline`` 是本次探测的绝对截止时刻（单调时钟），供 429 退避截断使用；
+    未提供时按 ``now + timeout`` 兜底，仍不会越出单次请求的额度。
     """
-    if prov.protocol == "anthropic":
-        kwargs: dict = {"max_tokens": max_tokens}
+    effective_timeout = float(_PROBE_REQUEST_TIMEOUT if timeout is None else timeout)
+    request_deadline = time.monotonic() + effective_timeout if deadline is None else float(deadline)
+    _set_request_deadline(request_deadline)
+    # 预设声明的会话头（OpenCode Go：User-Agent + x-opencode-session）；其余供应商为空
+    extra_headers = llm.provider_headers({"preset_key": str(getattr(prov, "preset_key", "") or "")})
+    try:
+        if prov.protocol == "anthropic":
+            kwargs: dict = {"max_tokens": max_tokens, "timeout": effective_timeout}
+            if extra:
+                kwargs["extra"] = extra
+            if extra_headers:
+                kwargs["extra_headers"] = extra_headers
+            return _messages_once(prov.base_url, api_key, model, messages, **kwargs)
+        kwargs = {"max_tokens": max_tokens, "timeout": effective_timeout}
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
         if extra:
             kwargs["extra"] = extra
-        return _messages_once(prov.base_url, api_key, model, messages, **kwargs)
-    kwargs = {"max_tokens": max_tokens}
-    if reasoning_effort:
-        kwargs["reasoning_effort"] = reasoning_effort
-    if extra:
-        kwargs["extra"] = extra
-    return _chat_once(prov.base_url, api_key, model, messages, **kwargs)
+        if extra_headers:
+            kwargs["extra_headers"] = extra_headers
+        return _chat_once(prov.base_url, api_key, model, messages, **kwargs)
+    finally:
+        _set_request_deadline(None)
 
 
 def _api_key_of(prov: ModelProvider) -> str:
@@ -439,7 +535,7 @@ def _mark_probe_override(model_row, fields: tuple[str, ...]) -> None:
     model_row.capability_meta = json.dumps(meta, ensure_ascii=False)
 
 
-def probe_reasoning(db, model_row) -> dict:
+def probe_reasoning(db, model_row, budget: _ProbeBudget | None = None) -> dict:
     """思考能力探测：按模型已同步的档位与思考参数风格逐档实测。
 
     分级判定：
@@ -452,11 +548,13 @@ def probe_reasoning(db, model_row) -> dict:
     与 thinking_levels（supported + accepted 的档位）。明确的结论同时记为 probe 本地覆盖
     （sources=probe + manual_fields）：默认目录/在线同步不覆盖实测值，override_manual=True
     或 reset-overrides 可清除恢复。anthropic 协议按 Messages 实测，不再一律跳过。
+    所有档位共享一个总时长预算（budget，缺省新建）；耗尽即停并标注。
     """
     prov = _provider_of(db, model_row)
     if prov is None:
         return {"error": "供应商不存在，无法探测"}
 
+    budget = budget or _ProbeBudget()
     api_key = _api_key_of(prov)
     style = _reasoning_style_of(model_row)
     levels = _reasoning_levels_of(model_row)
@@ -465,8 +563,11 @@ def probe_reasoning(db, model_row) -> dict:
     verdicts: dict[str, str] = {}
     steps: list[dict] = []
     for level in levels:
+        if budget.exhausted():
+            break
         effort, extra, max_tokens = _probe_request(prov.protocol, style, level)
-        r = _send(prov, api_key, model_row.model, messages, max_tokens, reasoning_effort=effort, extra=extra)
+        r = _send(prov, api_key, model_row.model, messages, max_tokens, reasoning_effort=effort, extra=extra,
+                  timeout=budget.request_timeout(), deadline=budget.deadline)
         if r["ok"]:
             verdict = "supported" if _has_reasoning_trace(r) else "accepted"
         elif _is_4xx(r) and _matches(_MAX_TOKENS_ERROR_MARKERS, r.get("error")):
@@ -508,13 +609,16 @@ def probe_reasoning(db, model_row) -> dict:
         model_row.thinking_levels = json.dumps(ordered_levels, ensure_ascii=False)
         # 实测结论是本地覆盖：默认同步不得把实测「不支持」翻回目录「支持」
         _mark_probe_override(model_row, ("supports_thinking", "thinking_levels"))
-    else:
+    if budget.exhausted() and len(steps) < len(levels):
+        detail["budget_exhausted"] = True
+        detail["error"] = "探测总时长预算耗尽，未完成全部档位"
+    elif not definitive:
         detail["error"] = "厂商不可达或全部请求失败，未更新探测结论"
     _merge_step(db, model_row, "reasoning", detail)
     return detail
 
 
-def probe_context(db, model_row) -> dict:
+def probe_context(db, model_row, budget: _ProbeBudget | None = None) -> dict:
     """有效上下文探测：二分查找最大可接受输入 tokens。
 
     填充语料为重复中文文本（1 token≈1.5 汉字），每次请求 max_tokens=1：
@@ -528,17 +632,24 @@ def probe_context(db, model_row) -> dict:
     if prov is None:
         return {"error": "供应商不存在，无法探测"}
 
+    budget = budget or _ProbeBudget()
     api_key = _api_key_of(prov)
     cap = min(int(model_row.context_size or 128000), _CONTEXT_HI_CAP)
     lo, hi = _CONTEXT_LO, cap
     best = 0
     steps: list[dict] = []
     error = None
+    budget_hit = False
     requests = 0
     while lo <= hi and requests < _PROBE_MAX_REQUESTS:
+        if budget.exhausted():
+            error = "探测总时长预算耗尽"
+            budget_hit = True
+            break
         mid = (lo + hi) // 2
         requests += 1
-        r = _send(prov, api_key, model_row.model, _filler_messages(mid), max_tokens=1)
+        r = _send(prov, api_key, model_row.model, _filler_messages(mid), max_tokens=1,
+                  timeout=budget.request_timeout(), deadline=budget.deadline)
         if r["ok"]:
             best = mid
             lo = mid + 1
@@ -555,7 +666,7 @@ def probe_context(db, model_row) -> dict:
         if verdict == "error":
             break
         if lo <= hi and requests < _PROBE_MAX_REQUESTS:
-            time.sleep(_PROBE_INTERVAL)
+            budget.sleep(_PROBE_INTERVAL)
 
     model_row.probed_context = best
     detail = {
@@ -567,11 +678,13 @@ def probe_context(db, model_row) -> dict:
     }
     if error:
         detail["error"] = error
+    if budget_hit:
+        detail["budget_exhausted"] = True
     _merge_step(db, model_row, "context", detail)
     return detail
 
 
-def probe_output(db, model_row) -> dict:
+def probe_output(db, model_row, budget: _ProbeBudget | None = None) -> dict:
     """最大输出探测：按阶梯 [1024..131072] 逐档请求中文散文。
 
     - ok 且 finish_reason 为 length/stop/max_tokens/end_turn（或缺失）→ 该档可用，继续上一档；
@@ -584,18 +697,25 @@ def probe_output(db, model_row) -> dict:
     if prov is None:
         return {"error": "供应商不存在，无法探测"}
 
+    budget = budget or _ProbeBudget()
     api_key = _api_key_of(prov)
     messages = [{"role": "user", "content": _OUTPUT_PROMPT}]
 
     effective = 0
     steps: list[dict] = []
     error = None
+    budget_hit = False
     requests = 0
     for rung in _OUTPUT_LADDER:
         if requests >= _PROBE_MAX_REQUESTS:
             break
+        if budget.exhausted():
+            error = "探测总时长预算耗尽"
+            budget_hit = True
+            break
         requests += 1
-        r = _send(prov, api_key, model_row.model, messages, max_tokens=rung)
+        r = _send(prov, api_key, model_row.model, messages, max_tokens=rung,
+                  timeout=budget.request_timeout(), deadline=budget.deadline)
         finish = r.get("finish_reason")
         if r["ok"] and (finish in ("length", "stop", "max_tokens", "end_turn") or finish is None):
             effective = rung
@@ -612,8 +732,21 @@ def probe_output(db, model_row) -> dict:
     detail = {"effective_max_output": effective, "requests": requests, "steps": steps}
     if error:
         detail["error"] = error
+    if budget_hit:
+        detail["budget_exhausted"] = True
     _merge_step(db, model_row, "output", detail)
     return detail
+
+
+def _run_probe_step(fn, db, model_row, budget: _ProbeBudget) -> dict:
+    """调用单步探测：只有函数显式接受 budget 才传，兼容既有测试/外部替换的旧签名。"""
+    try:
+        accepts_budget = "budget" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        accepts_budget = False
+    if accepts_budget:
+        return fn(db, model_row, budget=budget)
+    return fn(db, model_row)
 
 
 def probe_all(db, model_row) -> dict:
@@ -621,7 +754,10 @@ def probe_all(db, model_row) -> dict:
 
     任何单步异常只记录不中断其余步骤；分步详情已在各步内并入 probe_result，
     此处汇总刷新 probed_at。返回 {"reasoning": ..., "context": ..., "output": ..., "probed_at": ...}。
+    三段共享同一个总时长预算（PROBE_TOTAL_BUDGET_SECONDS）：挂起厂商不会把一次
+    全量探测拖成数分钟（PRB-01），预算耗尽的步骤会标注 budget_exhausted。
     """
+    budget = _ProbeBudget()
     out: dict = {}
     for key, fn in (
         ("reasoning", probe_reasoning),
@@ -629,7 +765,7 @@ def probe_all(db, model_row) -> dict:
         ("output", probe_output),
     ):
         try:
-            out[key] = fn(db, model_row)
+            out[key] = _run_probe_step(fn, db, model_row, budget)
         except Exception as exc:
             logger.warning("探测步骤异常（不影响其余步骤）：%s", key, exc_info=True)
             entry = {"error": f"{type(exc).__name__}: {exc}"[:200]}
@@ -641,6 +777,8 @@ def probe_all(db, model_row) -> dict:
     model_row.probed_at = datetime.now().isoformat(timespec="seconds")
     db.commit()
     out["probed_at"] = model_row.probed_at
+    if budget.exhausted():
+        out["budget_exhausted"] = True
     return out
 
 

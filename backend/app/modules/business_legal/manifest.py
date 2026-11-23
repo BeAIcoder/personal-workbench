@@ -9,8 +9,6 @@ manifest = ModuleManifest(
     title="法务管理",
     version="0.1.0",
     prefix="/api/business/legal",
-    tables=["mod_legal_contract_review", "mod_legal_case", "mod_legal_seal"],
-    menu={"group": "职能", "icon": "Document", "order": 81},
     agent_tools=[
         {
             "name": "legal_summary",

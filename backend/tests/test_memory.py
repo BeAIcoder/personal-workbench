@@ -55,7 +55,7 @@ def test_crud_and_dedupe(client):
 
 
 def test_recall_keyword_and_pinned_boost(client):
-    client.post(f"{P}/memories", json={"content": "项目背景：某商业管理公司，租金按季度预收。"})
+    client.post(f"{P}/memories", json={"content": "项目背景：项目A公司，租金按季度预收。"})
     client.post(f"{P}/memories", json={"content": "免租期谈判经验：先争取装修期再谈经营免租。"})
     client.post(f"{P}/memories", json={"content": "置顶记忆：所有对外报表金额用万元。", "pinned": True})
 

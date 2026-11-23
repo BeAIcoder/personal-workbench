@@ -66,7 +66,10 @@ def test_only_orchestrator_writes_chat_messages():
     assert offenders == []
 
 
-def test_every_tool_declares_readonly_and_three_tuple_params():
+def test_every_tool_declares_readonly_and_param_pairs():
+    """工具 spec 统一形状：纵容过的写法一律不允许（唯一事实源 app/tool_schema.py）。"""
+    from app.tool_schema import JSON_PARAM_TYPES
+
     assert TOOL_SPECS
     for name, spec in TOOL_SPECS.items():
         assert callable(spec.get("func")), name
@@ -75,7 +78,9 @@ def test_every_tool_declares_readonly_and_three_tuple_params():
         params = spec.get("params")
         assert isinstance(params, dict), name
         for pname, pval in params.items():
-            assert isinstance(pval, tuple) and len(pval) == 3, f"{name}.{pname} 必须是 (type, description, required) 三元组"
+            assert isinstance(pval, tuple) and len(pval) == 2, f"{name}.{pname} 必须是 (JSON 类型, 说明) 二元组"
+            assert pval[0] in JSON_PARAM_TYPES, f"{name}.{pname} 的 JSON 类型 {pval[0]!r} 不在白名单"
+            assert isinstance(pval[1], str), f"{name}.{pname} 的说明必须是字符串"
         assert set(spec.get("required") or []) <= set(params), name
 
 
@@ -87,7 +92,12 @@ def test_every_module_agent_tool_declares_readonly():
         for tool in manifest.agent_tools or []:
             assert isinstance(tool.get("readonly"), bool), f"{module_name}.{tool.get('name')} 未显式声明 readonly"
             for pname, pval in (tool.get("params") or {}).items():
-                assert isinstance(pval, tuple) and len(pval) == 3, f"{module_name}.{tool.get('name')}.{pname}"
+                assert isinstance(pval, tuple) and len(pval) == 2, (
+                    f"{module_name}.{tool.get('name')}.{pname} 必须是 (JSON 类型, 说明) 二元组"
+                )
+            assert set(tool.get("required") or []) <= set(tool.get("params") or {}), (
+                f"{module_name}.{tool.get('name')} 的 required 必须是 params 子集"
+            )
 
 
 def test_readonly_plan_excludes_bash_plugins_and_write_tools():

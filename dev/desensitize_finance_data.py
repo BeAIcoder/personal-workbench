@@ -7,7 +7,7 @@
 - 余额表：期末 = 期初 + 本期借方 - 本期贷方（方向感知），本年累计随机；
 - 金额：两位小数随机值（量级 0.01~99999.99）；
 敏感信息泛化：
-- 公司/账簿名 → 脱敏账簿A/B/C…（一对一共通映射，sheet 名同步替换）；
+- 公司/账簿名 → 脱敏单元A/B/C…（一对一共通映射，sheet 名同步替换）；
 - 人员名（制单/审批/记账人列取值全集）→ 员工NNN（共通映射）；
 - 辅助核算【类型:编码/名称】→ 编码等长随机数字、名称 → 脱敏<类型>N；
 - 残留公司名片段、长数字串（卡号/证件号）→ 随机等长数字。
@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
@@ -32,44 +33,74 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 
 ROOT = Path(__file__).resolve().parent.parent
+DEV_DIR = Path(__file__).resolve().parent
 OUT_DIR = ROOT / "脱敏数据"
-ATTACH = Path(os.environ.get("VERIFY_ATTACH_DIR", ""))
-POS_SRC = Path(r"D:\2022.5.24起财务工作存档\BaiduSyncdisk\0x09收款认领\POS刷卡清单\01_刷卡对账单_按年份\2026年\10")
-CASH_SRC = Path(r"D:\2022.5.24起财务工作存档\BaiduSyncdisk\06.现金流\2026\10")
+LOCAL_CONFIG_FILE = DEV_DIR / "desensitize.local.json"
 
 # 保勾稽需要可复现的固定种子（凭证借=贷、余额链），非密码学用途，不用 secrets
 rng = random.Random(20261022)
 
-# 已知敏感字串（本项目数据集特定）：公司名全文由 ledger_map 动态收集，
-# 这里补其常见片段与人员姓氏片段，确保摘要/辅助核算等自由文本无残留。
+# 代码只保留合成示例；真实公司/项目/银行名从 dev/desensitize.local.json
+# （gitignore）或环境变量加载，绝不入库。
 COMPANY_TOKENS = {
-    "某商业管理公司": "脱敏单位",
-    "脱敏单位": "脱敏单位",
-    "脱敏街区": "脱敏街区",
-    "金阶": "脱敏街区",
-    "园城": "脱敏街区",
-    "中青旅行社": "脱敏品牌",
-    "平安银行": "脱敏银行",
-    "中国建设银行": "脱敏银行",
-    "脱敏公司": "脱敏公司",
-    "脱敏街区": "脱敏街区",
-    "园城": "脱敏街区",
-    "金阶": "脱敏街区",
-    "脱敏单位": "脱敏单位",  # 最短片段放最后，避免长词被拆后重复替换
+    "合成机构甲": "合成单位",
+    "合成街区": "合成街区",
+    "合成品牌": "合成品牌",
+    "合成银行": "合成银行",
 }
+
+
+def load_local_config() -> dict:
+    """读取本地脱敏配置（gitignore）；缺失或损坏时返回空配置。"""
+    try:
+        data = json.loads(LOCAL_CONFIG_FILE.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def apply_local_config() -> None:
+    """把本地配置里的真实串并入 COMPANY_TOKENS（就地更新，import 引用保持有效）。"""
+    tokens = load_local_config().get("company_tokens")
+    if isinstance(tokens, dict):
+        COMPANY_TOKENS.update({str(k): str(v) for k, v in tokens.items() if k})
+
+
+def require_company_tokens() -> None:
+    """真实运行前强制加载本地映射；缺失时中文拒绝，避免无映射时 fail-open。"""
+    apply_local_config()
+    tokens = load_local_config().get("company_tokens")
+    if not isinstance(tokens, dict) or not tokens:
+        raise SystemExit(
+            "缺少 dev/desensitize.local.json 的 company_tokens；"
+            "拒绝在无真实映射时处理真实数据"
+        )
+
+
+def _configured_dir(env_name: str, config_key: str) -> Path | None:
+    raw = os.environ.get(env_name) or load_local_config().get(config_key)
+    return Path(str(raw)) if raw else None
 
 # ---------- 通用工具 ----------
 
 def _find_attachments():
     """定位会话附件目录（含 4 个 BIP xlsx）。"""
-    global ATTACH
-    if ATTACH and ATTACH.is_dir():
-        return ATTACH
-    base = Path(os.environ.get("KIMI_SESSIONS", r"D:\Documents\Agents\Kimidata\sessions"))
-    for p in base.rglob("attachments"):
-        if any(f.suffix == ".xlsx" for f in p.iterdir()):
-            return p
-    raise SystemExit("找不到附件目录")
+    env = os.environ.get("VERIFY_ATTACH_DIR") or load_local_config().get("attach_dir")
+    if env:
+        path = Path(str(env))
+        if path.is_dir():
+            return path
+    sessions = os.environ.get("KIMI_SESSIONS")
+    if sessions:
+        base = Path(sessions)
+        if base.is_dir():
+            for p in base.rglob("attachments"):
+                if any(f.suffix == ".xlsx" for f in p.iterdir()):
+                    return p
+    raise SystemExit(
+        "找不到附件目录：请设置 VERIFY_ATTACH_DIR / KIMI_SESSIONS，"
+        "或在 dev/desensitize.local.json 配置 attach_dir"
+    )
 
 
 def rand_amount(lo: float = 0.01, hi: float = 99999.99) -> float:
@@ -139,7 +170,7 @@ def genericize_text(text: str, name_map: dict[str, str]) -> str:
 
 
 def _ledger_fake(ledger_map: dict[str, str], name: str) -> str:
-    """账簿名 → 脱敏单位N；'合计'等结构性标记原样保留。
+    """账簿名 → 脱敏单元N；'合计'等结构性标记原样保留。
 
     命名避开 BIP 表头关键词（账簿/科目/日期/凭证号/借方/贷方/期初/期末/本期/摘要），
     否则泛化后的账簿值会污染表头行定位（_locate_header_row 的关键词命中）。
@@ -147,13 +178,26 @@ def _ledger_fake(ledger_map: dict[str, str], name: str) -> str:
     if name in ("合计", "小计", "总计"):
         return name
     if name not in ledger_map:
-        ledger_map[name] = f"脱敏单位{chr(ord('A') + len(ledger_map))}"
+        ledger_map[name] = f"脱敏单元{chr(ord('A') + len(ledger_map))}"
     return ledger_map[name]
 
 
 def copy_sheet_template(src_ws, dst_wb, title):
     """按原 sheet 名建空 sheet（值由调用方回填）。"""
     return dst_wb.create_sheet(title)
+
+
+def _safe_filename(name: str, mapping: dict[str, str]) -> str:
+    """文件名泛化：先替换已登记真实串，再兜底替换残留公司全称。"""
+    out = name
+    for real, fake in sorted(mapping.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if real:
+            out = out.replace(real, fake)
+    return re.sub(
+        r"[\u4e00-\u9fa5]{2,30}(?:有限公司|有限责任公司)(?:[\u4e00-\u9fa5]{0,10}(?:分公司|支公司))?",
+        "合成单位",
+        out,
+    )
 
 
 # ---------- BIP：凭证列表 ----------
@@ -411,6 +455,7 @@ def collect_person_names(files: dict[str, Path]) -> set[str]:
 
 
 def run_bip():
+    require_company_tokens()
     att = _find_attachments()
     OUT_DIR.mkdir(exist_ok=True)
     # 附件名形如 f_<uuid>-<原始文件名>：按已知类型分子串分类（先长后短避歧义）
@@ -432,7 +477,7 @@ def run_bip():
         kind = classify(f)
         if kind:
             files[kind] = f
-    assert len(files) == 4, f"应找到 4 个 BIP 文件，实际 {list(files)}"
+    assert len(files) == 4, f"应找到 4 个 BIP 文件，实际 {len(files)} 个"
     ledger_map: dict[str, str] = {}
     # 先收集人员名全集（人员列 + 摘要上下文候选，去会计术语停用词）
     name_map: dict[str, str] = {}
@@ -448,15 +493,15 @@ def run_bip():
         m = re.match(r"^f_[0-9a-fA-F-]+-(.+)$", fname)
         orig_name = m.group(1) if m else fname
         src = att / fname
-        dst = OUT_DIR / f"脱敏数据{orig_name}"
+        dst = OUT_DIR / f"脱敏数据{_safe_filename(orig_name, {**COMPANY_TOKENS, **ledger_map})}"
         if kind == "vouchers":
             results[kind] = desensitize_vouchers(src, dst, ledger_map, name_map)
         elif kind == "aux":
             results[kind] = desensitize_aux_ledger(src, dst, ledger_map, name_map)
         else:
             results[kind] = desensitize_balance(src, dst, ledger_map, name_map)
-        print(f"  ✓ {dst.name}  ({results[kind]})")
-    print(f"账簿映射：{ledger_map}")
+        print(f"  ✓ {kind_label[kind]} 已脱敏  ({results[kind]})")
+    print(f"账簿映射：{len(ledger_map)} 个")
     return results
 
 
@@ -512,10 +557,14 @@ def desensitize_xlsx_in_zip(zip_path: Path, member: str) -> bytes:
 
 
 def run_pos(limit: int = 32):
-    """复制 2026/10 的日包（默认最近 limit 个），商户号泛化，包内 xlsx 脱敏。"""
-    if not POS_SRC.is_dir():
-        raise SystemExit(f"POS 源目录不存在：{POS_SRC}")
-    zips = sorted(POS_SRC.glob("SHOP.*.zip"))[-limit:]
+    """复制指定期间的日包（默认最近 limit 个），商户号泛化，包内 xlsx 脱敏。"""
+    require_company_tokens()
+    pos_src = _configured_dir("POS_SRC_DIR", "pos_dir")
+    if pos_src is None or not pos_src.is_dir():
+        raise SystemExit(
+            "POS 源目录未配置：请设置 POS_SRC_DIR 或 dev/desensitize.local.json 的 pos_dir"
+        )
+    zips = sorted(pos_src.glob("SHOP.*.zip"))[-limit:]
     dst_dir = OUT_DIR / "脱敏数据POS刷卡清单"
     dst_dir.mkdir(parents=True, exist_ok=True)
     fake_shop = "9" + "".join(rng.choice("0123456789") for _ in range(14))
@@ -538,22 +587,38 @@ def run_pos(limit: int = 32):
 
 # ---------- 现金流 ----------
 
+DEFAULT_CASH_FILES = (
+    "2026年9月-2027年2月现金流量滚动预测模板.xlsx",
+    "2026.9银行存款-辅助明细账_2026-10-2 19_22_59.xlsx",
+    "2026.10FSSC付款池会计已付清单台账.xlsx",
+)
+
+
+def _cash_files() -> tuple[str, ...]:
+    """真实文件名清单（常含公司名）从本地配置读取；代码只留中性示例。"""
+    configured = load_local_config().get("cash_files")
+    if isinstance(configured, list) and configured:
+        return tuple(str(name) for name in configured)
+    return DEFAULT_CASH_FILES
+
+
+def _clean_cash_stem(stem: str) -> str:
+    return _safe_filename(stem, COMPANY_TOKENS)
+
+
 def run_cash():
-    """复制 2026/10 现金流关键文件并脱敏（模板/辅助明细账/上报版/资金计划/付款池清单）。"""
-    if not CASH_SRC.is_dir():
-        raise SystemExit(f"现金流源目录不存在：{CASH_SRC}")
-    keep = [
-        "2026年9月-2027年2月现金流量滚动预测模板.xlsx",
-        "2026.9银行存款-辅助明细账_2026-10-2 19_22_59.xlsx",
-        "某商业管理公司2026.9现金流量滚动预测_待上报_20260827.xlsx",
-        "某商业管理公司2026年10月资金计划.xlsx",
-        "2026.10FSSC付款池会计已付清单台账.xlsx",
-    ]
+    """复制指定期间现金流关键文件并脱敏（模板/辅助明细账/上报版/资金计划/付款池清单）。"""
+    require_company_tokens()
+    cash_src = _configured_dir("CASH_SRC_DIR", "cash_dir")
+    if cash_src is None or not cash_src.is_dir():
+        raise SystemExit(
+            "现金流源目录未配置：请设置 CASH_SRC_DIR 或 dev/desensitize.local.json 的 cash_dir"
+        )
     n = 0
-    for name in keep:
-        src = CASH_SRC / name
+    for index, name in enumerate(_cash_files(), start=1):
+        src = cash_src / name
         if not src.is_file():
-            print(f"  ! 缺失：{name}")
+            print(f"  ! 缺失：配置清单第 {index} 项（{src.suffix}）")
             continue
         wb = openpyxl.load_workbook(src, data_only=True)
         out = openpyxl.Workbook()
@@ -562,14 +627,14 @@ def run_cash():
             rows = [list(r) for r in ws.iter_rows(values_only=True)]
             dst_ws = out.create_sheet(ws.title)
             for r in rows:
-                dst_ws.append([genericize_text(c, {}) if isinstance(c, str) else c for c in r])
+                dst_ws.append([genericize_text(c, COMPANY_TOKENS) if isinstance(c, str) else c for c in r])
         stem, ext = os.path.splitext(name)
-        clean = re.sub(r"某商业管理公司(?:脱敏公司(?:昆明分公司)?|融城[^，,。]*项目|脱敏街区项目)?", "脱敏单位", stem)
+        clean = _clean_cash_stem(stem)
         dst = OUT_DIR / f"脱敏数据{clean}{ext}"
         out.save(dst)
         wb.close()
         n += 1
-        print(f"  ✓ {dst.name}")
+        print(f"  ✓ 第 {index} 个文件已脱敏")
     print(f"现金流文件 {n} 个")
     return {"files": n}
 
@@ -577,6 +642,7 @@ def run_cash():
 def run_expense():
     """费用分类样本：银行辅助明细账（1002 过滤导出）脱敏。
     与 BIP 辅助明细账同格式（元数据块+表头+数据），复用 aux 脱敏逻辑（余额链保持）。"""
+    require_company_tokens()
     att = _find_attachments()
     OUT_DIR.mkdir(exist_ok=True)
     fname = next(f for f in os.listdir(att) if "1002辅助明细账" in f and f.endswith(".xlsx"))
@@ -585,9 +651,10 @@ def run_expense():
     ledger_map: dict[str, str] = {}
     persons = collect_person_names({"aux": att / fname})
     name_map = {p: f"员工{n:03d}" for n, p in enumerate(sorted(persons), 1)}
-    stats = desensitize_aux_ledger(att / fname, OUT_DIR / f"脱敏数据{orig_name}", ledger_map, name_map)
-    print(f"  ✓ 脱敏数据{orig_name}  ({stats})")
-    print(f"账簿映射：{ledger_map}")
+    dst = OUT_DIR / f"脱敏数据{_safe_filename(orig_name, COMPANY_TOKENS)}"
+    stats = desensitize_aux_ledger(att / fname, dst, ledger_map, name_map)
+    print(f"  ✓ 费用样本已脱敏  ({stats})")
+    print(f"账簿映射：{len(ledger_map)} 个")
     return stats
 
 

@@ -110,6 +110,13 @@ def _load_manifest(name: str) -> ModuleManifest | None:
     if errors:
         logger.warning("模块 %s manifest 校验失败：%s；已跳过", name, "；".join(errors))
         return None
+    if manifest.removed_fields:
+        # 过渡期兼容：menu/tables 已从 ModuleManifest 删除（菜单唯一源是前端 manifest.js）
+        logger.warning(
+            "模块 %s 的 manifest 仍声明已删除字段 %s（已忽略，不影响加载）；"
+            "请从 manifest.py 删除这些声明",
+            name, "、".join(manifest.removed_fields),
+        )
     return manifest
 
 

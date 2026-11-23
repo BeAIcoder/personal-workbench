@@ -16,7 +16,7 @@
 - INTX-009 全流程零未捕获 Promise 拒绝、零前端报错上报
 
 用法：
-    D:/DevEnv/runtime/python/python.exe dev/e2e/probes/interaction-ux.py
+    python dev/e2e/probes/interaction-ux.py
 结果：
     dev/e2e/probe_results/interaction-ux.json
 """

@@ -138,7 +138,7 @@ describe('图片回显地址', () => {
   })
 
   it('后端只给服务器文件系统 path（Windows 盘符）时无浏览器可访问地址', () => {
-    expect(attachmentImageSrc({ path: 'D:\\data\\uploads\\s_1\\a.png' }, '/api')).toBe('')
+    expect(attachmentImageSrc({ path: 'D:/path/to/uploads\\s_1\\a.png' }, '/api')).toBe('')
     expect(attachmentImageSrc({ path: '/data/uploads/s_1/a.png' }, '/api')).toBe('/api/data/uploads/s_1/a.png')
     expect(attachmentImageSrc({}, '/api')).toBe('')
     expect(attachmentImageSrc(null, '/api')).toBe('')

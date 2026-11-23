@@ -30,10 +30,13 @@ def test_manifest_loaded():
     assert "business_operations" in loaded
     m = loaded["business_operations"]
     assert m.prefix == "/api/business/operations"
-    assert m.tables == [
+    from app.modules.business_operations import models as ops_models
+
+    assert {ops_models.OpsContract.__tablename__, ops_models.OpsBill.__tablename__,
+            ops_models.OpsWorkOrder.__tablename__,
+            ops_models.OpsWorkOrderFollowup.__tablename__} == {
         "mod_ops_contract", "mod_ops_bill", "mod_ops_work_order",
-        "mod_ops_work_order_followup",
-    ]
+        "mod_ops_work_order_followup"}
 
 
 def test_contract_crud_expiring_and_validation(client):

@@ -1,5 +1,6 @@
 <template>
   <div class="page" v-loading="loading">
+    <HelpLink section="6.8" />
     <el-card shadow="never">
       <template #header>
         <div class="card-head">
@@ -59,6 +60,7 @@ export const TAX_PAGE_ENTRIES = [
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import HelpLink from '../../../components/HelpLink.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 

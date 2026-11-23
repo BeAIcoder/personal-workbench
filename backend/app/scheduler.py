@@ -1,6 +1,7 @@
 """定时 Agent 调度：到点自动按提示词执行一次 Agent 对话，结果落笔记。
 
-- 调度循环为 lifespan 内启动的 asyncio 任务（见 app.main），每 20 秒检查一次到期任务；
+- 调度循环为 lifespan 内启动的 asyncio 任务（见 app.main）：单定时器只在最近
+  到期时间或任务变更时醒来，系统休眠/时钟跳变时以 TICK_SECONDS 兜底重算；
 - 每个任务串行执行（同任务上一次未结束则跳过本轮），执行中状态记录在内存 `_running`；
 - 执行链路直接复用编排器 chat()：路由（指定/关键词/LLM）→ Agent 执行 → 落一条定时任务会话 →
   同时把回复写成笔记（标题带任务名与时间，标签含「定时任务」）便于回看；
@@ -8,8 +9,10 @@
 """
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta
+from functools import lru_cache
 from types import SimpleNamespace
 from typing import Callable
 
@@ -32,6 +35,10 @@ TERMINAL_STATUSES = {"ok", "error", "skipped", "unknown"}
 SESSION_PREFIX = "job-"    # 定时任务专用会话前缀
 MAX_CONCURRENT_JOBS = 3    # 自动调度派生任务的并发上限
 SKIP_THROTTLE_SECONDS = 300
+# 稀疏 cron（如「每年 1 月 1 日」「2 月 29 日」）不得逐分钟扫描：搜索按字段跳步，
+# 并设步数/时间双预算兜底；超预算按「本轮无到点」处理，下个 tick 重新计算。
+_CRON_SEARCH_MAX_STEPS = 20000
+_CRON_SEARCH_BUDGET_SECONDS = 2.0
 
 _running: set[int] = set()                 # 正在执行的 job id
 _reserved: set[int] = set()                # 自动调度已预约（含等待信号量）的 job id
@@ -149,47 +156,124 @@ def cron_matches(expr: str, now: datetime | None = None) -> bool:
     需要任一命中时应拆成两个任务，避免歧义。
     """
     now = now or datetime.now()
+    allowed = _cron_allowed(expr or "")
+    if allowed is None:
+        return False
+    minutes, hours, doms, months, dows = allowed
+    return (
+        now.minute in minutes
+        and now.hour in hours
+        and now.day in doms
+        and now.month in months
+        and _weekday_allowed(now.weekday(), dows)
+    )
+
+
+@lru_cache(maxsize=256)
+def _cron_allowed(expr: str) -> tuple[frozenset[int], ...] | None:
+    """把五段表达式解析为各字段的允许值集合（缓存，非法表达式返回 None）。
+
+    直接复用 _cron_field_match 展开取值，保留「逗号列表中的非法项只跳过该项」
+    等既有匹配口径；任一字段全为非法项时集合为空，匹配与搜索都会自然失败。
+    """
     parts = (expr or "").split()
     if len(parts) != 5:
+        return None
+    return tuple(
+        frozenset(
+            value
+            for value in range(lo, hi + 1)
+            if _cron_field_match(field, value, lo, hi)
+        )
+        for field, (lo, hi) in zip(parts, _CRON_BOUNDS)
+    )
+
+
+def _weekday_allowed(weekday: int, dows: frozenset[int]) -> bool:
+    """python weekday（0=周一）→ cron 周字段；周日同时接受 0 与 7。"""
+    cron_day = weekday + 1
+    return cron_day in dows or (cron_day % 7) in dows
+
+
+def _first_cron_match(expr: str, start: datetime, end: datetime) -> datetime | None:
+    """返回 [start, end] 内最早的匹配分钟；非法/无匹配/超预算返回 None。
+
+    按字段跳步而不是逐分钟前进：月份不匹配跳到下月 1 日、日期/星期不匹配跳到
+    次日 0 点、小时/分钟不匹配跳到下一个允许值。永不匹配的表达式（如 2 月 31 日）
+    最多只走几百步，不会扫描 36.6 万分钟。
+    """
+    allowed = _cron_allowed(expr or "")
+    if allowed is None:
+        return None
+    minutes, hours, doms, months, dows = allowed
+    if not (minutes and hours and doms and months and dows):
+        return None
+    minute_values = sorted(minutes)
+    hour_values = sorted(hours)
+    cur = start.replace(second=0, microsecond=0)
+    if cur < start:
+        cur += timedelta(minutes=1)
+    deadline = time.monotonic() + _CRON_SEARCH_BUDGET_SECONDS
+    steps = 0
+    while cur <= end:
+        steps += 1
+        if steps > _CRON_SEARCH_MAX_STEPS or time.monotonic() > deadline:
+            logger.warning("cron 下一次触发搜索超出预算（%s），本轮按无到点处理", expr)
+            return None
+        if cur.month not in months:
+            cur = (cur.replace(day=1, hour=0, minute=0) + timedelta(days=32)).replace(
+                day=1, hour=0, minute=0
+            )
+            continue
+        if cur.day not in doms or not _weekday_allowed(cur.weekday(), dows):
+            cur = (cur + timedelta(days=1)).replace(hour=0, minute=0)
+            continue
+        if cur.hour not in hours:
+            next_hour = next((item for item in hour_values if item > cur.hour), None)
+            cur = (
+                cur.replace(hour=next_hour, minute=0)
+                if next_hour is not None
+                else (cur + timedelta(days=1)).replace(hour=0, minute=0)
+            )
+            continue
+        if cur.minute not in minutes:
+            next_minute = next((item for item in minute_values if item > cur.minute), None)
+            cur = (
+                cur.replace(minute=next_minute)
+                if next_minute is not None
+                else (cur + timedelta(hours=1)).replace(minute=0)
+            )
+            continue
+        return cur
+    return None
+
+
+def _cron_due(job: ScheduledJob, expr: str, now: datetime) -> bool:
+    """cron 到期判断：当前分钟命中优先，否则在 (lower, now] 内做有界错过补偿。"""
+    if cron_matches(expr, now):
+        # 同一自然分钟内不重复触发
+        return job.last_run_at is None or job.last_run_at.replace(
+            second=0, microsecond=0
+        ) != now.replace(second=0, microsecond=0)
+    # 错过补偿：下界受 24h、上次运行与创建时间共同约束；新建任务不补创建前的点。
+    lower = now - timedelta(hours=24)
+    if job.last_run_at is not None:
+        lower = max(lower, job.last_run_at.replace(second=0, microsecond=0))
+    created_at = getattr(job, "created_at", None)
+    if created_at is not None:
+        lower = max(lower, created_at)
+    start = lower.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    end = now.replace(second=0, microsecond=0)
+    if start > end:
         return False
-    minute, hour, dom, month, dow = parts
-    if not _cron_field_match(minute, now.minute, 0, 59):
-        return False
-    if not _cron_field_match(hour, now.hour, 0, 23):
-        return False
-    if not _cron_field_match(dom, now.day, 1, 31):
-        return False
-    if not _cron_field_match(month, now.month, 1, 12):
-        return False
-    weekday = now.weekday() + 1  # cron: 0=周日 … 6=周六；python: 0=周一
-    sunday = 7 if weekday == 7 else weekday
-    return _cron_field_match(dow, sunday, 0, 7) or _cron_field_match(dow, sunday % 7, 0, 7)
+    return _first_cron_match(expr, start, end) is not None
 
 
 def job_due(job: ScheduledJob, now: datetime | None = None) -> bool:
     """纯函数：给定当前时间判断任务是否到期（单测直接覆盖）。"""
     now = now or datetime.now()
     if job.schedule_type == "cron":
-        expr = job.cron_expr or ""
-        if cron_matches(expr, now):
-            # 同一自然分钟内不重复触发
-            return job.last_run_at is None or job.last_run_at.replace(second=0, microsecond=0) != now.replace(second=0, microsecond=0)
-        # 错过补偿：在 (lower, now) 内找最近一次匹配分钟（上限回溯 24h），找到即 due。
-        # 下界同时受创建时间约束：新建任务不得补跑创建之前的匹配点（例如 10:30:40
-        # 创建 * * * * *，10:31 检查时不能把 10:30 当作「错过」再跑一次）。
-        lower = now - timedelta(hours=24)
-        if job.last_run_at is not None:
-            lower = max(lower, job.last_run_at.replace(second=0, microsecond=0))
-        created_at = getattr(job, "created_at", None)
-        if created_at is not None:
-            lower = max(lower, created_at)
-        cursor = now.replace(second=0, microsecond=0)
-        while True:
-            cursor -= timedelta(minutes=1)
-            if cursor <= lower:  # lower 分钟本身已执行过/超出窗口，不计
-                return False
-            if cron_matches(expr, cursor):
-                return True
+        return _cron_due(job, job.cron_expr or "", now)
     if job.schedule_type == "daily":
         if not job.daily_at or len(job.daily_at) != 5 or job.daily_at[2] != ":":
             return False
@@ -223,12 +307,7 @@ def next_due_at(job: ScheduledJob, now: datetime | None = None) -> datetime | No
         if job.last_run_at is not None and job.last_run_at > cursor:
             cursor = job.last_run_at.replace(second=0, microsecond=0)
         cursor += timedelta(minutes=1)
-        end = now + timedelta(days=366)
-        while cursor <= end:
-            if cron_matches(expr, cursor):
-                return cursor
-            cursor += timedelta(minutes=1)
-        return None
+        return _first_cron_match(expr, cursor, now + timedelta(days=366))
     if job.schedule_type == "daily":
         if not job.daily_at or len(job.daily_at) != 5 or job.daily_at[2] != ":":
             return None
@@ -562,7 +641,9 @@ async def _run_action_job(job: SimpleNamespace) -> dict:
 async def run_job(job_id: int, manual: bool = False) -> dict:
     """执行一次定时任务；数据库只在执行前后的短会话与 worker 线程中使用。
 
-    manual=True 时，未到点的 daily/cron 不占用调度槽位；当前已到点则正常消费。
+    manual=True 时，未到点的 daily/cron/interval 不占用调度槽位（不更新
+    last_run_at），避免「手动运行一次」把下一次自动到点整周期顺延；当前已到点
+    则正常消费槽位。
     skipped 不消费 daily/cron 槽位，自动调度侧按五分钟节流。
     """
     if job_id in _running:
@@ -574,7 +655,7 @@ async def run_job(job_id: int, manual: bool = False) -> dict:
         job = await asyncio.to_thread(_load_job, job_id)
         if job is None:
             return {"status": "error", "summary": "任务不存在"}
-        touch = not manual or job.schedule_type == "interval" or job_due(job, datetime.now())
+        touch = not manual or job_due(job, datetime.now())
         run_id = await asyncio.to_thread(_begin_run, job_id)
         if run_id is None:
             return {"status": "skipped", "summary": "上一轮运行仍在进行中（或占入标记未释放）"}
@@ -702,6 +783,15 @@ def wake() -> None:
         loop.call_soon_threadsafe(event.set)
     except RuntimeError:
         pass
+
+
+def forget_job(job_id: int) -> None:
+    """删除任务后清理进程内节流状态。
+
+    SQLite 的 INTEGER PRIMARY KEY 在删除最大行后可能复用同一 id；若不清理，
+    新任务会被旧任务残留的 skipped 节流窗口误挡。
+    """
+    _skipped_at.pop(job_id, None)
 
 
 def _next_wakeup(now: datetime) -> tuple[list[int], datetime | None]:

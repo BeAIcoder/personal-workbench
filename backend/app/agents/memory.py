@@ -16,18 +16,27 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
-from ..models import Memory
+from ..models import KbDoc, Memory
 from ..utils import escape_like
 
 MAX_CONTENT = 2000
 RECALL_TOP_K = 5
+
+# 通用功能字：含任一字符的 bigram 视为「通用 token」，不参与多 token 查询的
+# 有效性判断（仅通用 bigram 重叠不应召回无关记忆）。
+_GENERIC_CHARS = "的是了在和与或及对为把被得地这那就也都又还吗呢吧啊么呀嘛哦"
+
+
+def _is_generic_token(token: str) -> bool:
+    return any(ch in _GENERIC_CHARS for ch in token)
 
 
 # ---------- 存取 ----------
 
 def add_memory(db: Session, content: str, source: str = "manual",
                session_id: str = "", tags: list[str] | None = None,
-               pinned: bool = False, type: str = "") -> dict:
+               pinned: bool = False, type: str = "",
+               source_doc_id: int | None = None) -> dict:
     content = (content or "").strip()
     if not content:
         raise ValueError("记忆内容不能为空")
@@ -35,13 +44,27 @@ def add_memory(db: Session, content: str, source: str = "manual",
         content = content[:MAX_CONTENT]
     if _is_duplicate(db, content):
         raise ValueError("已存在基本相同的记忆，未重复保存")
+    doc_title = ""
+    if source_doc_id is not None:
+        doc_title = _resolve_source_doc(db, source_doc_id).title
     row = Memory(content=content, source=source, session_id=session_id,
                  tags=tags or [], pinned=bool(pinned),
-                 type=_norm_type(type))
+                 type=_norm_type(type), source_doc_id=source_doc_id)
     db.add(row)
     db.commit()
     db.refresh(row)
-    return _out(row)
+    return _out(row, doc_title=doc_title)
+
+
+def _resolve_source_doc(db: Session, source_doc_id) -> KbDoc:
+    """校验显式引用的知识库文档：非法/不存在一律 ValueError（路由层转 400）。"""
+    if not isinstance(source_doc_id, int) or isinstance(source_doc_id, bool) \
+            or source_doc_id <= 0:
+        raise ValueError("引用的知识库文档 id 必须为正整数")
+    doc = db.get(KbDoc, source_doc_id)
+    if doc is None:
+        raise ValueError(f"引用的知识库文档 {source_doc_id} 不存在")
+    return doc
 
 
 MEMORY_TYPES = ("user", "feedback", "project", "reference")
@@ -127,9 +150,16 @@ def update_memory(db: Session, memory_id: int, data: dict) -> dict:
         row.pinned = bool(data["pinned"])
     if "type" in data and data["type"] is not None:
         row.type = _norm_type(data["type"])
+    if "source_doc_id" in data:
+        if data["source_doc_id"] is None:
+            row.source_doc_id = None  # 显式传 null = 清空引用
+        else:
+            row.source_doc_id = _resolve_source_doc(db, data["source_doc_id"]).id
     db.commit()
     db.refresh(row)
-    return _out(row)
+    # 标题按最终生效的 source_doc_id 取：未触碰来源字段时既有引用保持原样输出
+    titles = _doc_titles(db, [row])
+    return _out(row, doc_title=titles.get(row.source_doc_id))
 
 
 def delete_memory(db: Session, memory_id: int) -> None:
@@ -151,10 +181,20 @@ def list_memories(db: Session, keyword: str = "", limit: int = 100,
     if t:
         q = q.filter(Memory.type == t)
     rows = q.order_by(Memory.pinned.desc(), Memory.id.desc()).limit(min(limit, 500)).all()
-    return [_out(r) for r in rows]
+    titles = _doc_titles(db, rows)
+    return [_out(r, doc_title=titles.get(r.source_doc_id)) for r in rows]
 
 
-def _out(r: Memory) -> dict:
+def _doc_titles(db: Session, rows: list[Memory]) -> dict[int, str]:
+    """按 source_doc_id 批量取文档标题（一次查询，避免逐条 N+1）。"""
+    ids = sorted({r.source_doc_id for r in rows if r.source_doc_id})
+    if not ids:
+        return {}
+    found = dict(db.query(KbDoc.id, KbDoc.title).filter(KbDoc.id.in_(ids)).all())
+    return {i: found[i] for i in ids if i in found}
+
+
+def _out(r: Memory, doc_title: str | None = None) -> dict:
     return {
         "id": r.id,
         "content": r.content,
@@ -164,6 +204,8 @@ def _out(r: Memory) -> dict:
         "tags": r.tags or [],
         "pinned": bool(r.pinned),
         "hit_count": r.hit_count,
+        "source_doc_id": r.source_doc_id,
+        "source_doc_title": doc_title or "",
         "created_at": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "",
     }
 
@@ -173,14 +215,30 @@ def _out(r: Memory) -> dict:
 def recall(query: str, top_k: int = RECALL_TOP_K) -> list[dict]:
     """检索记忆：中文 bigram 重叠打分 + 置顶/新近度加权；命中即累计 hit_count。
 
+    打分口径（噪声抑制是「降低」，不是完全消除）：
+    - token 与记忆内容统一 casefold，英文大小写不敏感；
+    - 查询 token 先按集合去重，再剔除含通用功能字的 bigram 得到「有效 token」；
+      有效 token ≥2 时要求 ≥2 个重叠——仅 1 个有效 token 重叠的多 token
+      查询不再召回无关记忆；
+    - 有效 token 为 0 或 1 时（单 token、短查询、全通用词查询）回退宽松
+      阈值 min_overlap=1：全通用词查询可能仍召回通用重叠的记忆，
+      换取短查询不静默失效。
+
     单用户规模（数百条）内一次性取「置顶 + 最近 300 条」在内存打分，
     避免中文无分词条件下的 LIKE 全句匹配失效。
     """
     from .rag import _query_tokens
 
-    q_tokens = set(_query_tokens(query or ""))
+    q_tokens = {t.casefold() for t in _query_tokens(query or "")}
     if not q_tokens:
         return []  # 纯空白/标点查询无有效 token，不返回任意结果也不累计 hit_count
+    kept = {t for t in q_tokens if not _is_generic_token(t)}
+    if kept:
+        q_tokens = kept
+        min_overlap = 1 if len(kept) <= 1 else 2
+    else:
+        # 查询全是通用 token（如「什么怎么」）：回退原始 token + 宽松阈值，避免静默失效
+        min_overlap = 1
     with SessionLocal() as db:
         pinned = (
             db.query(Memory)
@@ -197,9 +255,9 @@ def recall(query: str, top_k: int = RECALL_TOP_K) -> list[dict]:
         )
         scored = []
         for r in [*pinned, *recent]:
-            content = r.content or ""
-            overlap = sum(1 for t in q_tokens if t and t in content) if q_tokens else 0
-            if q_tokens and overlap == 0:
+            content_cf = (r.content or "").casefold()
+            overlap = sum(1 for t in q_tokens if t in content_cf)
+            if overlap < min_overlap:
                 continue
             score = overlap * 1.0
             if r.pinned:
@@ -212,11 +270,12 @@ def recall(query: str, top_k: int = RECALL_TOP_K) -> list[dict]:
             return []
         scored.sort(key=lambda x: (x[0], x[1].id), reverse=True)
         picked = scored[: max(1, min(top_k, 10))]
+        titles = _doc_titles(db, [r for _, r in picked])
         for _, r in picked:
             r.hit_count = (r.hit_count or 0) + 1
             r.last_used_at = datetime.now()
         db.commit()
-        return [_out(r) for _, r in picked]
+        return [_out(r, doc_title=titles.get(r.source_doc_id)) for _, r in picked]
 
 
 def recall_for_context(message: str, top_k: int = 3) -> list[dict]:

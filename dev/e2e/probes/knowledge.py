@@ -81,7 +81,7 @@ SEED_NOTES = [
 
 SEED_MEMORIES = [
     {"content": "用户偏好：报表金额单位统一用万元，保留两位小数。"},
-    {"content": "项目背景：某商业管理公司，租金按季度预收。"},
+    {"content": "项目背景：项目A公司，租金按季度预收。"},
     {"content": "沟通偏好：先结论后细节，控制在三段以内。"},
 ]
 
@@ -402,7 +402,7 @@ try:
 
         def tc_mem_cancel_delete():
             before = mem_rows().count()
-            row = mem_rows().filter(has_text="项目背景：某商业管理公司").first
+            row = mem_rows().filter(has_text="项目背景：项目A公司").first
             row.locator("button", has_text="删除").click()
             page.locator(".el-message-box button", has_text="取消").click()
             page.wait_for_timeout(900)

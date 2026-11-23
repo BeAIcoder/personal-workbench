@@ -14,6 +14,7 @@ import re
 import threading
 from collections import Counter
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
@@ -26,42 +27,17 @@ _index: dict | None = None   # {"stamp": str, "chunks": [...], "df": Counter, "a
 
 
 def _bigrams(text: str) -> list[str]:
-    """中文友好的轻量分词：连续二元组 + 英文/数字单词。
+    """兼容包装：分词实现已迁到 knowledge.tokenize（笔记/制度共用一份）。"""
+    from ..knowledge.tokenize import bigrams
 
-    含汉字的 alnum 连续段（如 "10月完成"）除整段 token 外，再补段内相邻
-    bigram 与汉字单字，使 "10月"、"税" 这类混合词/单字查询可命中。
-    """
-    text = (text or "").lower()
-    tokens: list[str] = []
-    buf: list[str] = []
-
-    def _flush() -> None:
-        if not buf:
-            return
-        run = "".join(buf)
-        tokens.append(run)
-        if any("一" <= c <= "鿿" for c in run):
-            tokens.extend(run[i : i + 2] for i in range(len(run) - 1))
-            tokens.extend(c for c in run if "一" <= c <= "鿿")
-        buf.clear()
-
-    for ch in text:
-        if ch.isalnum():
-            buf.append(ch)
-        else:
-            _flush()
-    _flush()
-    han = re.sub(r"[^一-鿿]", "", text)
-    tokens.extend(han[i : i + 2] for i in range(len(han) - 1))
-    return tokens
+    return bigrams(text)
 
 
 def _query_tokens(text: str) -> list[str]:
     """查询侧分词：存在多字 token 时丢弃单字 token。
 
-    防单字泄漏误命中（「量子引力波探测器xyz」不应命中仅共享单字「子」的笔记）；
-    单字查询（「税」）无多字 token 可丢弃，行为不变；混合词（「10月」）仍有
-    多字 token（10月/10/0月）兜底命中。文档侧分词保持原样（单字可被查）。
+    走 `_bigrams` 而非直接 import，保留测试对分词函数的 patch 接缝
+    （test_task8_minors 用它验证「查询只分词一次」）。
     """
     tokens = _bigrams(text)
     if any(len(t) >= 2 for t in tokens):
@@ -109,8 +85,6 @@ def _ensure_index() -> dict:
     """懒加载 + 失效自动重建。"""
     global _index
     with SessionLocal() as db:
-        from sqlalchemy import func
-
         stamp = str(db.query(func.max(Note.updated_at)).scalar() or "")
         note_count = db.query(func.count(Note.id)).scalar() or 0
         if _index is not None and _index.get("stamp") == stamp and _index.get("count") == note_count:
@@ -122,25 +96,32 @@ def _ensure_index() -> dict:
             return _index
 
 
-def rebuild_index() -> dict:
-    """手动重建索引（新建/编辑笔记后也可调用，通常无需）。"""
-    global _index
-    with SessionLocal() as db:
-        from sqlalchemy import func
-
-        note_count = db.query(func.count(Note.id)).scalar() or 0
-        with _index_lock:
-            _index = {**_build_index(db), "count": note_count}
-            return stats()
-
-
-def stats() -> dict:
-    idx = _ensure_index()
+def _stats_of(idx: dict) -> dict:
     return {
         "notes_indexed": idx.get("count", 0),
         "chunks": len(idx.get("chunks", [])),
         "vocabulary": len(idx.get("df", {})),
     }
+
+
+def rebuild_index() -> dict:
+    """手动重建索引（新建/编辑笔记后也可调用，通常无需）。
+
+    构建在锁外完成、锁内只做发布：`_index_lock` 是普通 Lock，重建时若在持锁
+    状态下回调 `stats()`/`_ensure_index()`，一旦期间有笔记写入（stamp/count 变化）
+    就会在同一把锁上自锁。统计直接由构建结果计算，不再重入。
+    """
+    global _index
+    with SessionLocal() as db:
+        note_count = db.query(func.count(Note.id)).scalar() or 0
+        built = _build_index(db)
+    with _index_lock:
+        _index = {**built, "count": note_count}
+        return _stats_of(_index)
+
+
+def stats() -> dict:
+    return _stats_of(_ensure_index())
 
 
 def search(query: str, top_k: int = TOP_K_DEFAULT) -> list[dict]:

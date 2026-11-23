@@ -2,9 +2,9 @@
 """技能市场（skill_market）：聚合本机多个本地技能源，浏览/搜索/一键安装进平台技能池。
 
 设计（移植 Qoder/QwenPaw「技能市场」形态，保障兼容）：
-- 源：平台种子（backend/seed_skills）+ QwenPaw skill_pool（默认
-  D:/AIApps/QwenPaw/data/skill_pool，env QWENPAW_SKILL_POOL > .env
-  qwenpaw_skill_pool 覆盖）+ WorkBuddy buddy-skill-store（复用 workbuddy_sync 扫描）；
+- 源：平台种子（backend/seed_skills）+ QwenPaw skill_pool（目录按 env
+  QWENPAW_SKILL_POOL > .env qwenpaw_skill_pool > config 内置默认的顺序解析）+
+  WorkBuddy buddy-skill-store（复用 workbuddy_sync 扫描）；
 - 每项：{name, description, version, source, installed, title}；
 - 安装 = 整目录复制进平台技能池（backend/data/skills），**新包默认停用**（与 WorkBuddy
   导入同规则，不静默改变 Agent 注入）；已存在则更新（upsert），启停状态保留；

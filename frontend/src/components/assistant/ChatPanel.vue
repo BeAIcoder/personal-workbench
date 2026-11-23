@@ -67,7 +67,7 @@
 
     <div class="input-area">
       <div class="input-toolbar">
-        <el-select v-model="workMode" size="small" class="mode-select">
+        <el-select v-model="workMode" size="small" class="mode-select mode-select-strong">
           <el-option v-for="(v, k) in workModes" :key="k" :label="v.label" :value="k" />
         </el-select>
         <el-tooltip :content="reasoningTip" placement="top">
@@ -229,6 +229,9 @@ let activeUploadBatches = 0
 // 当前 SSE 流的控制器；切换/删除会话、发送新消息、组件卸载时 abort
 let streamCtrl = null
 
+// 会话历史请求序号：A 慢 B 快时，A 的迟到响应（成功或失败）不得覆盖/干扰 B
+let historySeq = 0
+
 function abortStream() {
   if (streamCtrl) {
     streamCtrl.abort()
@@ -313,13 +316,16 @@ function ensureSession() {
   return sid
 }
 
-// 父组件切换会话时调用：拉历史并渲染
+// 父组件切换会话时调用：拉历史并渲染。
+// 请求序号守卫：只有最后发起的请求可以写入 messages / 弹错误提示。
 async function loadHistory(sid) {
+  const seq = ++historySeq
   // 旧会话气泡里的本地缩略图 objectURL 一并回收；待发送附件的预览地址保留
   releaseAllPreviewUrls(attachments.value.map((a) => a.previewUrl))
   messages.value = []
   try {
     const { data } = await assistantApi.history(sid)
+    if (seq !== historySeq) return
     messages.value = data.messages.map((m) => ({
       role: m.role,
       content: m.content,
@@ -332,6 +338,8 @@ async function loadHistory(sid) {
     }))
     scrollBottom()
   } catch {
+    // 过期请求的失败不再提示：当前会话已由更新的请求接管
+    if (seq !== historySeq) return
     // 历史加载失败：给明确反馈，不再静默忽略（否则切换会话后只剩空白）
     ElMessage.error('历史消息加载失败，请检查后端服务后重试')
   }
@@ -339,6 +347,8 @@ async function loadHistory(sid) {
 
 function clearMessages() {
   // 清空气泡：只回收已入气泡的缩略图，待发送附件的预览地址保留
+  // 同时作废在途历史请求，避免旧会话内容回填到已清空/新会话的界面
+  historySeq += 1
   releaseAllPreviewUrls(attachments.value.map((a) => a.previewUrl))
   messages.value = []
 }
@@ -1076,10 +1086,19 @@ defineExpose({ abortStream, loadHistory, clearMessages, send, loading })
   width: 150px;
 }
 
+/* 工作模式是每轮对话的关键选择：选中项加粗，避免和普通下拉混淆 */
+.mode-select-strong :deep(.el-select__selected-item),
+.mode-select-strong :deep(.el-select__placeholder) {
+  font-weight: 700;
+}
+
 .reasoning-hint {
   font-size: 11px;
-  color: var(--el-text-color-secondary);
-  max-width: 320px;
+  font-weight: 700;
+  color: var(--el-color-warning-dark-2);
+  max-width: 460px;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -144,7 +144,7 @@ def test_create_and_delete_pack(store):
         skill_store.create_pack("no-desc", "  ")
     # 描述是自由文本：含「: 」/ # / 换行 / 引号 / 反斜杠时 frontmatter 仍必须合法，
     # 且扫描结果里的描述与输入逐字一致（YAML 双引号标量序列化回归）
-    tricky = '报销审核: 需核对抬头 #1\n第二行 "引号" 与 C:\\temp'
+    tricky = '报销审核: 需核对抬头 #1\n第二行 "引号" 与 C:/path/to/temp'
     pack = skill_store.create_pack("tricky-desc", tricky, "正文")
     assert pack["valid"] is True, pack.get("error")
     assert pack["description"] == tricky

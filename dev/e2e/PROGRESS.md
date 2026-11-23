@@ -155,7 +155,7 @@ cd backend && PYTHONIOENCODING=utf-8 venv/Scripts/python.exe -m pytest tests -q
 cd frontend && npm test && npm run build
 
 # 单区域探针（系统 python，含 Playwright；脚本自起独立服务）
-PYTHONIOENCODING=utf-8 /d/DevEnv/runtime/python/python.exe dev/e2e/probes/<area>.py
+PYTHONIOENCODING=utf-8 python dev/e2e/probes/<area>.py
 ```
 
 - 后端服务用 `backend/venv/Scripts/python.exe`；探针用系统 python（Playwright 安装在那里）。

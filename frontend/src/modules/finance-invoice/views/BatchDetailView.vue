@@ -58,6 +58,29 @@
             <span v-else class="hint">未导出</span>
           </template>
         </el-table-column>
+        <el-table-column label="项目 PDF" min-width="190">
+          <template #default="{ row }">
+            <el-button
+              size="small"
+              link
+              type="primary"
+              :loading="projectOps[row.project] === 'download'"
+              :disabled="pdfDisabled || !!projectOps[row.project]"
+              @click="downloadProjectPdf(row)"
+            >
+              下载 PDF
+            </el-button>
+            <el-button
+              size="small"
+              link
+              :loading="projectOps[row.project] === 'print'"
+              :disabled="pdfDisabled || !!projectOps[row.project]"
+              @click="printProjectPdf(row)"
+            >
+              打印
+            </el-button>
+          </template>
+        </el-table-column>
       </el-table>
       <p v-if="hasUnclassified" class="hint warn">
         存在「未归类」发票：在下方明细表逐张修改「项目」后重新导出即可并入对应项目。
@@ -118,7 +141,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../../api'
 import { isRedInvoice } from '../itemDisplay'
 import { createItemPatcher } from '../itemPatch'
-import { saveBlob } from '../../../utils/download.js'
+import { saveBlob, openPrintWindow, showPdfInWindow } from '../../../utils/download.js'
 
 const UNCLASSIFIED = '未归类'
 const route = useRoute()
@@ -130,6 +153,8 @@ const failureText = ref('批次不存在或加载失败')
 const keyword = ref('')
 const batch = ref({ items: [] })
 const projects = ref([])
+// 项目级 PDF 操作（download|print）按项目名记录：合并期间只锁该行，不阻塞其他项目
+const projectOps = ref({})
 // 最近一次服务端确认值：patch 失败时只回滚该行该字段，不整体重载覆盖其它行
 const serverValues = new Map()
 
@@ -147,8 +172,15 @@ const statusText = (s) => STATUS_TEXT[s] || s
 const statusType = (s) => STATUS_TYPE[s] || 'info'
 
 const hasUnclassified = computed(() => projects.value.some((row) => row.project === UNCLASSIFIED && row.count > 0))
+// 待解析/失败批次没有可合并的原始 PDF：禁用按钮，后端仍会用中文错误兜底
+const pdfDisabled = computed(() => {
+  const status = batch.value.status
+  return status === 'uploaded' || status === 'failed'
+})
 const zipHint = computed(() =>
-  batch.value.status === 'exported' ? '每个项目一个 ZIP，可单独下载' : '导出后按项目拆分打包，可单独下载',
+  batch.value.status === 'exported'
+    ? '每个项目一个 ZIP，可单独下载；PDF 无需导出即可合并下载或打印'
+    : '导出后按项目拆分打包，可单独下载；PDF 无需导出即可合并下载或打印',
 )
 
 const filteredItems = computed(() => {
@@ -286,6 +318,53 @@ async function saveZip(url, filename) {
     saveBlob(data, filename)
   } catch {
     /* 拦截器已统一提示（Blob 错误体已解析出后端 detail） */
+  }
+}
+
+// 单项目合并 PDF：不改导出产物、不要求先导出，按当前归类即时合并
+function projectPdfUrl(project) {
+  return `/finance/invoice/batches/${batch.value.id}/projects/pdf?project=${encodeURIComponent(project)}`
+}
+
+async function downloadProjectPdf(row) {
+  if (pdfDisabled.value || projectOps.value[row.project]) return
+  projectOps.value[row.project] = 'download'
+  try {
+    const { data } = await api.get(projectPdfUrl(row.project), { responseType: 'blob', timeout: 300000 })
+    saveBlob(data, row.pdf_name || `${row.project}发票.pdf`)
+  } catch {
+    /* 拦截器已统一提示（缺件/损坏/越界等后端中文原因） */
+  } finally {
+    delete projectOps.value[row.project]
+  }
+}
+
+async function printProjectPdf(row) {
+  if (pdfDisabled.value || projectOps.value[row.project]) return
+  // 必须在点击的同步阶段预开：等请求回来再 open 会被浏览器当弹窗拦截
+  const win = openPrintWindow()
+  if (!win) {
+    ElMessage.warning('新标签页被浏览器拦截：请允许本站弹窗，或改用「下载 PDF」后在阅读器中打印')
+    return
+  }
+  projectOps.value[row.project] = 'print'
+  try {
+    const { data } = await api.get(projectPdfUrl(row.project), { responseType: 'blob', timeout: 300000 })
+    if (!showPdfInWindow(data, { window: win })) throw new Error('无法在新标签页打开 PDF')
+    ElMessage.info('正在新标签页加载 PDF；若页面未显示或未弹出打印对话框，请在阅读器中按 Ctrl+P，或改用「下载 PDF」')
+  } catch {
+    // 失败关掉空白页，后端中文原因由拦截器统一提示（catch 不重复弹 error）
+    closePrintWindow(win)
+  } finally {
+    delete projectOps.value[row.project]
+  }
+}
+
+function closePrintWindow(win) {
+  try {
+    win.close()
+  } catch {
+    /* 页签已被浏览器关闭或跨文档禁止关闭 */
   }
 }
 

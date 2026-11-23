@@ -56,8 +56,7 @@ def test_module_registration():
     assert "debug_center" in loaded
     manifest = loaded["debug_center"]
     assert manifest.prefix == "/api/debug"
-    assert manifest.tables == []
-    assert manifest.menu["group"] == "调试" and manifest.menu["order"] == 80
+    assert manifest.removed_fields == ()
     assert manifest.validate() == []
 
 

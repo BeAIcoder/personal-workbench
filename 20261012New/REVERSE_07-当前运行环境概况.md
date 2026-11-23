@@ -31,12 +31,12 @@
 
 - 生产形态：uvicorn :8000 单端口托管前端 dist（冒烟常用 889x 临时端口，已清理）
 - 计划任务：VaultWeeklyBackup（周日 09:00，10-11 起恢复正常，rc=0）
-- AssetLib周备份：robocopy /MIR → C:\LocalBackup（勿放非镜像文件）
+- 本机周备份目录：robocopy /MIR → 备份盘（勿放非镜像文件）
 
 ## 五、配置状态
 
 - LLM：界面配置（DPAPI 加密）；供应商预设 18 家（provider_presets.json）；模型探测字段已就绪（未对在线模型大规模探测——按需触发）
-- 引擎路径：全部按默认相对推导可用（本机AssetLib布局未变）
+- 引擎路径：全部按默认相对推导可用（本机目录布局未变）
 - 版本：v1.14.0（config.py + package.json 一致）
 
 ## 六、风险快照

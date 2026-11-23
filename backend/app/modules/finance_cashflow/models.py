@@ -16,6 +16,8 @@ class CashflowRun(Base):
     __tablename__ = "mod_cashflow_run"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # 回填年份（如 2026）；历史行迁移后为 0，输出时按创建年份兜底
+    actual_year: Mapped[int] = mapped_column(Integer, default=0)
     # 回填月份（1-12，引擎 --actual-month）
     actual_month: Mapped[int] = mapped_column(Integer)
     # 状态：uploaded / running / ok / failed

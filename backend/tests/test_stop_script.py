@@ -56,5 +56,5 @@ def test_stop_script_command_filter_requires_uvicorn_not_any_python():
         )
         return result.returncode == 0
 
-    assert not matches(r'"D:\venv\python.exe" -m http.server 8000')
-    assert matches(r'"D:\venv\python.exe" -m uvicorn app.main:app --port 8000')
+    assert not matches(r'"D:\path\to\venv\python.exe" -m http.server 8000')
+    assert matches(r'"D:\path\to\venv\python.exe" -m uvicorn app.main:app --port 8000')

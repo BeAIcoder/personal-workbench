@@ -185,3 +185,92 @@ def test_next_due_at_interval_daily_cron():
     assert scheduler.next_due_at(cron, now) == datetime(2026, 11, 5, 9, 0)
     bad = ScheduledJob(schedule_type="daily", daily_at="99:99")
     assert scheduler.next_due_at(bad, now) is None
+
+
+# ---------------- 调度边界：稀疏 cron、手动 interval、删除节流清理 ----------------
+
+def test_sparse_cron_next_due_is_not_minute_scanned(monkeypatch):
+    """RED 回归：永不匹配的 cron 曾逐分钟扫描 366 天（约 52.7 万次 cron_matches）。
+
+    只做结构性硬断言（调用次数），不使用墙钟阈值，避免 xdist/负载下抖动。
+    """
+    calls = []
+    real_match = scheduler.cron_matches
+
+    def counting_match(expr, now=None):
+        calls.append(1)
+        return real_match(expr, now)
+
+    monkeypatch.setattr(scheduler, "cron_matches", counting_match)
+    now = datetime(2026, 11, 4, 10, 30, 0)
+    job = ScheduledJob(schedule_type="cron", cron_expr="0 0 31 2 *", last_run_at=None)
+    assert scheduler.next_due_at(job, now) is None
+    assert len(calls) < 5000, f"下一次触发不应逐分钟扫描，实际调用 cron_matches {len(calls)} 次"
+
+
+def test_sparse_cron_search_stays_within_small_step_budget(monkeypatch):
+    """结构性步数硬断言：合法稀疏表达式在 200 步预算内必须找到下一次到点。"""
+    monkeypatch.setattr(scheduler, "_CRON_SEARCH_MAX_STEPS", 200, raising=False)
+    job = ScheduledJob(schedule_type="cron", cron_expr="0 0 1 1 *", last_run_at=None)
+    assert scheduler.next_due_at(job, datetime(2026, 11, 4, 10, 30, 0)) == datetime(2027, 1, 1, 0, 0)
+
+
+def test_sparse_cron_leap_day_next_due_is_correct():
+    """跳步搜索必须保持语义：2027-03-01 之后的下一个 2 月 29 日是 2028-02-29。"""
+    job = ScheduledJob(schedule_type="cron", cron_expr="0 0 29 2 *", last_run_at=None)
+    assert scheduler.next_due_at(job, datetime(2027, 3, 1, 0, 0, 0)) == datetime(2028, 2, 29, 0, 0)
+
+
+def test_cron_search_honours_step_budget(monkeypatch):
+    """红/绿锁：搜索步数预算耗尽时按「暂无下一到点」返回，不无限扫描。"""
+    monkeypatch.setattr(scheduler, "_CRON_SEARCH_MAX_STEPS", 2, raising=False)
+    job = ScheduledJob(schedule_type="cron", cron_expr="0 0 1 1 *", last_run_at=None)
+    assert scheduler.next_due_at(job, datetime(2026, 11, 4, 10, 30, 0)) is None
+
+
+def test_manual_interval_run_before_due_does_not_postpone():
+    """RED 回归：未到点的 interval 手动执行曾把 last_run_at 改成 now，整周期顺延。"""
+    anchor = datetime.now().replace(microsecond=0) - timedelta(minutes=10)
+    job_id = _job(
+        name="手动间隔不顺延", action="test.manual.interval", prompt="",
+        interval_minutes=60, last_run_at=anchor,
+    )
+
+    def handler():
+        return {"status": "ok", "message": "手动执行完成"}
+
+    scheduler.register_action("test.manual.interval", handler)
+    try:
+        result = asyncio.run(scheduler.run_job(job_id, manual=True))
+    finally:
+        scheduler.JOB_ACTIONS.pop("test.manual.interval", None)
+
+    assert result["status"] == "ok"
+    row = _row(job_id)
+    assert row.last_status == "ok"
+    assert row.last_run_at == anchor
+    assert scheduler.next_due_at(row, datetime.now()) >= anchor + timedelta(minutes=60)
+
+
+def test_manual_interval_run_when_due_consumes_slot():
+    """已到点的 interval 手动执行应消费槽位，避免自动调度立刻重复执行。"""
+    now = datetime.now().replace(microsecond=0)
+    anchor = now - timedelta(minutes=61)
+    job_id = _job(
+        name="手动间隔消费槽位", action="test.manual.interval.due", prompt="",
+        interval_minutes=60, last_run_at=anchor,
+    )
+
+    def handler():
+        return {"status": "ok", "message": "到点手动完成"}
+
+    scheduler.register_action("test.manual.interval.due", handler)
+    try:
+        result = asyncio.run(scheduler.run_job(job_id, manual=True))
+    finally:
+        scheduler.JOB_ACTIONS.pop("test.manual.interval.due", None)
+
+    assert result["status"] == "ok"
+    row = _row(job_id)
+    assert row.last_run_at is not None and row.last_run_at > anchor
+    assert scheduler.job_due(row, datetime.now()) is False

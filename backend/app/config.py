@@ -73,14 +73,14 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 
 # 本机外部资源默认值：集中在此，模块不再各自硬编码（settings/.env 优先）
 DEFAULT_WORKBUDDY_HOME = Path.home() / ".workbuddy"
-DEFAULT_QWENPAW_SKILL_POOL = Path("D:/AIApps/QwenPaw/data/skill_pool")
+DEFAULT_QWENPAW_SKILL_POOL = Path.home() / "QwenPaw" / "data" / "skill_pool"
 
 
 class Settings(BaseSettings):
     """应用配置项，支持通过环境变量或 backend/.env 覆盖。"""
 
     app_name: str = "个人工作台"
-    version: str = "1.16.1"
+    version: str = "1.19.0"
     host: str = "127.0.0.1"
     port: int = 8000
     # 是否允许服务绑定在非回环地址（默认 False：无鉴权，局域网暴露风险高）。
@@ -117,6 +117,24 @@ class Settings(BaseSettings):
     finance_cashflow_engine_path: str = ""
     # POS 台账引擎目录（finance_pos 模块）：留空按默认相对位置推导
     finance_pos_engine_path: str = ""
+    # POS 刷卡凭证源目录（finance_pos 模块）：按年份组织的对账单+回单归档基目录
+    # （下含「YYYY年/MM」月度目录：SHOP.*.zip 对账单与 云南*回单*.pdf）；
+    # 留空则凭证生成报 400 提示先配置
+    finance_pos_statement_dir: str = ""
+    # POS 刷卡凭证输出目录：留空落工作台数据目录（finance_pos/vouchers）；
+    # 也可在生成时按批次人工指定（前端传 output_dir）
+    finance_pos_output_dir: str = ""
+    # POS 终端尾号→项目名映射，格式 "0002=项目A,0005=项目B,0006=项目C"；留空用内置默认
+    finance_pos_project_map: str = ""
+    # POS 回单 PDF 文件名通配（逗号分隔多个）；留空用内置默认
+    finance_pos_receipt_glob: str = ""
+    # 回单↔对账单匹配参数：日期容差天数 / 金额容差（元）
+    finance_pos_match_date_tolerance: int = 2
+    finance_pos_match_amount_tolerance: str = "0.01"
+    # 银行回单整理源目录（finance_receipt）：归档的银行回单 PDF/ZIP 所在目录；留空由页面手动选择
+    finance_receipt_source_dir: str = ""
+    # 银行回单整理输出目录：留空落 finance_receipt/ 批次目录；也可在扫描时人工指定
+    finance_receipt_output_dir: str = ""
     # QwenPaw 技能池目录，留空用代码内置默认
     qwenpaw_skill_pool: str = ""
     # WorkBuddy 主目录，留空用代码内置默认
@@ -129,6 +147,9 @@ class Settings(BaseSettings):
     soffice_path: str = ""
     # 税务 PDF 自定义字体文件路径，留空用平台默认候选
     pdf_font_path: str = ""
+    # 目录浏览白名单（/api/fs）：逗号或分号分隔的绝对路径；留空默认
+    # 「用户主目录 + 数据根目录」。越界路径由路由器返回 403。
+    fs_browse_roots: str = ""
 
     @field_validator(
         "finance_data_dir",
@@ -137,10 +158,15 @@ class Settings(BaseSettings):
         "finance_board_pipeline_path",
         "finance_cashflow_engine_path",
         "finance_pos_engine_path",
+        "finance_pos_statement_dir",
+        "finance_pos_output_dir",
+        "finance_receipt_source_dir",
+        "finance_receipt_output_dir",
         "finance_board_task_name",
         "finance_asset_anchor",
         "soffice_path",
         "pdf_font_path",
+        "fs_browse_roots",
         mode="before",
     )
     @classmethod
@@ -156,6 +182,54 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _resolve_browse_root(value: str | Path | None) -> Path | None:
+    """把配置值解析为绝对目录；空值/非法值返回 None（脏配置不把请求打成 500）。"""
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    try:
+        return path.resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def _append_browse_root(roots: list[Path], value: str | Path | None) -> None:
+    resolved = _resolve_browse_root(value)
+    if resolved is not None and resolved not in roots:
+        roots.append(resolved)
+
+
+def get_fs_browse_roots() -> list[Path]:
+    """目录浏览允许的根目录（解析后去重）。
+
+    `FS_BROWSE_ROOTS` 为空时默认：用户主目录、数据根目录、财务数据目录
+    （`FINANCE_DATA_DIR`，留空时为数据根下的 finance），以及已配置的 POS
+    对账单源目录/凭证输出目录；同一路径只保留一次，保证外部财务目录开箱可浏览。
+    显式配置时以配置值为准，支持逗号或分号分隔、相对路径按 backend/ 解析；
+    `..` 与符号链接在使用方 resolve 后做包含判断。
+    """
+    raw = (settings.fs_browse_roots or "").strip()
+    roots: list[Path] = []
+    if raw:
+        for item in re.split(r"[,;]", raw):
+            _append_browse_root(roots, item.strip().strip("'\""))
+        return roots
+    for value in (
+        Path.home(),
+        DATA_DIR,
+        get_finance_data_dir(),
+        settings.finance_pos_statement_dir,
+        settings.finance_pos_output_dir,
+        settings.finance_receipt_source_dir,
+        settings.finance_receipt_output_dir,
+    ):
+        _append_browse_root(roots, value)
+    return roots
 
 
 def get_finance_data_dir() -> Path:

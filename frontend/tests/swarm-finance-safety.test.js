@@ -1,11 +1,11 @@
 // 财务安全回归测试（swarm 任务 frontend-finance-safety；swarm2 finance-ui-review 第二轮复核新增 S5 与两项契约）。
 // 覆盖四类已确认缺陷：
 //   S1 QuickAddView：账户/分类删除无确认框、无判忙，误点/连点即真实删除（QuickAddView.vue）
-//   S2 TableListView：上传入仓默认 replace，整表覆盖已有表无明确确认，取消也同样发请求（TableListView.vue）
+//   S2 TablesPanel：上传入池默认 replace，整表覆盖已有表无明确确认，取消也同样发请求（TableListView.vue）
 //   S3 BatchDetailView：批次加载失败时仍渲染详情壳，标题显示「批次详情 #undefined」（BatchDetailView.vue）
 //   S4 可空数值直接 toFixed：StatsView/RunResultView 整页渲染崩溃，TransactionListView 金额列
 //      显示 NaN，QuickAddView 金额空白（TransactionListView.vue / StatsView.vue / RunResultView.vue）
-//   S5 QuickAddView.submit：缺重入守卫，在途再次提交会重复记账；TableListView 上传成功后
+//   S5 QuickAddView.submit：缺重入守卫，在途再次提交会重复记账；TablesPanel 上传成功后
 //      form.mode 未复位，再次打开上传弹窗仍默认破坏性 replace（swarm2 复核新增）
 // 本仓库前端测试运行在 node 环境（vite.config.js test.environment=node，无 jsdom/挂载能力），
 // 行为测试沿用既有约定：mock 生命周期钩子与 API 后直接驱动编译后的 setup()
@@ -54,7 +54,7 @@ const { default: api } = await import('../src/api')
 const QuickAddView = (await import('../src/modules/finance-ledger-personal/views/QuickAddView.vue')).default
 const TransactionListView = (await import('../src/modules/finance-ledger-personal/views/TransactionListView.vue')).default
 const StatsView = (await import('../src/modules/finance-ledger-personal/views/StatsView.vue')).default
-const TableListView = (await import('../src/modules/finance-vault/views/TableListView.vue')).default
+const TablesPanel = (await import('../src/modules/finance-vault/views/parts/TablesPanel.vue')).default
 const BatchDetailView = (await import('../src/modules/finance-invoice/views/BatchDetailView.vue')).default
 const RunResultView = (await import('../src/modules/finance-expense/views/RunResultView.vue')).default
 
@@ -243,9 +243,9 @@ describe('S4 StatsView：统计数值空值不崩溃，统一占位', () => {
   })
 })
 
-describe('S2 TableListView：默认 append；replace 已有表必须明确确认，取消不发请求', () => {
+describe('S2 TablesPanel：默认 append；replace 已有表必须明确确认，取消不发请求', () => {
   async function mountVault() {
-    const ctx = mount(TableListView)
+    const ctx = mount(TablesPanel)
     await ctx.load()
     return ctx
   }

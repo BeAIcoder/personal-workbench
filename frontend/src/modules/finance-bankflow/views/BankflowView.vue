@@ -1,5 +1,6 @@
 <template>
   <div class="page">
+    <HelpLink section="6.5" />
     <el-card class="box-card">
       <template #header>
         <span class="card-title">① 上传银行流水（建行/中行银企直联导出的 xlsx）</span>
@@ -27,7 +28,7 @@
       <el-table :data="accountRows" highlight-current-row @current-change="onSelectAccount">
         <el-table-column label="选择" width="64">
           <template #default="{ row }">
-            <el-radio :model-value="selectedAccount" :value="row.account" @change="onSelectAccount(row)">&nbsp;</el-radio>
+            <el-radio :model-value="selectedToken" :value="row.account_token" @change="onSelectAccount(row)">&nbsp;</el-radio>
           </template>
         </el-table-column>
         <el-table-column prop="tail" label="账户尾号" width="100" />
@@ -47,7 +48,7 @@
       <div class="row">
         <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD"
           start-placeholder="开始日期" end-placeholder="结束日期" :clearable="false" />
-        <el-button type="primary" :disabled="!selectedAccount || !selectedMapped" :loading="exporting"
+        <el-button type="primary" :disabled="!selectedToken || !selectedMapped" :loading="exporting"
           @click="downloadTemplate">③ 生成模板并下载</el-button>
       </div>
     </el-card>
@@ -57,6 +58,7 @@
 <script setup>
 import { computed, ref, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
+import HelpLink from '../../../components/HelpLink.vue'
 import { UploadFilled } from '@element-plus/icons-vue'
 import api from '../../../api'
 import { saveBlob } from '../../../utils/download.js'
@@ -67,28 +69,34 @@ const parsing = ref(false)
 const exporting = ref(false)
 const summary = ref(null)
 const previewFile = shallowRef(null)
-const selectedAccount = ref('')
+// 选择键是后端签发的 account_token（掩码在同尾号账号间会重复，不能当键）；
+// 完整账号从不下发前端，掩码仅用于展示。
+const selectedToken = ref('')
 const dateRange = ref([])
 // 预览请求序号：换文件/重新解析都会推进，旧响应回来时直接丢弃
 let previewSeq = 0
 
 const accountRows = computed(() => summary.value?.accounts || [])
 
+const selectedRow = computed(
+  () => accountRows.value.find((a) => a.account_token === selectedToken.value) || null
+)
+
+// 展示用掩码（提示/日志），不作为请求参数
+const selectedAccount = computed(() => selectedRow.value?.account || '')
+
 const unmappedCount = computed(
   () => (summary.value?.accounts || []).filter((a) => !a.ent).length
 )
 
-const selectedMapped = computed(() => {
-  const acc = (summary.value?.accounts || []).find((a) => a.account === selectedAccount.value)
-  return Boolean(acc?.ent)
-})
+const selectedMapped = computed(() => Boolean(selectedRow.value?.ent))
 
 function onFileChange(uploadFile) {
   previewSeq += 1
   file.value = uploadFile.raw || null
   previewFile.value = null
   summary.value = null
-  selectedAccount.value = ''
+  selectedToken.value = ''
   dateRange.value = []
 }
 
@@ -97,12 +105,12 @@ function resetPreview() {
   file.value = null
   previewFile.value = null
   summary.value = null
-  selectedAccount.value = ''
+  selectedToken.value = ''
   dateRange.value = []
 }
 
 function selectAccount(account) {
-  selectedAccount.value = account.account
+  selectedToken.value = account.account_token || ''
   dateRange.value = compactDateToRange(account.date_min, account.date_max)
 }
 
@@ -135,7 +143,7 @@ function onSelectAccount(row) {
 }
 
 async function downloadTemplate() {
-  const acc = (summary.value?.accounts || []).find((a) => a.account === selectedAccount.value)
+  const acc = selectedRow.value
   if (!acc) return
   if (!previewFile.value || previewFile.value !== file.value) {
     ElMessage.warning('文件已变更，请重新解析预览后再生成模板')
@@ -146,12 +154,13 @@ async function downloadTemplate() {
     const fd = new FormData()
     // 使用预览时的文件快照，避免解析后换文件导致「新文件 + 旧选择」
     fd.append('file', previewFile.value)
-    fd.append('account', selectedAccount.value)
+    // 只传令牌：掩码在同尾号账号间不唯一，后端按令牌在本批流水中反查
+    fd.append('account_token', selectedToken.value)
     fd.append('date_start', dateRange.value?.[0] || '')
     fd.append('date_end', dateRange.value?.[1] || '')
     // 模板生成要重读流水并复制官方骨架样式，放宽到 3 分钟
     const resp = await api.post('/finance/bankflow/template', fd, { responseType: 'blob', timeout: 180000 })
-    const tail = selectedAccount.value.slice(-4)
+    const tail = acc.tail || ''
     const label = acc.bank_label || '银行'
     const start = (dateRange.value?.[0] || '').replace(/-/g, '')
     const end = (dateRange.value?.[1] || '').replace(/-/g, '')
@@ -173,4 +182,3 @@ async function downloadTemplate() {
 .hint { color: var(--el-text-color-secondary); font-size: 13px; }
 .warn { color: var(--el-color-warning); }
 </style>
-

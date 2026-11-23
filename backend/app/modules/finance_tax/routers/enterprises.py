@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 from ....database import get_db
-from ..models import Enterprise
+from ..models import Enterprise, TaxReturn
 from pydantic import BaseModel, ConfigDict, field_validator
 from datetime import datetime
 
@@ -145,11 +145,25 @@ async def update_enterprise(
 
 @router.delete("/{enterprise_id}")
 async def delete_enterprise(enterprise_id: int, db: Session = Depends(get_db)):
-    """删除企业"""
+    """删除企业（存在已提交申报时中文 409，禁止级联抹掉申报留痕）。"""
     db_enterprise = db.query(Enterprise).filter(Enterprise.id == enterprise_id).first()
     if not db_enterprise:
         raise HTTPException(status_code=404, detail="企业不存在")
-    
+
+    submitted_count = (
+        db.query(TaxReturn)
+        .filter(TaxReturn.enterprise_id == enterprise_id, TaxReturn.status == "submitted")
+        .count()
+    )
+    if submitted_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"该企业存在 {submitted_count} 条已提交的申报记录，不能删除；"
+                "已提交申报需保留留痕，如需变更请先联系主管税务机关办理更正申报"
+            ),
+        )
+
     db.delete(db_enterprise)
     db.commit()
     return {"message": "删除成功"}

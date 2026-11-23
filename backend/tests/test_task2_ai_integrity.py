@@ -98,7 +98,11 @@ def test_user_turn_survives_nonstream_reply_failure(client, monkeypatch):
     _stub_agent(monkeypatch, _ReplyAgent(RuntimeError("synthetic reply failure")))
     with pytest.raises(RuntimeError, match="synthetic reply"):
         asyncio.run(orchestrator.chat("task2-reply-fail", "回复失败也要保留提问"))
-    assert _messages("task2-reply-fail") == [("user", "回复失败也要保留提问")]
+    # 与流式一致：用户消息保留，并补一条 assistant 错误行保持历史成对（R11-078）
+    assert _messages("task2-reply-fail") == [
+        ("user", "回复失败也要保留提问"),
+        ("assistant", "抱歉，本次回复生成失败：RuntimeError"),
+    ]
 
 
 def test_user_turn_is_saved_before_routing_model(client, monkeypatch):

@@ -32,6 +32,7 @@ async def _read_upload(file: UploadFile) -> bytes:
              summary="上传输入文件建运行（银行辅助明细账+模板等，或一个 ZIP）")
 async def create_run(
     actual_month: int = Form(..., ge=1, le=12),
+    actual_year: int | None = Form(default=None, ge=2000, le=2100),
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ):
@@ -48,8 +49,13 @@ async def create_run(
                     f"上传批次总大小超过 {service.MAX_BATCH_BYTES // 1024 // 1024}MB 上限，请拆分后上传"
                 )
             uploads.append((f.filename or "file.xlsx", content))
-        # 归集/落盘是同步重活：丢线程池执行，避免阻塞事件循环、拖垮并发请求
-        return await run_in_threadpool(service.create_run, db, uploads, actual_month)
+        # 归集/落盘是同步重活：丢线程池执行，避免阻塞事件循环、拖垮并发请求；
+        # 未指定年份（HTTP 解析为 None，直调处理器时仍是 Form 标记）不追加实参，
+        # 兼容既有 3 参 service 替身/调用方
+        year = actual_year if isinstance(actual_year, int) else None
+        if year is None:
+            return await run_in_threadpool(service.create_run, db, uploads, actual_month)
+        return await run_in_threadpool(service.create_run, db, uploads, actual_month, year)
     except service.EngineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:

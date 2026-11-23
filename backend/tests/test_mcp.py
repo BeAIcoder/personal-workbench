@@ -210,11 +210,11 @@ def test_mcp_child_env_is_minimal_and_explicit_env_wins(monkeypatch):
     monkeypatch.setattr(mcp.subprocess, "Popen", fake_popen)
     monkeypatch.setenv("HOST_SECRET", "must-not-leak")
     monkeypatch.setenv("SystemRoot", "C:/Windows")
-    monkeypatch.setenv("PATH", "C:/host/bin")
-    monkeypatch.setenv("NODE_PATH", "C:/node/modules")
+    monkeypatch.setenv("PATH", "C:/path/to/bin")
+    monkeypatch.setenv("NODE_PATH", "C:/path/to/node")
     monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
     server = mcp.McpStdioServer(
-        "env-test", "python", env={"EXPLICIT_ENV": "yes", "PATH": "C:/explicit/bin"}
+        "env-test", "python", env={"EXPLICIT_ENV": "yes", "PATH": "C:/path/to/explicit"}
     )
     monkeypatch.setattr(server, "_request", lambda *args, **kwargs: {"tools": []})
     monkeypatch.setattr(server, "_notify", lambda *args, **kwargs: None)
@@ -223,9 +223,9 @@ def test_mcp_child_env_is_minimal_and_explicit_env_wins(monkeypatch):
     leaked_names = {"HOST_SECRET"}.intersection(child_env)
     assert not leaked_names
     assert child_env["EXPLICIT_ENV"] == "yes"
-    assert child_env["PATH"] == "C:/explicit/bin"
+    assert child_env["PATH"] == "C:/path/to/explicit"
     assert child_env["SystemRoot"] == "C:/Windows"
-    assert child_env["NODE_PATH"] == "C:/node/modules"
+    assert child_env["NODE_PATH"] == "C:/path/to/node"
     assert child_env["PYTHONIOENCODING"] == "utf-8"
 
 

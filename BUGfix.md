@@ -1,7 +1,7 @@
 # BUGfix.md — 全模块 / 全功能缺陷诊断台账
 
 > 生成时间：2026-10-30
-> 诊断对象：`D:\AssetLib\01-财税自动化\personal-workbench`（git master，工作区含未提交改动）
+> 诊断对象：`示例主体13\01-财税自动化\personal-workbench`（git master，工作区含未提交改动）
 > 覆盖范围：`backend/app` 161 个 Python 文件（33,455 行）、`frontend/src` 96 个 Vue/JS 文件（13,927 行）、129 个测试文件、`dev/` 工具链、6 个 bat/vbs 脚本、打包发布管线
 > 诊断方式：8 个只读审计域并行精读 + 关键结论人工复核（代码原文 + 只读命令 + 聚焦测试）；未启动指向真实 `backend/data` 的服务，未联网，未修改任何业务代码
 
@@ -139,7 +139,7 @@
 
 ## 20. 真实申报数据对拍（2026-10-30）
 
-> 数据来自 `D:\2022.5.24起财务工作存档\BaiduSyncdisk\11.税务申报附件`，**只读**；仓库测试只保留数字与口径，不含公司名、税号、人名。
+> 数据来自本机只读归档目录（`<本地归档>/11.税务申报附件`），**只读**；仓库测试只保留数字与口径，不含公司名、税号、人名。
 
 ### 20.1 印花税：2026Q3《财产和行为税纳税申报表》
 
@@ -287,7 +287,7 @@
 | AGT-13 | `memory.py:56-65` + `import_markdown:234-253` | 去重每条都全表扫 `Memory.content`；导入逐条 `add_memory` | 200k 字导入（上千条）呈 O(n²)，秒级到分钟级卡顿 | 一次载入候选集内存去重 + 批量 insert |
 | AGT-14 | `rag.py:161-170` | 每次查询对全部块重新分词（只缓存 df/chunks，不缓存 tf） | 笔记多时每次 `search_knowledge` 都 O(全部字符)，Agent 每轮可能多次调用 | 建索引时缓存每块 tf |
 | AGT-15 | `expert_packs.py:317` | 专家包导入默认 `enabled=True`，与「新技能包默认停用」相反 | WorkBuddy 导入的 SOUL/IDENTITY 草稿未经审阅即进入路由名册 | 新建行 `enabled=False`，由用户显式启用 |
-| AGT-16 | `workbuddy_sync.py:24`、`skill_market.py:25` | 源码硬编码本机绝对路径（`C:/Users/Administrator/...`、`D:/AIApps/...`） | 违反项目「环境相关默认值走 backend/.env」约定；脱敏分发可能带出用户名/目录结构；换机默认指向不存在目录 | 移入 `config.py` settings，`.env.example` 同步 |
+| AGT-16 | `workbuddy_sync.py:24`、`skill_market.py:25` | 源码硬编码本机绝对路径（`C:/Users/<用户名>/...`、`示例主体19/...`） | 违反项目「环境相关默认值走 backend/.env」约定；脱敏分发可能带出用户名/目录结构；换机默认指向不存在目录 | 移入 `config.py` settings，`.env.example` 同步 |
 | AGT-17 | `config_store.py:756-758` | 供应商 `protocol`/`base_url` 保存侧不校验（预设有校验） | `protocol="Anthropic"` 落库后走 OpenAI SDK 静默错误；base_url 可存 `http://user:pass@host` 并回显前端 | 复用 `_normalize_preset` 白名单与 `validate_base_url` |
 | AGT-18 | `skill_market.py:44`、`team.py:223,434`、`workbuddy_sync.py:179-180` | 死代码：`_safe_dir_join` 无调用、`ROUTE_KEYWORDS` 仅导出、`route_by_keyword` 无调用、`memory_mod` 未使用 | 安全边界函数存在却未生效，易误以为已覆盖 | 删除或在安装路径真正使用 |
 | AGT-19 | `skill_market.py:11` vs `:57-58` | 文档称「单文件 4MB 上限」，实际只校验 SKILL.md/SKILL.cn.md，安装是整目录 copytree | 包内其它大文件不受限 | 改文档或安装前遍历统计 |
@@ -825,7 +825,7 @@
 
 | 编号 | 位置 | 问题 | 影响 | 建议 |
 |---|---|---|---|---|
-| TL-02 | `dev/package_release.py:253-258`、`.gitattributes:2-10`、`开机自启动.vbs:14-15` | 扫描器严格 UTF-8 解码，失败即当二进制跳过；`.gitattributes` 不覆盖 `.bat/.vbs` | 实测 ZIP 内 `开机自启动.vbs` 为 GBK，含 `D:\AssetLib\...` 本机路径却完全不参与扫描；6 个中文 bat/vbs 是扫描盲区 | 非 UTF-8 改按字节/GBK/UTF-16 逐编码扫描；`.gitattributes` 加 `*.bat/*.vbs`；bat/vbs 中盘符路径列为结构红线 |
+| TL-02 | `dev/package_release.py:253-258`、`.gitattributes:2-10`、`开机自启动.vbs:14-15` | 扫描器严格 UTF-8 解码，失败即当二进制跳过；`.gitattributes` 不覆盖 `.bat/.vbs` | 实测 ZIP 内 `开机自启动.vbs` 为 GBK，含 `示例主体13\...` 本机路径却完全不参与扫描；6 个中文 bat/vbs 是扫描盲区 | 非 UTF-8 改按字节/GBK/UTF-16 逐编码扫描；`.gitattributes` 加 `*.bat/*.vbs`；bat/vbs 中盘符路径列为结构红线 |
 | TL-03 | `backend/scripts/backup_db.py:16-18,45-46`、`使用说明.md:754` | 备份只含 `workbench.db`；`finance` 6.6MB、`uploads` 261KB、`expert-packs` 244KB、`skills` 572KB、`workbuddy_import.json`、`sanitize-map.local.json` 均不在备份内 | 磁盘故障或「只带 DB」迁移后，导入批次、聊天附件、自建专家包、已安装技能全部丢失且页面引用断链 | 备份打包 `data/`（DB 用 backup API + 四个目录 + 映射表）；补 restore 脚本与冒烟；或文档明确「仅数据库」 |
 | TL-04 | `backend/scripts/sync_zcode_models.py:40-41,142` | 明文写入 API Key（未 `seal`），探测时把原值直接透传 | 覆盖 UI 已加密值；DB 内变明文；若原本是 `dpapi:` 密文则把密文当 Bearer 发送 | 改 `seal()/unseal()`，或删除脚本改调 `config_store` 公开写入函数 |
 
@@ -1020,3 +1020,117 @@ cd frontend && npm test && npm run build
 - 调试中心/模板：DBG-01 … DBG-04、TPL-01
 - 前端：FE-01 … FE-22
 - 工具链：TL-01 … TL-33
+
+---
+
+## 21. 2026-11-11 全量审计台账（增量）
+
+> 本章为**增量台账**，由 Task 0 治理蜂群建立。它不回溯修改 §0.3 的 2026-10-30 统计（215 项）与 §17 的路线图，也不改写任何历史 dated 报告；历史结论按快照语义保留，状态变化只在本章与 `2026-11-11_检查结果.md` 登记。
+>
+> **本章没有运行测试、没有修复代码。** 所有“已确认”仅表示代码原文/行号成立或已由只读命令复核；需真实运行、真实数据、官方口径或真人参与的项目，均标为“待复现”“外部阻断”或“需决策”。
+
+### 21.1 编号与统计
+
+- 本轮编号：`R11-001` … `R11-112`（Round 2026-11-11）。
+- 不复用既有编号空间：本章的 CORE/AGT/TAX/FIL/BIP/INV/POS/CF/BRD/FE/TL 与 `2026-11-03_检查结果.md` 的 `L-001…L-177` 均只作“来源编号”引用。
+- 逐项明细（含文件行号、owner、关闭证据）在 `2026-11-11_检查结果.md` §7–§11；本章只做索引与差异说明。
+
+| 严重度 | 条数 | 已确认 | 待复现 | 外部阻断 | 需决策 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| P0 | 3 | 3 | 0 | 0 | 0 |
+| P1 | 11 | 10 | 1 | 0 | 0 |
+| P2 | 59 | 53 | 1 | 4 | 1 |
+| P3 | 39 | 37 | 2 | 0 | 0 |
+| **合计** | **112** | **103** | **4** | **4** | **1** |
+
+### 21.2 领域分布
+
+| 领域 | 条数（P0/P1/P2/P3） | 主要 Owner |
+| --- | --- | --- |
+| 敏感信息与脱敏门禁 | 5（3/1/0/1） | T1 |
+| 测试、CI、版本与发布 | 11（0/1/8/2） | T7 |
+| AI、知识库、MCP、定时任务 | 12（0/0/4/8） | T2 |
+| 税务、财报与申报 | 11（0/3/5/1） | T3 |
+| POS、银行、BIP、发票、数据池 | 14（0/2/9/2） | T4（删除/改名端点与 T6 协同） |
+| 经营、调度、看板、文件边界 | 14（0/0/13/1） | T5 |
+| 前端交互、导航、竞态 | 10（0/2/6/2） | T6 |
+| 开发文档与 API 契约 | 18（0/0/8/9） | T8 |
+| 用户手册与页内帮助 | 12（0/1/4/5） | T9 |
+| 外部阻断/决策 | 5（0/0/2/0，另计 3 项跨领域） | 用户 + T10 |
+
+> 分布表按“主要归属”计数，与 §21.1 的严重度计数是同一批 112 行的不同切面，故合计不等于 112 以外的任何数字。
+
+### 21.3 与既有编号的冲突与更正
+
+| 既有编号 | 原状态 | 更正 |
+| --- | --- | --- |
+| L-151（P1） | “已修待验（首跑外阻）”/“CI 从未执行” | **过期**。CI 已运行 12 次，最近 `0d0a87c` 为 failure（后端步骤约 42 分钟退出码 1，前端/构建 skipped）。拆为 R11-005（红灯根因，待复现）、R11-052（看板测试依赖真实目录名，CI 必红）、R11-058（缺 JUnit/artifact/超时）。 |
+| L-156（P2） | “仅历史提交含真实路径，当前 HEAD 已占位” | **过期**。当前 `origin/master` 树仍含个人存档盘绝对路径与 3 个真实项目/客户名，并随 3 个文件进入远端；升级为 P0 的 R11-003。 |
+| L-028（P3） | “已知限制，自动重连未做” | 提级 P2 的 R11-018，纳入 T2 实施。 |
+| CORE-26（P3） | “未修” | 提级 P2 的 R11-016：`mode` 非法值 fail-open 到可写模式。 |
+| TAX-29（P3） | “未修” | 提级 P2 的 R11-021：期间静默回退与 13 月 `quarter=5`。 |
+| AGENTS.md 的 HEAD/clean/push/CI 描述 | “`3cacb0b`、clean、未 push、CI 从未首跑” | 与事实不符，登记 R11-065，由 T8 统一改写。 |
+
+### 21.4 关闭规则（与 `2026-11-11_检查结果.md` §12 一致）
+
+1. 每项关闭必须附：命令、退出码、通过数、日志路径；仅“代码已改”不算关闭。
+2. 待复现项必须先取证再定性：成立则修，不成立则移入 `2026-11-11_检查结果.md` §11“误报与已澄清”并写明证据。
+3. 外部阻断项只能降级为“文档说明/已知限制”，不得声称解决。
+4. P0 在远端清理与推送复核完成前保持未关闭，即使工作区已无字面值。
+5. 不得为通过测试而 skip、删除断言或降低阈值。
+
+### 21.5 已知的“不要重复审计”结论
+
+`2026-11-11_检查结果.md` §11 已登记 19 条经复核不成立或属设计取舍的项（备份/恢复加固、上传统一限流、下载防注入、招商 CAS、密钥静态加密、模型同步不假成功、只读工具门控、会话摘要不阻塞、前端注册去重与分包约束、请求守卫、文档路径与计数等）。后续任务若未发现代码变化，不应重复开单；若代码变化导致前提失效，需在该节更新理由。
+
+---
+
+## 22. 2026-11-23 知识检索 / 解析 / 接地 / 记忆来源台账（增量）
+
+> 本章为**增量台账**（Round 2026-11-23，编号 `R23-001`…），格式沿用 §21：只登记本轮发现并已在工作区修复的缺陷，不改写 §0.3/§17 与任何历史章；关闭规则沿用 §21.4。本条目只描述现象/根因/修复/测试，不变量登记在 `docs/INVARIANTS.md`（INV-023~INV-026）。
+>
+> 说明：知识库问答的「无依据不得肯定/不得给无来源步骤/口径冲突不擅选」与长期记忆「来源引用」属于**能力/契约缺口**（原先未实现），也按缺陷登记格式收口，便于追踪与回归。
+
+### 22.1 逐项明细
+
+**R23-001（P2，知识检索）RRF 多块堆分**
+- **现象**：同一制度文档多个块命中关键词时，每块都累加 `1/(60+rank)`，长文档（块多）在混合排序中压过只有单一最佳块命中的更相关文档。
+- **根因**：`knowledge/retrieval.py` 融合按 hit 逐条累加，未做「每通道每文档取最佳 rank」。
+- **修复**：新增 `_channel_best()`——单通道内每文档只保留首个（最佳）rank 进入 RRF 累加。
+- **测试**：`test_knowledge_retrieval_ranking.py::test_rrf_does_not_accumulate_multi_chunks_of_same_doc`、`::test_rrf_uses_best_keyword_rank_across_docs`。
+
+**R23-002（P2，知识检索）展示证据块固定关键词优先**
+- **现象**：展示给用户的命中块无条件取关键词命中块；向量 rank 1 的最佳证据会被关键词 rank 更差的块覆盖，引用与答案依据不符。
+- **根因**：展示块选择只有 `keyword_rank` 一个维度，没有比较两通道 rank。
+- **修复**：`_pick_display()` 在关键词/向量各自最佳候选中按通道 rank 择优，并列时关键词优先。
+- **测试**：`test_knowledge_retrieval_ranking.py::test_display_chunk_prefers_better_vector_rank_over_worse_keyword_chunk`、`::test_display_chunk_keeps_keyword_when_keyword_rank_not_worse`、`::test_display_chunk_keeps_keyword_chunk_when_doc_vector_only_worse`。
+
+**R23-003（P2，解析）PPT 组合形状与表格丢失**
+- **现象**：PPTX 里组合（group）形状内的文本与表格单元格没有进入索引正文，检索命不中。
+- **根因**：`extract.py::_extract_pptx` 只遍历顶层 shape，不递归展开组合形状。
+- **修复**：新增 `_walk_pptx_shapes()` 递归展开 group shapes（排除标题占位符），组合形状与表格单元格文本随幻灯片页码入库。
+- **测试**：`test_knowledge_extraction_pages.py::test_pptx_group_shapes_and_table_cells_extracted_with_slide_no`。
+
+**R23-004（P2，解析）章节跨页正文截断、页码错**
+- **现象**：同一章节正文跨页时，正文被截到单页，页码映射与原文不符，引用页码不可核对。
+- **根因**：`chunk.py::build_chunks` 不在页边界 flush，跨页正文被并入单页块。
+- **修复**：正文遇到页码变化先 flush 再续接（跨页章节保留两页各自映射），页码取本组实际出现的页码。
+- **测试**：`test_knowledge_extraction_pages.py::test_cross_page_section_keeps_page_mapping`、`::test_pdf_section_spanning_pages_keeps_both_pages`。
+
+**R23-005（P3，解析）句式编号正文被当标题吞**
+- **现象**：「1. xxx 这句是正文要求。」等含句号的编号行被标题判定吞掉，正文缺句。
+- **根因**：标题形态正则（三级编号）不排除句子特征。
+- **修复**：`looks_like_sentence()`（含句号/叹号/问号）命中时不按标题处理；切块遇此类 heading 块按正文续接。
+- **测试**：`test_knowledge_extraction_pages.py::test_docx_numbered_body_sentence_stays_text`、`::test_chunk_treats_sentence_like_heading_block_as_body`。
+
+**R23-006（P1，AI 接地）无依据也肯定 / 给无来源步骤 / 冲突擅选口径**
+- **现象**：问「能不能/怎么操作」类问题时，检索无命中仍直接答「可以」并编造操作步骤；补充常识时与制度结论混在一起；不同文档口径不一致时自行替用户选定（偏向字段更全的那个）。
+- **根因**：系统提示词没有知识问答接地边界，各专家拼装路径不一致（数据库自定义专家可能缺规则）。
+- **修复**：`orchestrator_prompt.py` 新增 `KNOWLEDGE_GROUNDING_RULES`（8/9/10 三条：无明确支持不肯定/不给无来源步骤并说明「知识库未收录」；常识标注「知识库之外的通用参考」且不得推翻结论；冲突并列披露原文与出处、不擅选），`compose_system_prompt()` 成为系统提示词唯一组装入口（orchestrator `_build_agent` 经此拼装）。
+- **测试**：`test_knowledge_grounding_prompt.py` 12 例（含 `test_grounding_rules_apply_to_all_modes`、`test_compose_entry_matches_built_agent`、冲突并列与常识分离用例）。
+
+**R23-007（P1，长期记忆）召回大小写敏感 / 泛词噪声 / 来源引用缺失**
+- **现象**：英文记忆大小写不命中；查询含「的/关于」等泛词时召回结果被噪声支配；记忆条目无法关联知识库文档，来源不可溯源。
+- **根因**：召回打分按原文匹配、未做 token 噪声阈值；`memories` 表没有来源引用列。
+- **修复**：token 与记忆内容统一 `casefold`；泛词（单字符/通用词）按有限噪声阈值过滤，短查询单 token 不被静默破坏；`memories` 新增可选轻量列 `source_doc_id`（index），create/update 接受该字段（非法/不存在 400、显式 `null` 清空、未触碰保持原引用），列表/召回返回 `source_doc_title`（一次批量查询防 N+1），文档删除把引用置空（记忆本体保留），会话注入在命中行尾展示「（来源：《…》）」，前端可选来源文档。
+- **测试**：`test_memory_source_recall.py` 8 例（casefold/噪声/单 token、CRUD 输出、非法 id 400、其他字段更新保引用、删文档置空、注入来源标题）+ `test_knowledge_grounding_prompt.py::test_memory_hit_with_source_doc_title_shows_source` 等 4 例。

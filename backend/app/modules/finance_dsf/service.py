@@ -33,7 +33,9 @@ def calc_dsf(year: str, total_employees: int, total_salary: float,
         年平均工资超过当地社平 2 倍的，按 2 倍计征；不传则不计上限并给出 warning。
     """
     from ..finance_tax.config.policy_validity import policy_status
+    from ..finance_tax.config.tax_scope import require_tax_scope
 
+    require_tax_scope("disability_fund")  # 准入门禁首行
     year = str(year)
     total_employees = int(total_employees or 0)
     disabled_employees = int(disabled_employees or 0)

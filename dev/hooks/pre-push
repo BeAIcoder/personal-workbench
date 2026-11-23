@@ -1,0 +1,40 @@
+#!/bin/sh
+# PII pre-push 门禁：遍历待推送范围内的每个提交（不只 tip），逐个扫描完整树。
+# 无 stdin（手动运行）时回退到 --archive HEAD。
+# 安装：复制到 .git/hooks/pre-push（或运行 dev/install_hooks.bat）。
+zero=0000000000000000000000000000000000000000
+status=0
+read_any=0
+terms=""
+if [ -f dev/pii-terms.local.txt ]; then
+  terms="--terms dev/pii-terms.local.txt"
+else
+  echo "warning: dev/pii-terms.local.txt not found; generic rules only" >&2
+fi
+
+while read local_ref local_sha remote_ref remote_sha; do
+  read_any=1
+  [ -z "$local_sha" ] && continue
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ] || [ -z "$remote_sha" ]; then
+    commits=$(git rev-list "$local_sha" --not --remotes) || {
+      echo "error: git rev-list failed for new branch $local_ref" >&2
+      status=1
+      continue
+    }
+  else
+    commits=$(git rev-list "$remote_sha..$local_sha") || {
+      echo "error: git rev-list failed for $local_ref" >&2
+      status=1
+      continue
+    }
+  fi
+  for commit in $commits; do
+    python dev/check_pii.py --archive "$commit" $terms || status=1
+  done
+done
+
+if [ "$read_any" -eq 0 ]; then
+  python dev/check_pii.py --archive HEAD $terms || status=1
+fi
+exit $status

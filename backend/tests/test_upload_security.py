@@ -37,6 +37,7 @@ from app.modules.finance_cashflow import service as cashflow_svc
 from app.modules.finance_expense import router as expense_router
 from app.modules.finance_expense import service as expense_svc
 from app.modules.finance_invoice import router as invoice_router
+from app.modules.finance_invoice import invoice_parse
 from app.modules.finance_invoice import service as invoice_svc
 from app.modules.finance_ledger_bip import router as bip_router
 from app.modules.finance_ledger_bip import service as bip_svc
@@ -270,13 +271,13 @@ def cash_dir(monkeypatch, tmp_path):
 def mock_engine(monkeypatch):
     """打桩发票引擎：_require_engine 放行；按文件名返回罐头解析结果。"""
     canned: dict[str, dict] = {}
-    monkeypatch.setattr(invoice_svc, "_require_engine", lambda: None)
+    monkeypatch.setattr(invoice_parse, "_require_engine", lambda: None)
 
     def fake_parse(pdf_path):
         fields = canned.get(Path(pdf_path).name)
         return invoice_svc.ParsedInvoice(**fields) if fields is not None else None
 
-    monkeypatch.setattr(invoice_svc, "_parse_pdf_with_engine", fake_parse)
+    monkeypatch.setattr(invoice_parse, "_parse_pdf_with_engine", fake_parse)
     return canned
 
 

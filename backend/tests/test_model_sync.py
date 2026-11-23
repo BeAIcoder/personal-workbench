@@ -30,7 +30,7 @@ from app.agents.secrets_box import seal
 from app.database import SessionLocal
 from app.models import AgentSettings, ModelProvider, ProviderModel
 
-_SYNTH_KEY = "sk-synthetic-sync-key-1234"
+_SYNTH_KEY = "***REDACTED***"
 _SYNTH_AK = "AKTESTSYNTH001"
 _SYNTH_SK = "SK-SYNTHETIC-ONLY-9876"
 
@@ -443,6 +443,45 @@ def test_parse_opencode_models_marks_unknown_api_family():
     assert models[0].output_modalities == ["text"] and models[4].output_modalities == ["image"]
     assert models[5].status == "deprecated"
     assert all(m.context_size is None and m.supports_thinking == -1 for m in models)
+
+
+def test_parse_opencode_models_real_payload_shape():
+    """官方真实 payload：api 字典入口键 → api_family；limit/modalities/capabilities 逐项映射。
+
+    2026-11 的 Go 列表把入口挂在 api 下（chat-completions），上下文/输出在 limit，
+    模态用 MIME 类型（image/jpeg），思考档位在 capabilities.reasoning.effort。
+    """
+    payload = {
+        "data": [
+            {
+                "id": "deepseek-v4.1-flash",
+                "name": "DeepSeek V4.1 Flash 1017",
+                "api": {"chat-completions": {"base_url": "https://opencode.ai/inference/go/openai/v1"}},
+                "limit": {"context": 1000000, "output": 384000},
+                "modalities": {"input": ["text", "image/jpeg", "image/png"], "output": ["text"]},
+                "capabilities": {
+                    "tools": {"supported": True},
+                    "reasoning": {"supported": True, "effort": ["low", "high", "max"]},
+                },
+            },
+            {
+                "id": "claude-haiku-5-5",
+                "api": {"messages": {"base_url": "https://opencode.ai/inference/go/anthropic/v1"}},
+                "limit": {"context": 200000, "output": 8192},
+            },
+        ]
+    }
+    models = model_sync.parse_opencode_models(payload)
+    ds = models[0]
+    assert ds.api_family == "chat_completions"
+    assert ds.context_size == 1000000 and ds.max_tokens == 384000
+    assert ds.input_modalities == ["text", "image"] and ds.supports_vision is True
+    assert ds.supports_thinking == 1 and ds.thinking_levels == ["low", "high", "max"]
+    assert ds.supports_tools == 1
+    claude = models[1]
+    assert claude.api_family == "messages"
+    assert claude.context_size == 200000 and claude.max_tokens == 8192
+    assert claude.supports_thinking == -1 and claude.supports_vision is None
 
 
 # ---------- 安全与失败：非法 URL 零请求；HTTP 失败不变成空列表 ----------
@@ -1140,6 +1179,45 @@ def test_sync_remote_failure_is_honest(client, monkeypatch):
     assert rows["deepseek-flash"].supports_vision is True
     meta = model_catalog.capability_meta_of(rows["deepseek-flash"])
     assert meta["sources"]["context_size"] == "official_catalog"
+
+
+def test_sync_gzip_encoded_list_is_decoded_once(client, monkeypatch):
+    """gzip 压缩的列表响应：iter_bytes 已解压，重建响应不得保留 content-encoding。
+
+    回归：OpenCode Go 列表返回 gzip；旧实现重建 Response 时沿用原头，
+    resp.json() 二次解压抛 DecodingError，在线同步被误判为失败并退回目录。
+    """
+    import gzip
+
+    pid = _mk_provider(models_url="https://api.deepseek.com/models")
+    payload = {
+        "data": [
+            {
+                "id": "deepseek-v4-flash",
+                "name": "DeepSeek V4 Flash",
+                "context_window": 1048576,
+                "max_output_tokens": 131072,
+                "input_modalities": ["text", "image"],
+            }
+        ]
+    }
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"content-encoding": "gzip", "content-type": "application/json"},
+            content=gzip.compress(json.dumps(payload).encode("utf-8")),
+        )
+
+    _mock_httpx(monkeypatch, handler)
+    with SessionLocal() as db:
+        result = model_sync.sync_provider_models(db, pid)
+    assert result["ok"] is True and result["online"] is True
+    assert result["source"] == "provider_api" and result["partial"] is False
+    rows = {r.model: r for r in _rows(pid)}
+    assert set(rows) == {"deepseek-v4-flash"}
+    assert rows["deepseek-v4-flash"].context_size == 1048576
+    assert rows["deepseek-v4-flash"].max_tokens == 131072
 
 
 def test_sync_without_official_list_uses_catalog_only(client, monkeypatch):

@@ -6,11 +6,12 @@
 - GM HTTP 500 的错误结果、旧指标清除与重试恢复；
 - Dashboard summary 200 而 GM 500 时，主数据仍渲染且仅提醒区降级。
 
-运行：D:/DevEnv/runtime/python/python.exe dev/e2e/probes/business-gm.py
+运行：python dev/e2e/probes/business-gm.py
 """
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -29,7 +30,30 @@ TMP_DIR = RESULTS / "tmp"
 SHOTS = RESULTS / "shots"
 LOG = RESULTS / "server.log"
 RESULT_JSON = RESULTS / "result.json"
-PORT = 8268
+
+
+def pick_port() -> int:
+    """E2E_PORT 优先；未设置、非法或被占用时回退系统空闲端口。"""
+    requested = (os.environ.get("E2E_PORT") or "").strip()
+    if requested:
+        try:
+            port = int(requested)
+        except ValueError:
+            port = 0
+        if port:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                try:
+                    probe.bind(("127.0.0.1", port))
+                except (OSError, OverflowError):
+                    pass
+                else:
+                    return port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+PORT = pick_port()
 BASE = f"http://127.0.0.1:{PORT}"
 STARTED_AT = datetime.now().isoformat(timespec="seconds")
 
@@ -51,7 +75,7 @@ env.update({
     "LLM_API_KEY": "",
     "LLM_MODEL": "",
     "GM_ISOLATED_DATA": str(DATA_ROOT),
-    "GM_PORT": str(PORT),
+    "E2E_PORT": str(PORT),
     "TEMP": str(TMP_DIR),
     "TMP": str(TMP_DIR),
 })
@@ -74,16 +98,13 @@ expert_packs.DATA_DIR = root
 skill_store.DATA_DIR = root
 import uvicorn
 uvicorn.run(
-    "app.main:app", host="127.0.0.1", port=int(os.environ["GM_PORT"]),
+    "app.main:app", host="127.0.0.1", port=int(os.environ["E2E_PORT"]),
     log_level="info",
 )
 """
 
-log_fh = open(LOG, "w", encoding="utf-8")
-server = subprocess.Popen(
-    [str(BACKEND / "venv" / "Scripts" / "python.exe"), "-c", RUNNER],
-    cwd=str(BACKEND), env=env, stdout=log_fh, stderr=log_fh,
-)
+log_fh = None
+server = None
 results = []
 requests = []
 page_errors = []
@@ -208,7 +229,33 @@ def probe_dashboard_failure_isolation():
     return "Dashboard summary=200、GM=500；主卡片任务数=1，只有经营提醒区降级"
 
 
+def write_result(error=None):
+    passed = sum(item["passed"] for item in results)
+    raw = {
+        "area": "business-gm-fix1",
+        "base": BASE,
+        "started_at": STARTED_AT,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+        "ok": error is None and passed == len(results) and not page_errors,
+        "tests": results,
+        "requests": requests,
+        "page_errors": page_errors,
+        "console_errors": console_errors,
+        "note": "console_errors 可含两次有意的合成 HTTP 500 资源日志；page_errors 必须为空。",
+    }
+    if error:
+        raw["error"] = error
+    RESULT_JSON.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    return raw
+
+
+exit_code = 0
 try:
+    log_fh = open(LOG, "w", encoding="utf-8")
+    server = subprocess.Popen(
+        [str(BACKEND / "venv" / "Scripts" / "python.exe"), "-c", RUNNER],
+        cwd=str(BACKEND), env=env, stdout=log_fh, stderr=log_fh,
+    )
     if not wait_ready():
         raise RuntimeError(f"隔离服务未就绪，日志：{LOG}")
     from playwright.sync_api import sync_playwright
@@ -224,28 +271,26 @@ try:
         record("GM-E2E-003", "Dashboard 在 GM 失败时独立成功", probe_dashboard_failure_isolation)
         browser.close()
 
-    raw = {
-        "area": "business-gm-fix1",
-        "base": BASE,
-        "started_at": STARTED_AT,
-        "finished_at": datetime.now().isoformat(timespec="seconds"),
-        "tests": results,
-        "requests": requests,
-        "page_errors": page_errors,
-        "console_errors": console_errors,
-        "note": "console_errors 可含两次有意的合成 HTTP 500 资源日志；page_errors 必须为空。",
-    }
-    RESULT_JSON.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    raw = write_result()
     passed = sum(item["passed"] for item in results)
     print(f"total={len(results)} passed={passed} failed={len(results) - passed}")
     print(f"page_errors={len(page_errors)}")
     print(f"result -> {RESULT_JSON}")
-    if passed != len(results) or page_errors:
-        sys.exit(1)
+    if not raw["ok"]:
+        exit_code = 1
+except BaseException as exc:
+    error = f"{type(exc).__name__}: {exc}"
+    write_result(error)
+    print(f"[ERROR] {error}", flush=True)
+    exit_code = 1
 finally:
-    server.terminate()
-    try:
-        server.wait(timeout=10)
-    except Exception:
-        server.kill()
-    log_fh.close()
+    if server is not None:
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except Exception:
+            server.kill()
+    if log_fh is not None:
+        log_fh.close()
+
+sys.exit(exit_code)

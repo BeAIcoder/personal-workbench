@@ -7,6 +7,7 @@
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -27,7 +28,30 @@ TMP = RESULTS / "tmp"
 SHOTS = RESULTS / "shots"
 LOG = RESULTS / "server.log"
 RESULT = RESULTS / "result.json"
-PORT = 8270
+
+
+def pick_port() -> int:
+    """E2E_PORT 优先；未设置、非法或被占用时回退系统空闲端口。"""
+    requested = (os.environ.get("E2E_PORT") or "").strip()
+    if requested:
+        try:
+            port = int(requested)
+        except ValueError:
+            port = 0
+        if port:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                try:
+                    probe.bind(("127.0.0.1", port))
+                except (OSError, OverflowError):
+                    pass
+                else:
+                    return port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+PORT = pick_port()
 BASE = f"http://127.0.0.1:{PORT}"
 TODAY = date.today()
 PERIOD = TODAY.strftime("%Y-%m")
@@ -70,11 +94,8 @@ import uvicorn
 uvicorn.run("app.main:app", host="127.0.0.1", port=int(os.environ["E2E_PORT"]), log_level="info")
 """
 
-log_fh = open(LOG, "w", encoding="utf-8")
-server = subprocess.Popen(
-    [str(BACKEND / "venv" / "Scripts" / "python.exe"), "-c", RUNNER],
-    cwd=str(BACKEND), env=env, stdout=log_fh, stderr=log_fh,
-)
+log_fh = None
+server = None
 checks = []
 page = None
 page_errors = []
@@ -249,7 +270,32 @@ def check_planning_and_operations_pages():
     return "企划显示 calculated ROI/等级，营运工单显示关联设备"
 
 
+def write_result(error=None):
+    passed = sum(item["passed"] for item in checks)
+    raw = {
+        "area": "business-closed-loop",
+        "base": BASE,
+        "period": PERIOD,
+        "started_at": STARTED,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+        "ok": error is None and passed == len(checks) and not page_errors,
+        "checks": checks,
+        "page_errors": page_errors,
+        "state": state,
+    }
+    if error:
+        raw["error"] = error
+    RESULT.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    return raw
+
+
+exit_code = 0
 try:
+    log_fh = open(LOG, "w", encoding="utf-8")
+    server = subprocess.Popen(
+        [str(BACKEND / "venv" / "Scripts" / "python.exe"), "-c", RUNNER],
+        cwd=str(BACKEND), env=env, stdout=log_fh, stderr=log_fh,
+    )
     if not wait_ready():
         raise RuntimeError(f"隔离服务未就绪：{LOG}")
     record("BIZ-E2E-001", "API 五模块闭环与 GM 聚合", seed_and_verify_api)
@@ -264,27 +310,26 @@ try:
         record("BIZ-E2E-004", "企划 ROI 与工单设备页面", check_planning_and_operations_pages)
         browser.close()
 
-    raw = {
-        "area": "business-closed-loop",
-        "base": BASE,
-        "period": PERIOD,
-        "started_at": STARTED,
-        "finished_at": datetime.now().isoformat(timespec="seconds"),
-        "checks": checks,
-        "page_errors": page_errors,
-        "state": state,
-    }
-    RESULT.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    raw = write_result()
     passed = sum(item["passed"] for item in checks)
     print(f"total={len(checks)} passed={passed} failed={len(checks) - passed}")
     print(f"page_errors={len(page_errors)}")
     print(f"result -> {RESULT}")
-    if passed != len(checks) or page_errors:
-        sys.exit(1)
+    if not raw["ok"]:
+        exit_code = 1
+except BaseException as exc:
+    error = f"{type(exc).__name__}: {exc}"
+    write_result(error)
+    print(f"[ERROR] {error}", flush=True)
+    exit_code = 1
 finally:
-    server.terminate()
-    try:
-        server.wait(timeout=10)
-    except Exception:
-        server.kill()
-    log_fh.close()
+    if server is not None:
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except Exception:
+            server.kill()
+    if log_fh is not None:
+        log_fh.close()
+
+sys.exit(exit_code)

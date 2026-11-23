@@ -59,7 +59,7 @@ function responseFor(raw) {
   return {
     data: {
       name: raw.name,
-      path: `D:/isolated-uploads/${raw.name}`,
+      path: `D:/path/to/isolated-uploads/${raw.name}`,
       kind: isImage ? 'image' : (isDocument ? 'document_text' : 'file'),
       size: raw.size,
       note: isDocument ? '已提取 100 字供分析' : '',

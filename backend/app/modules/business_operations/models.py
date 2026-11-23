@@ -2,7 +2,7 @@
 """business_operations 模块 ORM 模型（表名统一 mod_ 前缀）。"""
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, Float, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ...database import Base
@@ -12,6 +12,16 @@ class OpsContract(Base):
     """租赁合同台账。"""
 
     __tablename__ = "mod_ops_contract"
+    __table_args__ = (
+        # 同铺位最多一份 active 合同；已终止合同不占用，unit_id 为空（纯台账）不参与
+        Index(
+            "uq_ops_contract_unit_active",
+            "unit_id",
+            unique=True,
+            sqlite_where=text("status = 'active' AND unit_id IS NOT NULL"),
+            postgresql_where=text("status = 'active' AND unit_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     contract_no: Mapped[str] = mapped_column(String(50), unique=True, index=True)

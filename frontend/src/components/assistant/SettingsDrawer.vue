@@ -147,7 +147,7 @@
 
           <el-divider content-position="left">本地技能池（SKILL.md 格式，可直接复用 QwenPaw 技能商店）</el-divider>
           <el-form-item label="技能池目录">
-            <el-input v-model="globalsForm.skills_dir" placeholder="如 D:\skills\pool">
+            <el-input v-model="globalsForm.skills_dir" placeholder="如 D:/path/to/skills">
               <template #append>
                 <el-button :loading="discoveringSkills" @click="discoverSkillsCount">检测</el-button>
               </template>
@@ -169,7 +169,7 @@
 
           <el-divider content-position="left">QwenPaw 插件（工具型插件兼容层，实验性）</el-divider>
           <el-form-item label="插件目录">
-            <el-input v-model="globalsForm.plugins_dir" placeholder="如 D:\plugins">
+            <el-input v-model="globalsForm.plugins_dir" placeholder="如 D:/path/to/plugins">
               <template #append>
                 <el-button :loading="discoveringPlugins" @click="discoverPluginsCount">检测</el-button>
               </template>

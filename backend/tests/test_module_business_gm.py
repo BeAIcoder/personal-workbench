@@ -290,18 +290,128 @@ def test_ops_and_hr_tools_optional_period_preserve_no_argument_behavior(client):
         hr_summary_tool(month="2026-13")
 
 
+@pytest.fixture
+def gm_registry(monkeypatch):
+    """隔离 GM 域注册表：用例内注册的域不泄漏到其他用例（monkeypatch 自动还原）。"""
+    from app.modules.business_gm import service as gm_service
+
+    monkeypatch.setattr(gm_service, "_REGISTRY", dict(gm_service._REGISTRY))
+    monkeypatch.setattr(gm_service, "DOMAIN_LABELS", dict(gm_service.DOMAIN_LABELS))
+    return gm_service
+
+
+def test_domain_registry_lists_builtin_providers_in_order():
+    from app.modules.business_gm.service import DOMAIN_LABELS, registered_providers
+
+    providers = registered_providers()
+    assert [item.domain for item in providers] == [
+        "leasing", "operations", "planning", "legal", "hr", "facility",
+    ]
+    assert {item.domain: item.label for item in providers} == DOMAIN_LABELS
+    assert all(item.module.startswith("app.modules.business_") for item in providers)
+    assert all(item.module.endswith(".service") for item in providers)
+    optional = [item for item in providers if item.optional]
+    assert [item.domain for item in optional] == ["facility"]
+    assert optional[0].missing_reason
+
+
+def test_new_domain_needs_only_registration_not_main_flow_edit(client, gm_registry):
+    from app.business_metrics import METRIC_DICTIONARY
+    from app.modules.business_gm.service import DomainProvider, register_provider, build_summary
+
+    register_provider(DomainProvider(
+        domain="future_domain", label="未来域",
+        module="app.modules.business_legal.service",
+        builder=lambda service, db, period, as_of: ({"probe": 7, "period": period}, []),
+    ))
+
+    with SessionLocal() as db:
+        body = build_summary(db, period="2026-01", as_of=date(2026, 1, 1))
+    assert list(body["domains"]) == [
+        "leasing", "operations", "planning", "legal", "hr", "facility", "future_domain",
+    ]
+    assert body["domains"]["future_domain"] == {
+        "available": True,
+        "data": {"probe": 7, "period": "2026-01"},
+        "gap_reasons": [],
+    }
+    assert gm_registry.DOMAIN_LABELS["future_domain"] == "未来域"
+    assert {item["key"] for item in body["metrics"]} == set(METRIC_DICTIONARY) | NO_SOURCE_KEYS
+    assert body["reminders"] == []
+
+    response = client.get(f"{GM}/summary", params={"period": "2026-01"})
+    assert response.status_code == 200, response.text
+    assert "future_domain" in response.json()["domains"]
+
+
+def test_duplicate_domain_registration_requires_explicit_replace(gm_registry):
+    from app.modules.business_gm.service import DomainProvider, register_provider
+
+    duplicate = DomainProvider(
+        domain="legal", label="法务（合成替换）",
+        module="app.modules.business_legal.service",
+        builder=lambda service, db, period, as_of: ({"replaced": True}, []),
+    )
+    with pytest.raises(ValueError, match="已注册"):
+        register_provider(duplicate)
+    assert gm_registry.DOMAIN_LABELS["legal"] == "法务"
+    register_provider(duplicate, replace=True)
+    assert gm_registry.DOMAIN_LABELS["legal"] == "法务（合成替换）"
+
+
+def test_missing_module_degrades_only_for_optional_provider(client, gm_registry):
+    from app.modules.business_gm.service import DomainProvider, register_provider, build_summary
+
+    register_provider(DomainProvider(
+        domain="future_optional", label="合成可选",
+        module="app.modules.business_future_optional.service",
+        builder=lambda service, db, period, as_of: ({"never": True}, []),
+        optional=True, missing_reason="合成可选域尚未接入",
+    ))
+    register_provider(DomainProvider(
+        domain="future_required", label="合成必需",
+        module="app.modules.business_future_required.service",
+        builder=lambda service, db, period, as_of: ({"never": True}, []),
+    ))
+
+    with SessionLocal() as db:
+        body = build_summary(db, period="2026-01")
+    assert body["domains"]["future_optional"] == {
+        "available": False, "data": None, "gap_reasons": ["合成可选域尚未接入"],
+    }
+    required = body["domains"]["future_required"]
+    assert required["available"] is False
+    assert required["data"] is None
+    assert required["gap_reasons"] == [
+        "合成必需域读取失败（ModuleNotFoundError），未以 0 顶替",
+    ]
+    assert body["domains"]["leasing"]["available"] is True
+
+
+def test_build_summary_does_not_embed_per_domain_branches():
+    import inspect
+
+    from app.modules.business_gm import service as gm_service
+
+    source = inspect.getsource(gm_service.build_summary)
+    for provider in gm_service.registered_providers():
+        assert provider.domain not in source
+        assert provider.module not in source
+
+
 def test_gm_manifest_endpoint_and_tool_are_readonly_and_preset(client):
     from app.modules.business_gm.service import gm_summary
 
     loaded = {item.name: item for item in get_loaded_modules()}
     manifest = loaded["business_gm"]
-    assert manifest.tables == []
+    # menu/tables 已从 manifest 删除（唯一源是前端 manifest.js 与 models.__tablename__）
+    assert manifest.removed_fields == ()
     assert manifest.preset_experts == ["realestate"]
     tool = next(item for item in manifest.agent_tools if item["name"] == "gm_summary")
     assert tool["readonly"] is True
     assert tool["required"] == []
     assert tool["params"]["period"][0] == "string"
-    assert tool["params"]["period"][2] is False
+    assert len(tool["params"]["period"]) == 2
     assert client.get(f"{GM}/summary", params={"period": "2026-01"}).status_code == 200
     assert client.post(f"{GM}/summary", json={}).status_code == 405
     result = gm_summary(period="2026-01")

@@ -117,8 +117,11 @@ def test_manifest_loaded_and_tools_registered(client):
     assert "finance_ledger_bip" in loaded
     m = loaded["finance_ledger_bip"]
     assert m.prefix == "/api/finance/ledger/bip"
-    assert m.menu == {"group": "财务", "icon": "OfficeBuilding", "order": 50}
-    assert m.tables == ["mod_bip_batch", "mod_bip_voucher", "mod_bip_entry", "mod_bip_balance"]
+    from app.modules.finance_ledger_bip import models as bip_models
+
+    assert {bip_models.BipBatch.__tablename__, bip_models.BipVoucher.__tablename__,
+            bip_models.BipEntry.__tablename__, bip_models.BipBalance.__tablename__} == {
+        "mod_bip_batch", "mod_bip_voucher", "mod_bip_entry", "mod_bip_balance"}
     for name in ("bip_voucher_query", "bip_balance_query"):
         spec = TOOL_SPECS.get(name)
         assert spec is not None and spec["readonly"] is True and callable(spec["func"])
@@ -477,7 +480,7 @@ def test_locate_header_row_real_bip_metadata_block():
     含 2 个「科目」关键词命中——修复前扫描窗口只有 10 行，该行成为窗口内最高命中，
     真正的表头行（第 13 行）被挤出窗口导致类型识别失败（unknown）。"""
     meta = [
-        ["账簿", "脱敏单位A,脱敏单位B"],
+        ["账簿", "项目A,项目B"],
         ["期间", "2026-01 至 2026-12"],
         ["科目版本基准日期", "2026-12-31"],
         ["科目级次", "一至末级"],
@@ -499,9 +502,9 @@ def test_locate_header_row_real_bip_metadata_block():
 def test_preview_real_bip_aux_metadata_block(client, bip_dir, tmp_path):
     """端到端：带 12 行元数据块的辅助明细账（真实导出形状）预览应识别为 aux。"""
     rows = [["科目编码", "科目名称", "日期", "核算账簿", "凭证号", "摘要", "对方科目编码", "对方科目名称", "借方本币", "贷方本币", "方向", "本币余额", "来源应用"]]
-    rows += [["1002", "银行存款", "2026-01-05", "脱敏单位A", "记-1", "测试摘要", "6601", "销售费用", 100.0, None, "借", 100.0, "凭证管理"]]
+    rows += [["1002", "银行存款", "2026-01-05", "项目A", "记-1", "测试摘要", "6601", "销售费用", 100.0, None, "借", 100.0, "凭证管理"]]
     meta = [
-        ["账簿", "脱敏单位A"], ["期间", "2026-01 至 2026-12"], ["科目版本基准日期", "2026-12-31"],
+        ["账簿", "项目A"], ["期间", "2026-01 至 2026-12"], ["科目版本基准日期", "2026-12-31"],
         ["科目级次", "一至末级"], ["币种范围", "本币"], ["返回币种", "本币"],
         ["对方科目", "显示对方科目"], ["凭证范围", "包含未记账"], ["其他", "无"],
         ["排序方式", "查询对象+制单日期"], ["展示方向", "双向展示"], ["辅助明细账"],
@@ -521,7 +524,7 @@ def test_preview_real_bip_aux_metadata_block(client, bip_dir, tmp_path):
 def test_locate_header_row_two_level_header():
     """余额表两级表头：子表头行（借方本币×4/贷方本币×4，总命中 8）不得击败
     主表头行（科目/账簿/期初/本期/期末，5 类）——按关键词类别数评分。"""
-    meta = [["账簿", "脱敏单位A"], ["期间", "2026-09 至 2026-09"], ["科目版本基准日期", "2026-09-30"],
+    meta = [["账簿", "项目A"], ["期间", "2026-09 至 2026-09"], ["科目版本基准日期", "2026-09-30"],
             ["科目级次", "所有末级"], ["币种范围", "本币"], ["返回币种", "本币"], ["凭证范围", "包含未记账"],
             ["其他", "无"], ["余额方向", "双向"], ["本年累计", "显示本年累计"], ["余额显示", "双向显示"],
             ["余额借贷方", "余额借贷方显示"], ["展示方式", "核算账簿显示"], ["表体展示", "树形展示"],
@@ -553,12 +556,12 @@ def test_import_real_voucher_multisheet_sheet_name_as_ledger(client, bip_dir, tm
     import openpyxl
     header = ["期间", "凭证日期", "凭证号", "分录摘要", "科目", "借方金额", "贷方金额", "制单人"]
     sheets = {
-        "脱敏单位A": [
+        "项目A": [
             header,
             ["2026-01", "2026-01-05", "记-1", "支付办公用品", "1001 库存现金", 100.0, None, "员工001"],
             ["", "", "", "支付办公用品", "6601 销售费用", None, 100.0, ""],  # 续行：凭证号空
         ],
-        "脱敏单位B": [
+        "项目B": [
             header,
             ["2026-01", "2026-01-06", "记-1", "收到服务费", "1002 银行存款", 200.0, None, "员工002"],
             ["", "", "", "收到服务费", "6001 主营业务收入", None, 200.0, ""],
@@ -587,7 +590,7 @@ def test_import_real_voucher_multisheet_sheet_name_as_ledger(client, bip_dir, tm
 
     vs = client.get("/api/finance/ledger/bip/vouchers", params={"size": 50}).json()
     ledgers = sorted(v["ledger"] for v in vs["items"])
-    assert ledgers == ["脱敏单位A", "脱敏单位B"]
+    assert ledgers == ["项目A", "项目B"]
     # 重复导入：相同（账簿+期间+凭证号）跳过
     prev2 = _preview(client, path).json()
     body2 = _confirm(client, prev2["token"]).json()

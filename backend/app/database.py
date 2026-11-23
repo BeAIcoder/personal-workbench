@@ -1,9 +1,17 @@
 """数据库连接与 ORM 基础设施。默认 SQLite，全部通过 SQLAlchemy 访问（自动参数绑定）。"""
 import json
+import logging
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+logger = logging.getLogger(__name__)
+
+try:  # 向量检索是可选增强：缺包时知识库自动降级为关键词检索
+    import sqlite_vec  # type: ignore
+except ImportError:  # pragma: no cover - 依赖缺失时走降级分支
+    sqlite_vec = None
 
 from .config import settings
 
@@ -56,6 +64,26 @@ if _is_sqlite:
             cursor.execute("PRAGMA journal_mode=WAL")
         finally:
             cursor.close()
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_load_vec(dbapi_connection, _record):
+        """为每个新连接加载 sqlite-vec（知识库向量检索）；失败仅记日志。
+
+        只加载随包分发的扩展，加载后立即关闭扩展加载能力，不留任意扩展注入面。
+        缺 sqlite-vec / 平台不支持时静默跳过，知识库自动降级为关键词检索。
+        """
+        if sqlite_vec is None:
+            return
+        try:
+            dbapi_connection.enable_load_extension(True)
+            sqlite_vec.load(dbapi_connection)
+        except Exception:
+            logger.warning("sqlite-vec 加载失败，知识库向量检索不可用", exc_info=True)
+        finally:
+            try:
+                dbapi_connection.enable_load_extension(False)
+            except Exception:
+                pass
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)

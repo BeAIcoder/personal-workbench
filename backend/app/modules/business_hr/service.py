@@ -372,7 +372,14 @@ def payroll_generate(db: Session, month: str, allowance: float = 0.0,
             f"历史月份薪资未生成（{len(missing_detail)} 人）：{shown}{more}；"
             "累计预扣按任职月份减除，缺月会使累计收入偏低、个税被低估，请补生成或核对累计数"
         )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        # 并发：两个请求都通过了上面的 count 查重，后提交者撞 (emp_id, month) 唯一约束
+        raise ValueError(
+            "该月薪资已生成（并发冲突），请刷新后重试；如需重算请先删除草稿"
+        ) from exc
     items = []
     for row, emp in created:
         db.refresh(row)

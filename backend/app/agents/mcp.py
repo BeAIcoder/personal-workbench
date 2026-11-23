@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -33,7 +34,16 @@ PROTOCOL_VERSION = "2024-11-05"
 CALL_TIMEOUT = 30          # 单次工具调用超时（秒）
 START_TIMEOUT = 15         # 握手超时（秒）
 MAX_MESSAGE_BYTES = 4 * 1024 * 1024
+# 单行入站上限（字符）：按 UTF-8 最坏 4 字节/字符折算，字符上限本身即保证
+# 字节上限（≤ MAX_MESSAGE_BYTES），避免先读入 4M 字符再编码出 ~16MB 的瞬时峰值。
+# 读入后仍按实际 UTF-8 字节数复核一次。
+MAX_INBOUND_LINE_CHARS = max(1, MAX_MESSAGE_BYTES // 4)
 MAX_RAW_RESULT_CHARS = 60_000
+# 自动重连：有界指数退避（最多 N 次，间隔 base*2^n 且不超过 max），仅对
+# 曾成功握手过的实例生效，避免把「从未连接」的配置误启动。
+RECONNECT_MAX_ATTEMPTS = 3
+RECONNECT_BASE_DELAY = 0.5
+RECONNECT_MAX_DELAY = 2.0
 _INHERITED_ENV_NAMES = (
     "SystemRoot", "SystemDrive", "WINDIR", "ComSpec", "OS",
     "PATH", "PATHEXT", "TEMP", "TMP", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA",
@@ -63,7 +73,15 @@ def _bounded_raw(result: dict) -> dict:
 
 
 class McpError(RuntimeError):
-    """MCP 通信或服务器错误。"""
+    """MCP 通信或服务器错误。
+
+    ``sent=True`` 表示 JSON-RPC 请求可能已经到达服务器（发送后超时/断流/
+    错误响应）：调用方只能重连，**不得重放**，否则写工具可能重复执行。
+    """
+
+    def __init__(self, message: str, *, sent: bool = False):
+        super().__init__(message)
+        self.sent = sent
 
 
 class McpStdioServer:
@@ -80,6 +98,8 @@ class McpStdioServer:
         self.tools: list[dict] = []
         self._id = 0
         self._lock = threading.Lock()  # 串行化请求/响应
+        self._reconnect_lock = threading.Lock()  # 同一实例只允许一个重连流程
+        self._ever_started = False  # 成功握手过才允许自动重连（避免误启动未连接配置）
 
     # ---------- 生命周期 ----------
 
@@ -107,6 +127,7 @@ class McpStdioServer:
             self._notify("notifications/initialized", {})
             listed = self._request("tools/list", {}, timeout=START_TIMEOUT)
             self.tools = listed.get("tools", []) or []
+            self._ever_started = True
         except Exception:
             self.stop()
             raise
@@ -130,6 +151,15 @@ class McpStdioServer:
             except OSError:
                 pass
 
+    def _stop_if_current(self, proc: subprocess.Popen | None) -> None:
+        """仅当 ``self.proc`` 仍是 proc 时才停止。
+
+        自动重连可能已换上新进程；旧请求超时/超限时若无条件 stop()，会把刚恢复的
+        新进程又杀掉（旧请求的读线程仍在等旧管道）。
+        """
+        if proc is not None and self.proc is proc:
+            self.stop()
+
     def is_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
@@ -148,39 +178,49 @@ class McpStdioServer:
         self.proc.stdin.flush()
 
     def _read_line(self, timeout: float) -> str:
-        """读一行 stdout；超时抛 queue.Empty。
+        """读一行 stdout；超时抛 queue.Empty，超过入站上限抛 McpError。
 
         readline 是不可中断的阻塞调用，放到一次性守护线程里执行：
         超时后调用方放弃等待，线程在进程退出/管道关闭时自然结束。
+        读取时传 size 上限（MCP-01）：异常服务器发一条巨行时，不会把整行
+        读进内存；超出上限即判协议违规，由调用方终止进程。
         """
         proc = self.proc
         assert proc and proc.stdout
+        limit = max(1, int(MAX_INBOUND_LINE_CHARS))
         q: queue.Queue[str] = queue.Queue(maxsize=1)
 
         def _reader() -> None:
             try:
-                q.put(proc.stdout.readline())
+                q.put(proc.stdout.readline(limit + 1))
             except (ValueError, OSError):
                 q.put("")
 
         threading.Thread(target=_reader, daemon=True).start()
-        return q.get(timeout=timeout)
+        line = q.get(timeout=timeout)
+        if len(line) > limit or len(line.encode("utf-8", "replace")) > MAX_MESSAGE_BYTES:
+            raise McpError(f"入站消息超过单行上限（{limit} 字符），已拒绝该行")
+        return line
 
     def _read_response(self, msg_id: int, timeout: float) -> dict:
         assert self.proc and self.proc.stdout
+        proc = self.proc  # 固定本次请求对应的进程：重连换新进程后不要误杀
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self.stop()  # 终止进程关闭管道，释放阻塞在 readline 的读线程
-                raise McpError(f"等待响应超时（>{timeout:g}s）")
+                self._stop_if_current(proc)  # 终止进程关闭管道，释放阻塞在 readline 的读线程
+                raise McpError(f"等待响应超时（>{timeout:g}s）", sent=True)
             try:
                 line = self._read_line(remaining)
             except queue.Empty:
-                self.stop()  # 同上：超时不回收会导致守护线程永久泄漏
-                raise McpError(f"等待响应超时（>{timeout:g}s）") from None
+                self._stop_if_current(proc)  # 同上：超时不回收会导致守护线程永久泄漏
+                raise McpError(f"等待响应超时（>{timeout:g}s）", sent=True) from None
+            except McpError as exc:
+                self._stop_if_current(proc)  # 入站超限：终止进程，避免继续读/占用内存
+                raise McpError(str(exc), sent=True) from exc
             if not line:
-                raise McpError("服务器关闭了输出流（进程可能已退出）")
+                raise McpError("服务器关闭了输出流（进程可能已退出）", sent=True)
             line = line.strip()
             if not line:
                 continue
@@ -191,7 +231,7 @@ class McpStdioServer:
             if msg.get("id") == msg_id:
                 if "error" in msg:
                     err = msg["error"]
-                    raise McpError(f"MCP 错误 {err.get('code')}: {err.get('message')}")
+                    raise McpError(f"MCP 错误 {err.get('code')}: {err.get('message')}", sent=True)
                 return msg.get("result", {})
             # 其他 id / 通知：继续读
 
@@ -200,9 +240,14 @@ class McpStdioServer:
             timeout = CALL_TIMEOUT
         with self._lock:
             if not self.is_alive():
-                raise McpError("服务器进程未运行")
+                raise McpError("服务器进程未运行", sent=False)
             msg_id = self._next_id()
-            self._send({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
+            try:
+                self._send({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
+            except McpError:
+                raise  # 消息过大：发送前已拒绝，未写出任何字节
+            except Exception as exc:  # noqa: BLE001  写管道失败可能已部分发出，保守视为已发送
+                raise McpError(f"发送请求失败：{exc}", sent=True) from exc
             return self._read_response(msg_id, timeout)
 
     def _notify(self, method: str, params: dict) -> None:
@@ -270,6 +315,123 @@ def _row_to_server(row: McpServer) -> McpStdioServer:
         args=list(row.args or []),
         env=unseal_env_values(row.env),
     )
+
+
+def _sync_server_row(server: McpStdioServer, status: str, error: str = "") -> None:
+    """把运行状态/工具清单写回 DB（重连成功/失败后调用）；失败只告警不影响调用。"""
+    try:
+        with SessionLocal() as db:
+            row = db.query(McpServer).filter(McpServer.name == server.name).first()
+            if row is None:
+                return
+            row.status = status
+            row.last_error = (error or "")[:500]
+            row.tools_json = server.tools
+            db.commit()
+    except Exception:  # noqa: BLE001  状态写库失败不能拖垮工具调用
+        logger.warning("MCP 服务器状态写库失败（不影响重连）：%s", server.name, exc_info=True)
+
+
+@dataclass(frozen=True)
+class _ReconnectResult:
+    """自动重连结果：attempts=实际尝试次数；reason 为 never_started/detached/disabled/错误文本。"""
+
+    ok: bool
+    attempts: int = 0
+    reason: str = ""
+
+
+def _server_still_managed(server: McpStdioServer) -> bool:
+    """该实例是否仍挂在管理器里（用户断开/删除/重配会把它 pop 掉）。"""
+    with _manager_lock:
+        return _servers.get(server.name) is server
+
+
+def _server_enabled_in_db(name: str) -> bool:
+    """DB 行存在且 enabled=True 才允许自动拉起；读库失败按不允许处理（fail-closed）。"""
+    try:
+        with SessionLocal() as db:
+            row = db.query(McpServer).filter(McpServer.name == name).first()
+            return bool(row is not None and row.enabled)
+    except Exception:  # noqa: BLE001  读不到状态时宁可不重连，避免复活用户已停用的服务器
+        logger.warning("MCP 服务器启用状态读取失败，取消自动重连：%s", name, exc_info=True)
+        return False
+
+
+def _reconnect_failure_message(server_name: str, result: _ReconnectResult) -> str:
+    """按失败原因给出准确文案（未握手 / 已断开 / 已停用 / 重试 N 次失败）。"""
+    if result.reason == "never_started":
+        return f"MCP 服务器 {server_name} 从未连接成功，自动重连未尝试；请在管理页手动连接后重试"
+    if result.reason == "detached":
+        return f"MCP 服务器 {server_name} 已被断开或删除，自动重连已取消；请在管理页重新连接后重试"
+    if result.reason == "disabled":
+        return f"MCP 服务器 {server_name} 已在管理页停用，自动重连已取消；请启用后再连接"
+    if result.attempts:
+        detail = f"：{result.reason}" if result.reason else ""
+        return (
+            f"MCP 服务器 {server_name} 自动重连失败（已尝试 {result.attempts} 次）"
+            f"{detail}；请在管理页点击「重连」后重试"
+        )
+    return f"MCP 服务器 {server_name} 自动重连失败；请在管理页点击「重连」后重试"
+
+
+def _reconnect_server(server: McpStdioServer) -> _ReconnectResult:
+    """有界指数退避自动重连；成功后刷新工具注册表与 DB 状态。
+
+    仅对「曾成功握手过」的实例生效：从未连接成功的配置可能已过期/命令错误，
+    自动拉起只会反复失败并带来副作用，应由用户在管理页显式连接。
+    锁内与 start() 成功后各复核一次「实例归属 + DB enabled」，避免用户在断开/
+    停用后又被自动重连复活（M4）。
+    """
+    if not getattr(server, "_ever_started", False):
+        return _ReconnectResult(False, 0, "never_started")
+    try:
+        max_attempts = max(1, int(RECONNECT_MAX_ATTEMPTS))
+    except (TypeError, ValueError):
+        max_attempts = 1
+    with server._reconnect_lock:
+        if not _server_still_managed(server):
+            return _ReconnectResult(False, 0, "detached")
+        if not _server_enabled_in_db(server.name):
+            return _ReconnectResult(False, 0, "disabled")
+        if server.is_alive():
+            return _ReconnectResult(True, 0)
+        last_error = ""
+        for attempt in range(max_attempts):
+            # 每次重试前都复核：用户可能在上一轮退避期间断开/停用
+            if not _server_still_managed(server):
+                return _ReconnectResult(False, attempt, "detached")
+            if not _server_enabled_in_db(server.name):
+                return _ReconnectResult(False, attempt, "disabled")
+            try:
+                server.start()
+            except Exception as exc:  # noqa: BLE001  单次失败按退避重试
+                last_error = str(exc)[:500]
+                logger.warning(
+                    "MCP 服务器 %s 自动重连第 %d/%d 次失败：%s",
+                    server.name, attempt + 1, max_attempts, exc,
+                )
+                if attempt + 1 < max_attempts:
+                    delay = min(RECONNECT_BASE_DELAY * (2 ** attempt), RECONNECT_MAX_DELAY)
+                    if delay > 0:
+                        time.sleep(delay)
+                continue
+            # 握手可能耗时数秒：成功后再次复核，用户中途断开/停用则立即放弃
+            if not _server_still_managed(server):
+                server.stop()
+                return _ReconnectResult(False, attempt + 1, "detached")
+            if not _server_enabled_in_db(server.name):
+                server.stop()
+                return _ReconnectResult(False, attempt + 1, "disabled")
+            from .tools import register_module_tools
+
+            _register_server_tools(server, register_module_tools)
+            _sync_server_row(server, "connected")
+            return _ReconnectResult(True, attempt + 1)
+        # 归属/启用已变化时不要把 error 写回同名的新实例或已停用行
+        if _server_still_managed(server) and _server_enabled_in_db(server.name):
+            _sync_server_row(server, "error", last_error or "自动重连失败")
+        return _ReconnectResult(False, max_attempts, last_error or "自动重连失败")
 
 
 def start_all_from_db() -> dict:
@@ -354,7 +516,7 @@ def _register_server_tools(server: McpStdioServer, register) -> None:
                 ptype = next((t for t in ptype if t != "null"), "string")
             if ptype not in ("string", "integer", "number", "boolean", "array", "object"):
                 ptype = "string"
-            params[pname] = (ptype, str(pspec.get("description") or "")[:200], pname in (schema.get("required") or []))
+            params[pname] = (ptype, str(pspec.get("description") or "")[:200])
             if pname in (schema.get("required") or []):
                 required.append(pname)
         specs[_tool_name(server.name, name)] = {
@@ -371,17 +533,51 @@ def _make_executor(server_name: str, tool_name: str):
     """生成 Agent 可调的 async 工具函数（线程池执行，不阻塞事件循环）。"""
     import asyncio
 
+    def _unknown_result(tool: str, exc: Exception, recovery: str) -> dict:
+        """请求已发出但未拿到结果：只报「结果未知」，绝不让调用方误以为可安全重放。"""
+        return {
+            "ok": False,
+            "result_unknown": True,
+            "error": (
+                f"MCP 工具 {tool} 调用结果未知（请求已发出后超时或连接中断）：{str(exc)[:200]}。"
+                f"{recovery}；为避免重复执行，本次不会自动重试。"
+                "请先确认服务器端执行结果，再决定是否重试。"
+            ),
+        }
+
     async def _call(**kwargs: Any) -> dict:
         server = _servers.get(server_name)
-        if server is None or not server.is_alive():
-            return {"ok": False, "error": f"MCP 服务器 {server_name} 未连接或进程已退出，请在管理页点击「重连」后重试"}
+        if server is None:
+            return {"ok": False, "error": f"MCP 服务器 {server_name} 未注册或已删除；请在管理页点击「重连」后重试"}
+        if not server.is_alive():
+            # 进程已退出：先做有界指数退避自动重连（L-028），失败才提示手动重连
+            outcome = await asyncio.to_thread(_reconnect_server, server)
+            if not outcome.ok:
+                return {"ok": False, "error": _reconnect_failure_message(server_name, outcome)}
         try:
             result = await asyncio.to_thread(server.call_tool, tool_name, kwargs)
         except Exception as exc:  # noqa: BLE001  工具失败转为可读错误，不崩 Agent
-            return {
-                "ok": False,
-                "error": f"MCP 调用失败：{str(exc)[:200]}；请在管理页点击「重连」后重试",
-            }
+            # 非 McpError 的未知异常保守视为「可能已发出」，宁可不重试也不能重复写
+            sent = bool(getattr(exc, "sent", True))
+            outcome = await asyncio.to_thread(_reconnect_server, server)
+            if sent:
+                recovery = "连接已自动恢复" if outcome.ok else "自动重连也失败"
+                return _unknown_result(tool_name, exc, recovery)
+            if not outcome.ok:
+                return {"ok": False, "error": _reconnect_failure_message(server_name, outcome)}
+            # 请求明确未发出（sent=False）：重连后允许重试一次
+            try:
+                result = await asyncio.to_thread(server.call_tool, tool_name, kwargs)
+            except Exception as retry_exc:  # noqa: BLE001
+                retry_sent = bool(getattr(retry_exc, "sent", True))
+                retry_outcome = await asyncio.to_thread(_reconnect_server, server)
+                if retry_sent:
+                    recovery = "连接已自动恢复" if retry_outcome.ok else "自动重连也失败"
+                    return _unknown_result(tool_name, retry_exc, recovery)
+                return {
+                    "ok": False,
+                    "error": f"MCP 调用失败（重连后重试一次）：{str(retry_exc)[:200]}",
+                }
         if result.get("is_error"):
             return {"ok": False, "error": result.get("text", "")[:500]}
         return {"ok": True, "result": result.get("text", "")}

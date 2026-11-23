@@ -11,8 +11,8 @@
 '   $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\个人工作台.lnk"
 '   $s = (New-Object -COM WScript.Shell).CreateShortcut($lnk)
 '   $s.TargetPath = "wscript.exe"
-'   $s.Arguments = '"D:\AssetLib\01-财税自动化\personal-workbench\开机自启动.vbs"'
-'   $s.WorkingDirectory = "D:\AssetLib\01-财税自动化\personal-workbench"
+'   $s.Arguments = '"<项目根目录>\开机自启动.vbs"'
+'   $s.WorkingDirectory = "<项目根目录>"
 '   $s.WindowStyle = 7
 '   $s.Save()
 '==========================================================================

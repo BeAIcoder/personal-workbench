@@ -150,3 +150,55 @@ describe('finance-cashflow 列表分页行为（review-fix 补强）', () => {
     expect(ctx.total.value).toBe(0)
   })
 })
+
+// T6D / 集成复核 I3：现金流 actual_year 必须形成可用用户路径——
+// 新建对话框默认当前年并随月份提交，列表显示年份，补录往年不再静默记成今年。
+describe('finance-cashflow 回填年份（T6D）', () => {
+  const src = readFileSync(
+    new URL('../src/modules/finance-cashflow/views/CashflowRunView.vue', import.meta.url),
+    'utf8',
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function mount() {
+    return CashflowRunView.setup({}, { expose: () => {}, emit: () => {} })
+  }
+
+  it('currentYear 默认当前年（4 位）', async () => {
+    const { currentYear } = await import('../src/modules/finance-cashflow/month.js')
+    expect(currentYear()).toBe(String(new Date().getFullYear()))
+    expect(currentYear(new Date('2025-12-31T00:00:00'))).toBe('2025')
+  })
+
+  it('打开新建对话框时回填年份默认当前年', () => {
+    const ctx = mount()
+    ctx.form.actual_year = '1999'
+    ctx.openDialog()
+    expect(ctx.form.actual_year).toBe(String(new Date().getFullYear()))
+  })
+
+  it('创建运行随月份一并提交 actual_year', async () => {
+    const ctx = mount()
+    ctx.form.actual_year = '2025'
+    ctx.form.actual_month = 12
+    ctx.form.files = [{ name: 'a.xlsx' }]
+    api.post.mockResolvedValue({ data: { id: 9 } })
+    api.get.mockResolvedValue({ data: { items: [], total: 0 } })
+
+    await ctx.create()
+
+    const [url, body] = api.post.mock.calls[0]
+    expect(url).toBe('/finance/cashflow/runs')
+    expect(body.get('actual_year')).toBe('2025')
+    expect(body.get('actual_month')).toBe('12')
+  })
+
+  it('视图提供年份输入并在列表显示回填年份', () => {
+    expect(src).toContain('v-model="form.actual_year"')
+    expect(src).toContain('prop="actual_year"')
+    expect(src).toContain("fd.append('actual_year'")
+  })
+})

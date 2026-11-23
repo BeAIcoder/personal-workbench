@@ -48,10 +48,12 @@ def test_history_includes_thinking(client):
 # ---------------- 工作模式 ----------------
 
 def test_resolve_mode():
+    assert orchestrator._resolve_mode("standard") == "standard"
     assert orchestrator._resolve_mode("readonly") == "readonly"
     assert orchestrator._resolve_mode("deep") == "deep"
-    assert orchestrator._resolve_mode("unknown") == "standard"
-    assert orchestrator._resolve_mode(None) == "standard"
+    # 非法/缺省脏值 fail-closed 为只读，不得回退可写的 standard（R11-016）
+    assert orchestrator._resolve_mode("unknown") == "readonly"
+    assert orchestrator._resolve_mode(None) == "readonly"
 
 
 def test_work_modes_registry(client):

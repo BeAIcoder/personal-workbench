@@ -69,7 +69,7 @@
     <el-dialog v-model="wbDialog.visible" title="从 WorkBuddy 导入" width="640px">
       <el-form label-width="150px">
         <el-form-item label="WorkBuddy 数据目录">
-          <el-input v-model="wbDialog.home" placeholder="默认 C:/Users/Administrator/.workbuddy" />
+          <el-input v-model="wbDialog.home" placeholder="默认 C:/Users/<用户名>/.workbuddy" />
         </el-form-item>
         <el-form-item label="导入内容">
           <el-checkbox-group v-model="wbDialog.kinds">

@@ -272,6 +272,27 @@ async def _run(job_id):
     return await run_job(job_id)
 
 
+def test_delete_job_clears_skip_throttle(client, monkeypatch):
+    """RED 回归：删除任务后 _skipped_at 残留，SQLite id 复用时新任务会被误节流。"""
+    import asyncio
+
+    from app import scheduler
+
+    monkeypatch.setattr(scheduler, "llm_status", lambda: {"configured": False})
+    job = client.post("/api/jobs", json={
+        "name": "节流清理", "prompt": "汇总", "schedule_type": "daily", "daily_at": "00:00",
+    }).json()
+    try:
+        result = asyncio.run(scheduler.run_job(job["id"], manual=True))
+        assert result["status"] == "skipped"
+        assert job["id"] in scheduler._skipped_at
+
+        assert client.delete(f"/api/jobs/{job['id']}").status_code == 204
+        assert job["id"] not in scheduler._skipped_at
+    finally:
+        scheduler._skipped_at.pop(job["id"], None)
+
+
 def test_job_runs_endpoint_and_default_readonly(client, monkeypatch):
     import asyncio
 

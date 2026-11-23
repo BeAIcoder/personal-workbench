@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session as OrmSession  # noqa: F401  (类型提示用
 
 from ..database import SessionLocal
 from ..models import Note, Schedule, Task
+from ..tool_schema import input_schema as _input_schema
+from ..tool_schema import params_errors as _params_errors
 from ..utils import tag_like_pattern
 
 logger = logging.getLogger(__name__)
@@ -335,18 +337,19 @@ def workbench_stats() -> dict:
 
 
 # ---------------- 工具注册表 ----------------
-# params: {参数名: (JSON类型, 中文说明, 是否必填)}
+# params: {参数名: (JSON 类型, 中文说明)}；必填参数只写进 required 列表（唯一事实源：
+# app/tool_schema.py，形状/类型白名单/required ⊆ params 在那里校验）。
 
 TOOL_SPECS: dict[str, dict] = {
     "query_tasks": {
         "func": query_tasks,
         "description": "查询工作台中的任务清单，可按状态、优先级、关键词、是否逾期过滤",
         "params": {
-            "status": ("string", "状态：todo(待办)/in_progress(进行中)/done(已完成)，默认全部", False),
-            "priority": ("string", "优先级：low/medium/high/urgent，默认全部", False),
-            "keyword": ("string", "标题或描述关键词", False),
-            "overdue_only": ("boolean", "是否只看已逾期", False),
-            "limit": ("integer", "最多返回条数，默认10", False),
+            "status": ("string", "状态：todo(待办)/in_progress(进行中)/done(已完成)，默认全部"),
+            "priority": ("string", "优先级：low/medium/high/urgent，默认全部"),
+            "keyword": ("string", "标题或描述关键词"),
+            "overdue_only": ("boolean", "是否只看已逾期"),
+            "limit": ("integer", "最多返回条数，默认10"),
         },
         "required": [],
     },
@@ -354,28 +357,28 @@ TOOL_SPECS: dict[str, dict] = {
         "func": create_task,
         "description": "在工作台创建一条待办任务",
         "params": {
-            "title": ("string", "任务标题", True),
-            "description": ("string", "任务描述", False),
-            "priority": ("string", "优先级：low/medium/high/urgent，默认 medium", False),
-            "due_date": ("string", "截止时间，格式 2026-09-08 或 2026-09-08 17:00，可空", False),
-            "category": ("string", "分类，如：招商跟进/工程整改", False),
+            "title": ("string", "任务标题"),
+            "description": ("string", "任务描述"),
+            "priority": ("string", "优先级：low/medium/high/urgent，默认 medium"),
+            "due_date": ("string", "截止时间，格式 2026-09-08 或 2026-09-08 17:00，可空"),
+            "category": ("string", "分类，如：招商跟进/工程整改"),
         },
         "required": ["title"],
     },
     "complete_task": {
         "func": complete_task,
         "description": "把指定任务标记为已完成",
-        "params": {"task_id": ("integer", "任务ID", True)},
+        "params": {"task_id": ("integer", "任务ID")},
         "required": ["task_id"],
     },
     "query_schedules": {
         "func": query_schedules,
         "description": "查询工作台日程安排，可按日期范围与关键词过滤",
         "params": {
-            "start_date": ("string", "起始日期 YYYY-MM-DD，可空", False),
-            "end_date": ("string", "结束日期 YYYY-MM-DD，可空", False),
-            "keyword": ("string", "标题/地点/备注关键词", False),
-            "limit": ("integer", "最多返回条数，默认10", False),
+            "start_date": ("string", "起始日期 YYYY-MM-DD，可空"),
+            "end_date": ("string", "结束日期 YYYY-MM-DD，可空"),
+            "keyword": ("string", "标题/地点/备注关键词"),
+            "limit": ("integer", "最多返回条数，默认10"),
         },
         "required": [],
     },
@@ -383,12 +386,12 @@ TOOL_SPECS: dict[str, dict] = {
         "func": create_schedule,
         "description": "在工作台创建一条日程",
         "params": {
-            "title": ("string", "日程标题", True),
-            "date": ("string", "日期 YYYY-MM-DD", True),
-            "start_time": ("string", "开始时间 HH:MM，默认 09:00", False),
-            "end_time": ("string", "结束时间 HH:MM，默认 10:00", False),
-            "location": ("string", "地点", False),
-            "description": ("string", "备注", False),
+            "title": ("string", "日程标题"),
+            "date": ("string", "日期 YYYY-MM-DD"),
+            "start_time": ("string", "开始时间 HH:MM，默认 09:00"),
+            "end_time": ("string", "结束时间 HH:MM，默认 10:00"),
+            "location": ("string", "地点"),
+            "description": ("string", "备注"),
         },
         "required": ["title", "date"],
     },
@@ -396,9 +399,9 @@ TOOL_SPECS: dict[str, dict] = {
         "func": search_notes,
         "description": "搜索工作台笔记，可按关键词与标签过滤",
         "params": {
-            "keyword": ("string", "标题或内容关键词", False),
-            "tag": ("string", "标签", False),
-            "limit": ("integer", "最多返回条数，默认5", False),
+            "keyword": ("string", "标题或内容关键词"),
+            "tag": ("string", "标签"),
+            "limit": ("integer", "最多返回条数，默认5"),
         },
         "required": [],
     },
@@ -406,9 +409,9 @@ TOOL_SPECS: dict[str, dict] = {
         "func": create_note,
         "description": "在工作台新建一条笔记（纪要、清单、知识沉淀）",
         "params": {
-            "title": ("string", "笔记标题", True),
-            "content": ("string", "笔记内容，支持多行文本", False),
-            "tags": ("string", "逗号分隔的标签，如：招商,纪要", False),
+            "title": ("string", "笔记标题"),
+            "content": ("string", "笔记内容，支持多行文本"),
+            "tags": ("string", "逗号分隔的标签，如：招商,纪要"),
         },
         "required": ["title"],
     },
@@ -429,15 +432,21 @@ for _tool_name, _tool_spec in TOOL_SPECS.items():
 
 
 def register_module_tools(specs: dict) -> None:
-    """把模块注册的工具并入 TOOL_SPECS（Module Registry 注册器调用）。
+    """把模块注册的工具并入 TOOL_SPECS（Module Registry 注册器 / MCP 客户端调用）。
 
     与内置工具重名时不覆盖、记日志跳过；spec 结构与内置 TOOL_SPECS 同构，
     另带 readonly 标记（True 表示只读工具，供只读模式放行判断）。
     模块漏标 readonly 时按可写处理并告警，绝不因漏标而把写工具放进口袋。
+    参数定义不合法（形状/类型白名单/required ⊆ params，见 app/tool_schema.py）时
+    跳过该工具并记 ERROR：宁可少注册一个工具，也不注册与声明不一致的 schema。
     """
     for name, spec in (specs or {}).items():
         if name in TOOL_SPECS:
             logger.warning("模块工具 %s 与已注册工具重名，跳过注册", name)
+            continue
+        errors = _params_errors(f"工具 {name!r}", spec.get("params"), spec.get("required") or [])
+        if errors:
+            logger.error("模块工具 %s 的参数定义不合法，跳过注册：%s", name, "；".join(errors))
             continue
         if "readonly" not in spec:
             logger.warning("模块工具 %s 未声明 readonly，已按可写工具处理", name)
@@ -446,39 +455,14 @@ def register_module_tools(specs: dict) -> None:
         logger.info("模块工具已注册：%s", name)
 
 
-def _param_schema(pname: str, pval) -> dict:
-    """把单个参数定义归一为 JSON Schema 片段。
-
-    历史上出现过三种写法（内置工具为 3 元组；模块 manifest 曾误写 dict）：
-    3 元组 (type, desc, required) / 2 元组 (type, desc) / dict {type, description}。
-    这里统一兼容并在非标准写法时告警——单个工具的参数格式问题不应让整个专家
-    构建失败（曾导致 finance_specialist 全部请求 400「not enough values to unpack」）。
-    """
-    if isinstance(pval, dict):
-        if not {"type", "description"} <= set(pval):
-            logger.warning("工具参数 %s 结构不标准（dict 缺少 type/description），已按缺省值处理", pname)
-        else:
-            logger.warning("工具参数 %s 使用 dict 写法（建议改为 (type, description, required) 三元组）", pname)
-        return {
-            "type": str(pval.get("type") or "string"),
-            "description": str(pval.get("description") or ""),
-        }
-    if isinstance(pval, (tuple, list)):
-        if len(pval) != 3:
-            logger.warning("工具参数 %s 结构不标准（期望 3 元组，实得 %d），已按前两位处理", pname, len(pval))
-        ptype = pval[0] if len(pval) > 0 else "string"
-        desc = pval[1] if len(pval) > 1 else ""
-        return {"type": str(ptype or "string"), "description": str(desc or "")}
-    logger.warning("工具参数 %s 结构不可识别（%s），已按 string 处理", pname, type(pval).__name__)
-    return {"type": "string", "description": ""}
-
-
 def build_tools(names: list[str]) -> list:
     """按名称构造 FunctionTool 列表（显式 JSON Schema，含中文参数说明）。
 
     白名单引用了未注册的工具名（如所属模块已禁用）时跳过并记日志，
-    保证其余工具可用、Agent 构建不崩。参数定义结构异常同样只告警不中断
-    （见 _param_schema）。
+    保证其余工具可用、Agent 构建不崩。参数定义不合法（非 (类型, 说明) 二元组、
+    类型不在白名单、required 越界）时只跳过**该工具**并记 ERROR——绝不生成与声明
+    不一致的 schema（2026-11-17 之前三元组第三位 required 被静默忽略，导致 schema
+    与声明漂移，见 app/tool_schema.py）。
     """
     from agentscope.tool import FunctionTool
 
@@ -488,14 +472,11 @@ def build_tools(names: list[str]) -> list:
         if spec is None:
             logger.warning("工具 %s 未注册（可能所属模块已禁用），已跳过", name)
             continue
-        properties = {
-            pname: _param_schema(pname, pval) for pname, pval in (spec.get("params") or {}).items()
-        }
-        schema = {
-            "type": "object",
-            "properties": properties,
-            "required": list(spec.get("required") or []),
-        }
+        try:
+            schema = _input_schema(f"工具 {name!r}", spec.get("params"), spec.get("required") or [])
+        except ValueError as exc:
+            logger.error("工具 %s 的参数定义不合法，已跳过该工具：%s", name, exc)
+            continue
         tools.append(FunctionTool(spec["func"], name=name, description=spec["description"], input_schema=schema))
     return tools
 
@@ -504,16 +485,49 @@ def build_tools(names: list[str]) -> list:
 # 在 TOOL_SPECS 定义后注册，避免循环 import（rag/memory 只依赖 database/models）
 
 from .memory import recall as _recall_memories  # noqa: E402
-from .rag import search as _search_knowledge  # noqa: E402
+from ..knowledge.retrieval import read_doc_text as _read_doc_text  # noqa: E402
+from ..knowledge.retrieval import search_items as _search_knowledge  # noqa: E402
+
+
+def read_knowledge_doc(doc_id: int, offset: int = 0, limit: int = 120) -> dict:
+    """按行读取知识库文档全文（只读）；单次最多 2 万字。"""
+    from ..database import SessionLocal
+
+    try:
+        with SessionLocal() as db:
+            result = _read_doc_text(db, int(doc_id), offset=offset, limit=limit)
+    except Exception as exc:
+        result = {"ok": False, "error": f"读取知识库文档失败：{exc}"}
+    _record("read_knowledge_doc", {"doc_id": doc_id, "offset": offset, "limit": limit},
+            {"ok": result.get("ok"), "title": result.get("title", "")})
+    return result
+
 
 TOOL_SPECS["search_knowledge"] = {
     "func": _search_knowledge,
-    "description": "检索个人知识库（工作台全部笔记，BM25 相关性排序），回答涉及过往笔记/纪要/知识沉淀时先用它",
+    "description": (
+        "检索知识库（公司制度/流程/软件手册 + 工作台笔记，关键词与向量混合排序），"
+        "回答涉及制度条款、操作步骤、过往笔记/纪要时先用它；结果带文档名/版本/章节/页码出处"
+    ),
     "params": {
-        "query": ("string", "检索问题或关键词", True),
-        "top_k": ("integer", "返回条数，默认5", False),
+        "query": ("string", "检索问题或关键词"),
+        "top_k": ("integer", "返回条数，默认5"),
+        "scope": ("string", "检索范围：all 全部 / docs 仅制度手册 / notes 仅笔记，默认 all"),
+        "category": ("string", "按文档分类过滤（如 制度规范/软件手册），可空"),
     },
     "required": ["query"],
+    "readonly": True,
+}
+
+TOOL_SPECS["read_knowledge_doc"] = {
+    "func": read_knowledge_doc,
+    "description": "按行读取知识库某篇文档的全文（检索命中后需要核对上下文/完整条款时使用）",
+    "params": {
+        "doc_id": ("integer", "文档 ID（search_knowledge 结果里的 doc.id）"),
+        "offset": ("integer", "起始行号，默认0"),
+        "limit": ("integer", "最多返回行数，默认120，上限200"),
+    },
+    "required": ["doc_id"],
     "readonly": True,
 }
 
@@ -521,8 +535,8 @@ TOOL_SPECS["recall_memories"] = {
     "func": _recall_memories,
     "description": "检索长期记忆（跨会话保存的事实/偏好/经验），涉及用户习惯、偏好、历史结论时先用它",
     "params": {
-        "query": ("string", "检索关键词或问题", True),
-        "top_k": ("integer", "返回条数，默认5", False),
+        "query": ("string", "检索关键词或问题"),
+        "top_k": ("integer", "返回条数，默认5"),
     },
     "required": ["query"],
     "readonly": True,
@@ -545,9 +559,9 @@ TOOL_SPECS["read_context"] = {
     "func": read_context,
     "description": "按行读取附件资料文件（大段外部文本已转为只读上下文文件时使用；路径必须是资料清单里给出的路径）",
     "params": {
-        "path": ("string", "资料文件路径（提示词资料清单中的完整路径）", True),
-        "offset": ("integer", "起始行号，默认0", False),
-        "limit": ("integer", "最多返回行数，默认200，上限500", False),
+        "path": ("string", "资料文件路径（提示词资料清单中的完整路径）"),
+        "offset": ("integer", "起始行号，默认0"),
+        "limit": ("integer", "最多返回行数，默认200，上限500"),
     },
     "required": ["path"],
     "readonly": True,

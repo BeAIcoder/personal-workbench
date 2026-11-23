@@ -1,8 +1,8 @@
 # 个人工作台 · 需求与设计规格（spec）
 
-> **版本 v1.16.1（与 `backend/app/config.py` 一致；2026-10-30 之后的四税种/WorkBuddy/记忆增强等增量尚未单独发版，随当前版本提供）**
+> **版本 v1.19.0（与 `backend/app/config.py` 一致；数据池清洗——列画像/配方清洗/整合分析随本版提供）**
 >
-> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → v1.15.0 会话归档与导出 + 聊天传图多模态理解 → v1.15.1 复核加固轮（三路并行审计驱动，23 项修复）→ v1.16.0 调试中心 → v1.16.1 体验修复十一项 → **未发版增量：政策有效期登记（POLICY_REGISTRY）+ 四税种填报（印花税/增值税/个税/残保金）+ WorkBuddy 同步导入（技能包/记忆/身份文件，幂等）+ 记忆类型/统计/MD 导入导出/注入预算（2026-10-30 五部分轮）**。
+> 历次演进：v1.0.0 基础工作台 → v1.1.0 Agent 团队 → v1.2.0 QwenPaw Agent 导入 → v1.3.0 Agent 团队配置化 + SSE 流式对话 → v1.4.0 定时 Agent → v1.7.0 安全加固轮（DPAPI / SSRF / 依赖锁定）→ v1.8.0 模块注册机制（Module Registry）→ v1.9.0 首批 5 个财务模块 → v1.10.0 企业所得税迁入 + 报表看板 → v1.11.0 L1 任务型薄壳 + cron 调度与模块动作 → v1.12.0 RAG / 长期记忆 / MCP → v1.13.0 模块工具预置 + 技能包 + 专家团文件化 → v1.14.0 厂商预设模块化 + 模型能力探测 → v1.15.0 会话归档与导出 + 聊天传图多模态理解 → v1.15.1 复核加固轮（三路并行审计驱动，23 项修复）→ v1.16.0 调试中心 → v1.16.1 体验修复十一项 → v1.17.0 经营管理模块（内控/两份周报/月度工作情况四份报表导入 + 指标与叙述块）→ v1.18.0 知识库（制度/手册文档库 + FTS5 关键词 + sqlite-vec 向量混合检索 + 版本/生效期 + 扫描件 OCR + Agent 引用）→ v1.19.0 数据池清洗（finance_vault 升级：列画像 + 配方清洗 + 整合分析 + 配方日志）→ **未发版增量：政策有效期登记（POLICY_REGISTRY）+ 四税种填报（印花税/增值税/个税/残保金）+ WorkBuddy 同步导入（技能包/记忆/身份文件，幂等）+ 记忆类型/统计/MD 导入导出/注入预算（2026-10-30 五部分轮）**。
 >
 > 权威 as-built 快照：`20261012New/REVERSE_02-SPEC重构.md`；接口细节：`API.md`；架构决策：`20261012New/adr/ADR-001~005`。
 >
@@ -41,14 +41,14 @@
 ```
 浏览器（Vue 3.4 纯 JS + Element Plus + ECharts + AG Grid，hash 路由）
    │ /api（axios；SSE 走原生 fetch）
-FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 专家 seed
-         → 专家团/技能包种子 → 模块工具预置补齐 → 调度器 → MCP 启停）
+FastAPI（app/main.py：lifespan 只编排 → DPAPI 校验 → 建表/轻量迁移/启动种子（app/bootstrap）
+         → 调度器 → MCP 启停；一次性迁移见 backend/scripts/migrate.py）
    ├── 静态路由 ×12：tasks / schedules / notes / search / dashboard / assistant
    │                  / jobs / knowledge / mcp / skills / experts / model_probe（探测 + 厂商预设别名）
    ├── Module Registry（app/modules/）：目录扫描 manifest → 挂载路由/表/工具/预置
    ├── Agent 团队（agents/）：team 表驱动 + orchestrator 五级路由 + tools 白名单
    ├── 知识与记忆（rag BM25 / memory 召回注入 / mcp stdio 客户端）
-   └── SQLite（56 张表：宿主 12 + 模块 43 + v1.2.0 遗留 1）
+   └── SQLite（86 张表：宿主 17 + 模块 68 + v1.2.0 遗留 1）
 ```
 
 前端 10 个静态页（概览 / 任务 / 日程 / 笔记 / AI 助手 / 定时任务 / 知识与记忆 / MCP 工具 /
@@ -100,7 +100,7 @@ FastAPI（app/main.py：lifespan = DPAPI 校验 → 建表 → 轻量迁移 → 
 | **L1 任务型薄壳** | 不重写引擎，包装为「上传输入文件 → 后台执行原脚本 → 产物入库供下载」 | 现金流 V1、POS 对账 |
 | **L2 产物聚合** | 只接产物不接过程：静态托管 / iframe 嵌入 | 微信报表 HTML 看板 |
 | **L3 仅登记** | 文档/手册类只在资料库建索引 | 合规手册等（未做成模块） |
-| **底座（可选）** | DuckDB 只读数据仓，供其它模块 `export-to-vault` 落库 | finance_vault |
+| **底座（可选）** | DuckDB 只读底座（数据池清洗），供其它模块 `export-to-vault` 落库 | finance_vault |
 
 ### 3.4 数据目录
 
@@ -196,24 +196,29 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 - **校验**：`interval` 必须带 `interval_minutes`（5~10080）、`daily` 必须带 `daily_at`（HH:MM）、
   `cron` 必须带合法 `cron_expr`，否则 422。
 
-### 4.4 财务模块（14 可入库/可用 + 1 机制示例）
+### 4.4 财务模块（19 可入库/可用 + 1 机制示例）
 
 | 模块 | 级别 | 关键规格 |
 | --- | --- | --- |
 | finance_expense 费用分类 | L0 | v2.0 引擎直挂，规则只读权威源 |
 | finance_invoice 发票处理 | L0 | 发票工具引擎直挂，仅文本型 PDF |
-| finance_vault 数据仓 | 底座 | DuckDB 只读 SQL（SELECT-only + 表白名单 + 强制 LIMIT + interrupt 超时），`ingest_dataframe` 契约 |
+| finance_vault 数据池清洗 | 底座 | DuckDB 底座 + 列画像/配方清洗/整合分析/SQL 查询（SELECT-only + 表白名单 + 强制 LIMIT + interrupt 超时），`ingest_dataframe` 契约；v1.19.0 增清洗与聚合能力；数据集删除需 `confirm=数据集名` 二次确认、被引用或残留需 `force=true`，重命名同步视图/物理修订表/登记/清洗日志引用；清洗与聚合另存的结果表默认不得与源表同名或已存在（409，`allow_overwrite=true` 才覆盖） |
 | finance_ledger_personal 个人记账 | 全新 | 两级账户/分类/交易/预算，CSV 导入导出 |
 | finance_ledger_bip 企业记账 | 全新 | BIP 三类导出列签名识别 + 人工映射，借贷平衡 warning，export-to-vault |
-| finance_tax 企业所得税 | 整体迁入 | 原项目 5 routers + 10 services 零改动移植，`mod_tax_` 表前缀，迁移脚本幂等 |
-| finance_board 报表看板 | L2 | 优先计划任务「微信报表监控」通道（轮询 `last_run.json`，600s 超时；无任务回退直接子进程），失败最多尝试 2 次（重试 1 次/间隔 5s），HTML 快照归档 + 日志尾部（入库截断 4000、读取末 500），iframe 嵌入（CSP `frame-ancestors 'self'`），产物校验 `GET /verify`（仅接口） |
-| finance_pos POS 对账 | L1 | 台账 + 差异分析两步执行（单步 900s 超时），产物差集归集，上传 50MB |
-| finance_bankflow 银行流水模板 | 纯转换 | 建行/中行流水 xlsx → BIP 银行对账单模板；列名匹配、账号映射（全号/尾号）、无流水号合成 `SYN`、官方骨架保格式、20MB、零新表 |
-| finance_cashflow 现金流填报 | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护；运行记录列表分页（`page` ≥ 1、`page_size` 1–100，返回 `{total, items, page, page_size}`，按 id 倒序），上传 50MB |
+| finance_tax 企业所得税 | 整体迁入 | 原项目 5 routers + 10 services 移植，`mod_tax_` 表前缀，迁移脚本幂等；财报导入能识别税号或企业名称才真实落库（否则仅预览 `persisted=false`，可用 `/import/{enterprise_id}` 指定企业）；申报草稿可 `PUT` 更正重算，已提交不可更正/删除（409），企业存在已提交申报时删除 409；CIT 计税入口过 `require_tax_scope` |
+| finance_receipt 银行回单整理 | L2 | 账期（人工起止日期）扫描建行/平安/中行回单，页内按表头坐标逐笔切分并五类识别（待清算收入/正常转账收入/转账支出/结息/手续费，无法判断记「待确认」）；待确认未清零禁止生成；按账户×类别固定槽位排版（建行、平安 3 笔页，中行 2 笔页），原子替换产物，提供单份/合并下载与打印、整批 ZIP、原单预览与 XLSX 清单（防公式注入）；详见 §19 |
+| finance_board 报表看板 | L2 | 优先计划任务「微信报表监控」通道（以 `logs/run.lock` 判在途、轮询 `last_run.json`；无任务回退直接子进程），单次尝试 15s 查询 + 15s 复查 + 30s 触发 + `max(通道 600s, 直接回退总预算 600s)` = **660s**，最多尝试 2 次（重试 1 次/间隔 5s/残留锁等待 ≤60s，最坏 1385s，前端超时 1500s），HTML 快照归档 + 日志尾部（入库截断 4000、读取末 500），iframe 嵌入（CSP `frame-ancestors 'self'`），产物校验 `GET /verify`（仅接口） |
+| finance_pos POS 对账 | L1 | 台账 + 差异分析两步执行（单步 900s 超时），产物差集归集，上传 50MB；执行互斥（并发 409），只有 0 字节产物判失败 503；v1.19.0 增刷卡凭证（回单×对账单合并凭证 + 月度手续费凭证，报表日期容差 `max(10, date_tolerance+7)` 天），详见下方小节 |
+| finance_bankflow 银行流水模板 | 纯转换 | 建行/中行流水 xlsx → BIP 银行对账单模板；列名匹配、账号映射（全号/尾号）、无流水号合成 `SYN`、官方骨架保格式、20MB、零新表；预览**只返回掩码 + `account_token`**，导出按令牌服务端反查（仅兼容唯一掩码，歧义 400），完整账号不出后端 |
+| finance_cashflow 现金流填报 | L1 | V1 引擎 CLI 重定向，ZIP 解包 + zip-slip 防护；运行记录带 `actual_year`（2000–2100，缺省当前年，历史 0 按创建年兜底）；运行记录列表分页（`page` ≥ 1、`page_size` 1–100，返回 `{total, items, page, page_size}`，按 id 倒序），上传 50MB；任何失败/重跑分支清空 `artifacts` |
+| finance_recon 商户核销对账 | L2 | 四源（核销/认领/欠费/账单 PDF）导入 + 合同范围显式勾选 + 机检勾稽 + 人工复核（确认/排除永不被重跑覆盖）+ 三格式报告；`ever_ready` 批次审计留痕不可删，源文件仅 draft/failed 可删 |
+| finance_lease 租赁核算 | 新增（工作树，未发版） | 承租人使用权资产/租赁负债**初始 + 正常后续计量**：合同台账、付款计划（逐期/整表替换/xlsx 预览→确认导入）、测算（评估表 + 期间表）、三组恒等式与滚动校验、确认快照、五页签 xlsx 底稿；**简化口径** 使用权资产 = 租赁负债现值；计划口径不对账实付、不回写 BIP（另有 BIP 科目余额**只读**对账，见 §20）；变更/终止/长摊/工会不在本模块 |
 | finance_hello 模块示例 | 机制实证 | 连通性自检 + 样例表 `mod_hello_entry` + 只读工具 `hello_ping`（财税专员白名单内） |
-| finance_stamp_duty 印花税填报 | 新增（未发版，随 v1.16.1） | 13 税目税率表（印花税法）+ 免税标记 + 六税两费减半（policy_status 有效期校验），申报底稿 xlsx 导出 |
-| finance_vat 增值税填报 | 新增（未发版，随 v1.16.1） | 一般纳税人（13%/9%/6% 白名单销项−进项，留抵归 0）/ 小规模（季度 30 万免征、超限全额 1%，19号公告有效期校验）双模式，底稿导出 |
-| finance_iit 个人所得税填报 | 新增（未发版，随 v1.16.1） | 工资薪金累计预扣法逐月模拟（5000 减除+社保+专项附加+其他，七级预扣率跨档），扣缴底稿导出 |
+| finance_deferred 长期待摊 | 新增（工作树，未发版） | 仅租入资产改良支出的直线摊销：净额=含税÷(1+税率)、月摊=净额÷月数（HALF_UP 两位）；末期尾差如实留在末期余额，**不吸收、不转销、不倒挤**；摊销到期晚于租赁到期只 `warning`，确认须 `risk_acknowledged` + 非空 `risk_note`；三页签底稿；不做非租赁长摊 |
+| finance_union 工会经费计提 | 新增（工作树，未发版） | 手工工资基数 + **批次费率**（必填、行级无覆盖）；本期计提=基数×费率、上期差异=上期实际−上期已计提（负数=冲回）、本期建议入账=本期计提+上期差异；缺输入 `unknown` 不按 0；确认后只读；三页签导出；不读 HR、不做 60/40、凭据、税前判断、支付与 BIP 回写 |
+| finance_stamp_duty 印花税填报 | 新增（未发版，随 v1.16.1） | 13 税目税率表（印花税法）+ 免税标记 + 六税两费减半（policy_status 有效期校验），申报底稿 xlsx 导出；同纳税人同期间重复 409，`PUT` 受控更正（已导出/已提交 409），已提交删除 409，计税入口过 `require_tax_scope` |
+| finance_vat 增值税填报 | 新增（未发版，随 v1.16.1） | 一般纳税人（13%/9%/6% 白名单销项−进项，留抵归 0）/ 小规模（季度 30 万免征、超限全额 1%，19号公告有效期校验）双模式，底稿导出；同纳税人同期间重复 409，`PUT` 受控更正（不换纳税人/期间，已导出/已提交 409），已提交删除 409，计税入口过 `require_tax_scope` |
+| finance_iit 个人所得税填报 | 新增（未发版，随 v1.16.1） | 工资薪金累计预扣法逐月模拟（5000 减除+社保+专项附加+其他，七级预扣率跨档），扣缴底稿导出；专项附加按国发〔2023〕13号：住房贷款利息 1000 元/月（≤240 个月）、住房租金 1500/1100/800 元/月（城市档位）、学历继续教育 400 元/月×≤48 个月、职业资格继续教育 3600 元/年；`PUT` 受控更正，计税入口过 `require_tax_scope` |
 | finance_dsf 残保金填报 | 新增（未发版，随 v1.16.1） | （职工总数×比例−安排数）×年平均工资；30 人免征；安排比例分档减收 50%/90%（8号公告有效期校验），底稿导出 |
 
 跨项目引擎/数据路径（费用分类 / 发票 / POS / 现金流 / 报表看板）经
@@ -223,9 +228,9 @@ QwenPaw 插件兼容层，均有独立开关；技能池经 AgentScope `LocalSki
 引擎目录缺失时对应接口返回 503 中文提示，不影响其他模块。引擎子进程统一经
 `utils.engine_subprocess_env()` 显式指定 TEMP/TMP/TMPDIR（修 Git Bash 继承破损 TEMP 导致引擎临时文件失败），
 上传文件名经 `utils.repair_upload_mojibake()` 修复 GBK/Latin-1 乱码（依赖中文文件名的引擎匹配）。
-BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级。
+BIP 导入的 `export-to-vault` 在数据池清洗模块不可用时同样 503 降级。
 
-**上传限额与导入行数（分模块口径，as-built）**：聊天附件 10MB；费用分类 / 发票 / 数据仓 / 税务
+**上传限额与导入行数（分模块口径，as-built）**：聊天附件 10MB；费用分类 / 发票 / 数据池清洗 / 税务
 各 20MB；BIP 10MB；个人记账 CSV 5MB；POS 与现金流各 50MB。所有上传路由统一走共享有界读取
 `app.upload.read_upload_limited`（1MB 分块、累计超限即中断读取，抛 `UploadTooLargeError` 由
 `main.py` 全局映射 400），不裸 `file.read()`；宿主另有全局 ASGI 请求体上限 128MB
@@ -236,14 +241,72 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 
 各模块 HTTP 接口清单见 `API.md`「财务模块接口（/api/finance/*）」一节。
 
+#### 数据池清洗（v1.19.0）
+
+`finance_vault` 由「数据仓」原地升级为「数据池清洗」：DuckDB 底座与 `ingest_dataframe` 契约不变，
+原「表清单 + SQL 查询」两视图改为前端三页签 `PoolView`（数据池 / 整合分析 / SQL 查询，
+URL `?tab=` 驱动、`?table=` 预选表）。新增 `cleaning.py` 与 `mod_vault_clean_log` 表：
+
+- **列画像 `GET /api/finance/vault/tables/{table}/profile`**：每列 DuckDB 原生类型 + 文本列采样
+  （≥80% 可解析才判 numeric/date，采样 ≤500 值）三态类型推断；缺失率、唯一率、top5 高频值、
+  数值列 min/max；表级警告（全空列、疑似常量列、缺失率 >30%、唯一率≈100% 疑似 ID 列、整行重复）。
+  行数超扫描上限降级 sampled（仅缺失率）。
+- **配方清洗 `POST .../clean/preview | clean/apply`**：配方 JSON（4 算子开关 + required_columns +
+  invalid_policy + mark_outliers_iqr），固定顺序执行 7 步（脏值归一→整行全空剔除→全空列剔除→整行去重→
+  类型校验（无效值 drop_row/null_cell 二选一）→关键列必填（缺列跳过并警告）→IQR 离群只标记不剔除）。
+  预览不写库；应用后结果落 `{表名}_clean` 新数据集并写配方日志，原始数据不动；配方未知键忽略并警告
+  （跨表复用容错）。
+- **单表聚合 `POST .../aggregate | aggregate/export | aggregate/save`**：维度分组 + 指标
+  （sum/avg/count/min/max 白名单）+ 过滤（9 算子白名单）+ 排序；**在 pandas 内存分组完成，不拼 SQL**
+  （Mimosa PreToolUse 会拦截 SQL 字符串拼接，且规避注入面）；sum/avg 作用于文本型数值列时先数值化
+  （与清洗同口径）；导出 xlsx 走 `safe_cell` 防公式注入；另存经 `ingest_dataframe` 登记可再查询再清洗。
+- **清洗日志 `GET .../clean/log`**：配方 + 逐算子报告（单元 rows/cells/cols 区分）+ 样本留痕（≤10 行）
+  + 双侧缺失率对照，按 id 倒序，供配方复用与重放。
+- **数据集使用预检 `GET .../usage`**：返回登记/视图/物理修订表/清洗日志引用（源表与结果表计数）/
+  `consistent` 与 `issues`/`requires_force`，供删除与重命名二次确认。
+- **安全删除 `DELETE .../tables/{table}?confirm=&force=`**：`confirm` 必须等于数据集名（缺失 422、不符 400）；
+  被清洗日志引用或存在未登记残留时需 `force=true`，否则 409；成功同时清理视图、物理修订表与登记。
+- **重命名 `POST .../tables/{table}/rename`**：`{new_table}` 过同一标识符白名单；同锁内改视图/物理修订表/登记/
+  清洗日志引用，目标已存在或与源同名 409。
+- **另存覆盖语义**：`clean/apply` 与 `aggregate/save` 的结果表默认**不得与源表同名、且不得已存在**
+  （409「结果表名与源表相同/结果表已存在」），显式 `allow_overwrite=true` 才覆盖；目标检查与写入在同一写锁临界区。
+
+#### POS 刷卡凭证与目录浏览（v1.19.0）
+
+`finance_pos` 新增月度刷卡凭证生成（`vouchers_service.py` + `mod_pos_voucher_batch` 表），
+完整算法见《算法实现逻辑》§11：
+
+- **端点**：`GET /api/finance/pos/vouchers/config`（源/输出目录回退值）、
+  `POST /api/finance/pos/vouchers/generate`（月份 + 可选源/输出目录，503=运行期失败、400=输入问题）、
+  `GET /api/finance/pos/vouchers`（批次列表）、`GET .../files/{name}`（单文件下载）、
+  `POST .../merge`（选中凭证合并 PDF）、`DELETE /api/finance/pos/vouchers/{batch_id}`（删批次）、
+  `DELETE /api/finance/pos/runs/{run_id}`（删运行，running 拒绝）。
+- **算法概要**：按月扫描源目录（`FINANCE_POS_STATEMENT_DIR` 或人工指定，支持归档基目录或当月目录两种布局）
+  → 解析 SHOP 对账单「终端小计」行 + 回单 PDF 文本层「单位客户专用回单」分块 →
+  双键匹配（终端一致 + 报表日期 ≤ 清算日 ≤ 报表日期+容差天；金额命中优先、日期最近兜底）→
+  对账单打印补丁（隐藏其他终端数据行）→ LibreOffice 转 A4 横排 PDF → 裁切回单 →
+  每笔交易生成「对账单页+回单页」合并凭证 + 月度手续费凭证（汇总首页 + 全部对账单页）→
+  中间产物清理，`manifest.json` 留痕。
+- **配置**：`finance_pos_statement_dir / finance_pos_output_dir / finance_pos_project_map /
+  finance_pos_receipt_glob / finance_pos_match_date_tolerance / finance_pos_match_amount_tolerance`
+  六项（详见 §12）。
+- **目录浏览**：`GET /api/fs/drives`（可用盘符，非 Windows 返回单根）与 `GET /api/fs/browse`
+  （列子目录，不含文件，绝对路径校验、隐藏 `$`/`.` 条目、上限 500 项）——只读、不读文件内容，
+  前端 `DirectoryPicker.vue` 弹窗逐层选择，供凭证源/输出目录与后续目录类配置复用。
+
 ### 4.5 知识、记忆与 MCP
 
-**RAG 知识库（ADR-003：BM25，不引向量库）**
+**知识库（v1.18.0：文档库 + 关键词/向量混合检索；ADR-003 增补）**
 
-- 笔记 BM25 检索，中文按**字符二元组（bigram）**分词 + 英文/数字单词，零外部依赖、完全离线。
-- 索引常驻内存，按 `max(notes.updated_at)` + 块数失效自动重建（自愈），也提供手动重建。
-- 笔记切块 240 字符、重叠一半，块内带标题便于定位；`search_knowledge` 注册为只读 Agent 工具。
-- 端点：`GET /api/knowledge/rag/stats`、`POST /api/knowledge/rag/rebuild`、`POST /api/knowledge/rag/search`。
+- 文档库 `kb_docs` / `kb_chunks`：制度、流程、软件手册等长文档；保留标题层级、页码、版本与生效期。
+- 解析复用 pdfplumber / python-docx / python-pptx；按标题边界切块（目标 600 字、重叠 80 字），单篇正文上限 30 万字。
+- 扫描件 OCR（可选，默认关）：RapidOCR + onnxruntime，模型随 wheel 分发、运行时不联网；只对单页文本少于 20 字的**无文本层** PDF 页识别，200/250 DPI 渲染，单文档最多 50 页；低置信度行丢弃，失败页跳过，`ocr_pages` 记录页数供界面提示核对。
+- 关键词索引走 SQLite **FTS5**：先切 bigram 再写入 `unicode61` 索引（原生 trigram 对 2 字中文词无法命中，已实测）；`rowid = kb_chunks.id`，原文留在块表、snippet 从原文生成。
+- 向量索引走 **sqlite-vec** `vec0`，embedding 走 OpenAI 兼容 `/embeddings`（复用当前激活供应商，可单独覆盖端点）；归一化后存 float[N]，失败自动降级关键词，不影响上传与搜索。
+- 检索用 **RRF** 融合「文档关键词 + 文档向量 + 笔记 BM25」，默认只返回 `effective` 文档；结果带 `《标题》· 版本 · 章节 · 页码` 引用。
+- 制度版本以 `doc_key = 制度编号（空则规范化标题）` 为链，`(doc_key, version)` 唯一；新版本生效时旧版自动 `superseded`。
+- Agent 只读工具：`search_knowledge`（合并检索，带出处）与 `read_knowledge_doc`（按行读全文），自动补进所有专家白名单。
+- 端点：`/api/knowledge/docs*`（CRUD/上传/重解析/下载/上下文）、`/api/knowledge/settings*`（OCR/向量设置）、`/api/knowledge/rag/*`（统计/重建/混合检索）。
 
 **长期记忆（ADR-004：手动为主，抽取为一次性动作）**
 
@@ -337,8 +400,9 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
 | business_legal | contract_review / case / seal | 审查与案件合法迁移矩阵、终态保护；临期/逾期分列；可空日期显式 null 清空 |
 | business_hr | employee / attendance / payroll | 考勤缺录 warning；任职月数与个税公共累计预扣；薪资确认留痕、级联 |
 | business_facility | equipment / compliance | 设备一机一档 ABC 分级；年检/消防/维保到期，pending/done/overdue 派生；工单可空关联设备 |
+| business_manage | report / metric / record / text | 四份脱敏报表（内控 6 表 / 云南周报 / 曲靖周报 / 月度工作情况）按标签文本锚点解析、不锁行号；导入粒度＝报表类型+项目+期间，同粒度整批覆盖；指标/明细手工补录与叙述块；图表有源才画、不补 0；导出 xlsx |
 | business_gm | 无表 | 六域只读聚合；失败域 available=false，缺源 null+reason；12 个月到期面积集中度 strict >25%；`gm_summary` 只读工具 |
-| business_dq | 无表 | 七域×五维只读巡检；score=100−Σ(error10/warning3/info1)，issue_count=Σ命中行数，top_issues≤20；财务域含数据仓画像/看板陈旧与产物校验/KPI 双源对照/税务勾稽/BIP 借贷不平；空库不误报；`dq_summary` 工具 |
+| business_dq | 无表 | 七域×五维只读巡检；score=100−Σ(error10/warning3/info1)，issue_count=Σ命中行数，top_issues≤20；财务域含数据池清洗画像/看板陈旧与产物校验/KPI 双源对照/税务勾稽/BIP 借贷不平；空库不误报；`dq_summary` 工具 |
 
 跨模块边界仍是只导出 xlsx、不写财务表。经营聚合按域延迟导入，单域失败不拖垮宿主。
 
@@ -469,13 +533,13 @@ BIP 导入的 `export-to-vault` 在数据仓模块不可用时同样 503 降级�
   模型未配置返回 `{ok:false, need_llm_config:true, message}`；带图但模型无视觉能力返回 **400**；
   **运行时异常返回 502**（日志记录完整堆栈，对外不回传内部细节）。
 
-## 8. 数据模型（56 张表）
+## 8. 数据模型（85 张表）
 
-ORM 定义 **55 张表**：宿主表 12 张（`app/models.py`）+ 模块表 43 张（`mod_` 前缀，随模块加载注册进
+ORM 定义 **85 张表**：宿主表 17 张（`app/models.py`）+ 模块表 68 张（`mod_` 前缀，随模块加载注册进
 `Base.metadata`；其中 business_gm 无表）。老库中另有 v1.2.0 遗留表 `model_profiles`（ORM 已无对应模型，新库不会创建），
-实测运行库合计 56 张表。
+实测运行库合计 86 张表。<!-- as-of: 2026-11-20 工作树（17+68） -->
 
-### 8.1 宿主表（12）
+### 8.1 宿主表（17）
 
 ```
 tasks            id, title, description, status, priority, due_date?, category, completed_at?, created_at, updated_at
@@ -503,9 +567,17 @@ mcp_servers      id, name(唯一), command, args(JSON), env(JSON), enabled, stat
                  last_error, tools_json(JSON), created_at
 memories         id, content, source(manual/auto/import), session_id, tags(JSON), pinned, hit_count,
                  last_used_at?, created_at
+agent_spec_tombstones  id, name(唯一), deleted_at（专家档案墓碑，防重名复用旧 tools 预置）
+scheduled_job_run_facts  id, job_id→scheduled_jobs, event(started/finished/unknown/skipped), status,
+                 summary, detail(JSON), started_at, finished_at, duration_sec, created_at（只追加事实表，每任务上限 500 条）
+kb_docs          id, title, source_path, file_name, file_type, pages, chars, chunk_count, status(effective/
+                 archived/superseded), version, effective_from, effective_to, note, created_at, updated_at
+kb_chunks        id, doc_id→kb_docs, seq, heading_path, content, page_from, page_to, created_at（FTS5 虚表
+                 kb_chunks_fts + 向量表 kb_vec（sqlite-vec，可选）随本表派生）
+kb_settings      id=1 单行：chunk_size, overlap, embedding_dims, embedding_model, vector_enabled, updated_at
 ```
 
-### 8.2 模块表（43，`mod_` 前缀）
+### 8.2 模块表（68，`mod_` 前缀）
 
 ```
 mod_hello_entry         finance_hello（机制示例）
@@ -514,6 +586,7 @@ mod_expense_row         finance_expense
 mod_invoice_batch       finance_invoice
 mod_invoice_item        finance_invoice
 mod_vault_dataset       finance_vault
+mod_vault_clean_log     finance_vault
 mod_pl_account          finance_ledger_personal
 mod_pl_category         finance_ledger_personal
 mod_pl_transaction      finance_ledger_personal
@@ -529,11 +602,31 @@ mod_tax_return          finance_tax
 mod_tax_policy          finance_tax
 mod_board_snapshot      finance_board
 mod_pos_run             finance_pos
+mod_pos_voucher_batch   finance_pos
 mod_cashflow_run        finance_cashflow
 mod_stamp_duty_filing   finance_stamp_duty
 mod_vat_filing          finance_vat
 mod_iit_filing          finance_iit
 mod_dsf_filing          finance_dsf
+mod_receipt_batch       finance_receipt
+mod_receipt_item        finance_receipt
+mod_recon_batch         finance_recon
+mod_recon_source        finance_recon
+mod_recon_record        finance_recon
+mod_recon_match         finance_recon
+mod_recon_issue         finance_recon
+mod_recon_term          finance_recon
+mod_lease_contract      finance_lease
+mod_lease_payment       finance_lease
+mod_lease_calculation   finance_lease
+mod_lease_assessment    finance_lease
+mod_lease_period        finance_lease
+mod_lease_bip_map       finance_lease
+mod_deferred_item       finance_deferred
+mod_deferred_run        finance_deferred
+mod_deferred_period     finance_deferred
+mod_union_batch         finance_union
+mod_union_line          finance_union
 mod_leasing_unit        business_leasing
 mod_leasing_lead        business_leasing
 mod_leasing_followup    business_leasing
@@ -551,6 +644,10 @@ mod_hr_attendance       business_hr
 mod_hr_payroll          business_hr
 mod_fac_equipment       business_facility
 mod_fac_compliance      business_facility
+mod_mg_report           business_manage
+mod_mg_metric           business_manage
+mod_mg_record           business_manage
+mod_mg_text             business_manage
 ```
 
 要点：
@@ -561,7 +658,7 @@ mod_fac_compliance      business_facility
 
 ## 9. 实现方法与算法说明
 
-### 9.1 轻量列迁移机制（`main.py` 的 `_ensure_sqlite_columns`）
+### 9.1 轻量列迁移机制（`app/bootstrap/schema.py`，`main.py` 保留同名包装）
 
 SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁式迁移：
 `PRAGMA table_info(表)` 读现有列，缺哪列补哪条 `ALTER TABLE ... ADD COLUMN`。
@@ -575,7 +672,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | `scheduled_jobs` | `cron_expr`、`action` |
 | `provider_models` | `temperature`、`note`、`supports_thinking`、`supports_vision`、`thinking_levels`、`probed_context`、`probed_max_output`、`probe_result`、`probed_at` |
 
-表不存在则跳过，整体异常仅告警不阻断启动。专家团队 seed（`seed_agent_specs`）属配置数据，
+表不存在则跳过，整体异常仅告警不阻断启动。启动路径只做幂等建表/补列/补索引与启动种子；一次性秘密迁移（Provider 明文 Key、MCP env、旧 `agent_settings.api_key`）不在启动执行，由 `backend/scripts/migrate.py secrets` 显式触发，启动仅做只读计数与告警。专家团队 seed（`seed_agent_specs`）属配置数据，
 不受 `SEED_ON_STARTUP` 控制；表为空时全量灌入，升级后新增的内置专家在下次启动自动补齐。
 
 ### 9.2 热备份（`backend/scripts/backup_db.py`）
@@ -658,15 +755,17 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | --- | --- |
 | API Key 静态加密 | DPAPI（`dpapi:<base64>`，绑定本机 + 当前用户）；缺 pywin32 **拒绝启动，绝不降级明文**；回传前端脱敏 `••••••xxxx`，掩码哨兵 `********` 或脱敏值原样回传均表示保留现值 |
 | SSRF 防护 | 网关/供应商地址校验（`validate_base_url` / `_check_http_url`，SDK 构造 / 网关探测 / httpx 测试同口径）：仅 http(s)、需有主机名、禁内嵌用户名密码与控制字符；本机单用户场景允许 127.0.0.1/内网（如 Ollama 本地网关），不封禁私网段；错误信息不回显 URL 主体 |
-| 上传安全 | 扩展名白名单 + 分模块大小限制（聊天 10MB；费用/发票/数据仓/税务 20MB；BIP 10MB；个人 CSV 5MB；POS/现金流 50MB）+ 文件名包含校验 + `session_id` 白名单正则（防路径穿越）；读取统一共享分块限流 `read_upload_limited`（1MB 分块、超限即断 → 400）；宿主全局请求体上限 128MB（Content-Length 早拒 + chunked 累计 → 413）；导入类共享行数上限 `MAX_IMPORT_ROWS=200000`（失败关闭） |
+| 上传安全 | 扩展名白名单 + 分模块大小限制（聊天 10MB；费用/发票/数据池清洗/税务 20MB；BIP 10MB；个人 CSV 5MB；POS/现金流 50MB）+ 文件名包含校验 + `session_id` 白名单正则（防路径穿越）；读取统一共享分块限流 `read_upload_limited`（1MB 分块、超限即断 → 400）；宿主全局请求体上限 128MB（Content-Length 早拒 + chunked 累计 → 413）；导入类共享行数上限 `MAX_IMPORT_ROWS=200000`（失败关闭） |
 | Origin 防护 | `OriginGuardMiddleware`：`/api` 状态变更方法（POST/PUT/PATCH/DELETE）与 `discover` 类 GET 校验 Origin——无 Origin 的 CLI/探针、回环开发来源、`CORS_ORIGINS` 配置项、运维配置 `HOST`（端口与 `PORT` 一致）的同源来源放行，其余 403；不再用「Origin 与请求 Host 自证同源」放行（避免 DNS rebinding 绕过）；普通 `/api` 读取不硬拦（跨站读取已由 CORS 兜底）；OPTIONS 预选不拦 |
-| MCP env 保护 | `mcp_servers.env` 值落库前逐个 DPAPI 密封，连接/读取时还原；接口只回显键名与 `***`；存量明文在启动时由 `migrate_env_secrets()` 一次性迁移，DPAPI 不可用拒绝降级 |
-| 超时口径 | LLM 客户端 120s；MCP 调用 30s / 握手 15s / 单条消息 4MB；模型探测 httpx 30s；DuckDB 查询 5s `interrupt()`；看板管线单步 600s、POS 单步 900s（超时落快照日志） |
+| MCP env 保护 | `mcp_servers.env` 值落库前逐个 DPAPI 密封，连接/读取时还原；接口只回显键名与 `***`；存量明文由 `backend/scripts/migrate.py secrets` 调 `migrate_env_secrets()` 一次性迁移（启动只做只读统计与告警），DPAPI 不可用拒绝降级 |
+| 超时口径 | LLM 客户端 120s；MCP 调用 30s / 握手 15s / 单条消息 4MB，入站单行 ≤1,048,576 字符（≈4MB UTF-8 最坏）；模型探测 httpx 30s；DuckDB 查询 5s `interrupt()`；看板单次尝试 660s（直接回退总预算 600s）、POS 单步 900s（超时落快照日志） |
+| 目录浏览 | `/api/fs` 只读；根目录默认用户主目录 + 数据根 + 财务目录（`FINANCE_DATA_DIR`）+ POS 源/输出目录，`FS_BROWSE_ROOTS` 可覆盖；resolve 后判包含（`..`/符号链接同判），越界 403；不读文件内容、不返回文件 |
 | ZIP 安全 | zip-slip 防护：`is_relative_to` 判定拒绝越界与绝对路径条目 + 解压后总量上限 200MB（finance_cashflow / finance_pos / finance_invoice） |
-| 数据仓 SQL | SELECT-only + 表名白名单 + 强制 LIMIT + 独立线程 `interrupt()` 超时；去注释后执行 |
+| 数据池清洗 SQL | SELECT-only + 表名白名单 + 强制 LIMIT + 独立线程 `interrupt()` 超时；去注释后执行 |
 | 执行面 | Bash 工具默认关闭且自带危险文件/目录黑名单；QwenPaw 插件默认关闭且只读模式跳过 |
 | 监听面 | 默认仅 127.0.0.1；`LoopbackBindingGuardMiddleware` 在非回环监听且未开 `ALLOW_NON_LOOPBACK=1` 时，除 `GET/HEAD /api/health` 外 `/api` 一律 **503** 中文拒绝（判定用 `scope["server"]` 实际监听地址，不依赖 `.env` 的 HOST）。开启 `ALLOW_NON_LOOPBACK=1` 不等于有鉴权，必须自行加 VPN/反向代理鉴权与防火墙 |
 | 数据边界 | `gitignore` 分层：`data/`、`.env`、`backups/`、现金流引擎产出/真实数据；提交前无真实业务值 |
+| PII 门禁 | `dev/check_pii.py` 扫路径/tracked/staged/HEAD archive 与 xlsx 单元格（只输出规则与位置，不回显命中值，命中退出 1）；`dev/hooks/pre-push` + `dev/install_hooks.bat` 在推送前阻断 |
 
 ## 11. 接口设计
 
@@ -692,6 +791,10 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | `FINANCE_DATA_DIR` | 空（→ `backend/data/finance`） | 财务模块数据目录 |
 | `DEBUG_DATA_DIR` | 空（→ `backend/data/debug`） | 调试中心数据目录（运行时读取，测试隔离用） |
 | `FINANCE_EXPENSE_ENGINE_PATH` / `FINANCE_INVOICE_ENGINE_PATH` / `FINANCE_POS_ENGINE_PATH` / `FINANCE_CASHFLOW_ENGINE_PATH` / `FINANCE_BOARD_PIPELINE_PATH` | 空（按示例主体22相对位置推导） | 跨项目引擎/管线路径；**接受目录或单一文件**（文件取父目录，`utils.resolve_engine_root`）；缺失时对应接口 503 中文，不影响其他模块 |
+| `FINANCE_POS_STATEMENT_DIR` / `FINANCE_POS_OUTPUT_DIR` | 空 | POS 刷卡凭证：对账单+回单归档基目录（下含 `YYYY年/MM` 月度目录）与输出目录（空落 `finance_data_dir/finance_pos/vouchers`）；生成时可按批次人工指定覆盖 |
+| `FINANCE_POS_PROJECT_MAP` / `FINANCE_POS_RECEIPT_GLOB` | 空（内置默认） | POS 刷卡凭证：终端尾号→项目名映射（`0002=项目A,0005=项目B,…`）与回单 PDF 文件名通配（逗号分隔多个）；空用内置默认 |
+| `FINANCE_RECEIPT_SOURCE_DIR` / `FINANCE_RECEIPT_OUTPUT_DIR` | 空 | 银行回单整理：回单源目录与输出目录（空则页面手选；输出空落 `finance_data_dir/finance_receipt`）；两者均纳入目录浏览白名单 |
+| `FINANCE_POS_MATCH_DATE_TOLERANCE` / `FINANCE_POS_MATCH_AMOUNT_TOLERANCE` | 2 / `0.01` | POS 刷卡凭证：回单↔对账单匹配的日期容差天数与金额容差（元） |
 
 其余运行时配置（供应商、模型、激活模型、Agent 工作参数、技能/Bash/插件开关、MCP 服务器）
 全部走界面存库（`agent_settings` 单行 + 各配置表），无需手改 `.env`。
@@ -779,7 +882,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **重活卸载**：同步解析/落盘/建运行统一进线程池，契约按线程标识与事件循环可调度判定。
 - **事务隔离**：个人 CSV 导入按行 SAVEPOINT，坏行不回滚有效行。
 - **Origin 判定**：仅放行无 Origin CLI/探针、回环、显式 CORS、运维配置 `HOST` 同源；不再用 Origin 与 Host 自证。
-- **MCP env 保护**：逐值 DPAPI 密封 / 还原，输出掩码，启动时迁移存量明文。
+- **MCP env 保护**：逐值 DPAPI 密封 / 还原，输出掩码；存量明文由 `backend/scripts/migrate.py secrets` 一次性迁移（启动只做只读统计与告警）。
 - **路径与压缩包安全**：快照 HTML 限制在快照根内；ZIP 逐段校验 Windows 合法字符、设备保留名、穿越路径，并限制解压总量。
 - **只读 SQL**：白名单 + 禁词 + 单语句 + 强制 LIMIT；LIMIT 匹配跳过字符串字面量。
 - **CSV 公式注入防护**：用户可控文本以 `=`、`+`、`-`、`@` 开头时前置单引号。
@@ -806,7 +909,8 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 | 知识与记忆 / MCP / 技能包 / 专家团文件 | 已实现 | 真实 MCP（kimi-datasource）+ 本地 mock 实测通过 |
 | 定时任务 / 调试中心 | 已实现 | E2E 通过 |
 | 费用 / 发票 / POS / 现金流 / 报表看板 | 已实现 | 真实引擎 + 脱敏数据实测（对拍一致、E4 边界、E9 ±20% 复跑、W1–W9 全过） |
-| 数据仓 / BIP / 个人记账 / 企业所得税 | 已实现 | BIP 原稿 13001 行实测入库；其余本地数据库与导入导出边界通过 |
+| 数据池清洗 / BIP / 个人记账 / 企业所得税 | 已实现 | BIP 原稿 13001 行实测入库；其余本地数据库与导入导出边界通过 |
+| 租赁核算（finance_lease，工作树在途） | 已实现首期：22 路由 / 6 表（含 BIP 只读对账）/ 简化现值模型 / 三组恒等式与滚动校验 / 五页签导出 | 规则矩阵与合成黄金用例见 `tests/test_finance_lease_calculation.py`、`tests/test_finance_lease_io.py`, `tests/test_module_finance_lease.py` |
 | 可用性（第 6 章） | — | U1–U10 自动化代行完成；真人阈值（≥80% 无协助）待招募复测 |
 
 ### 15.3 已验证运行情况
@@ -822,7 +926,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - 完整记录见 `20261022-修复与验收报告.md`。
 ## 16. 2026-11-04 as-built 追平（银行流水 / 数据质量 / 看板校验 / 滚动摘要 / 路由缓存）
 
-> 本节只记录**当前实现**口径；历史测试数字保持快照语义，不在此重写。版本以 `backend/app/config.py` 为准（v1.16.1）。
+> 本节只记录**当前实现**口径；历史测试数字保持快照语义，不在此重写。版本以 `backend/app/config.py` 为准（v1.18.0）。
 
 ### 16.1 银行流水 → BIP 模板（finance_bankflow）
 
@@ -840,7 +944,7 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **计分**：每域 `score=100−Σ(error 10 / warning 3 / info 1)`，下限 0；`overall_score` 为可用域均分；单域异常只 `available=false + gap_reasons`，不拖垮总览。
 - **计数**：`issue_count` = Σ各检查 `count`（命中行数），与 `top_issues` 只取 20 条无关；`dq_summary` Agent 工具只返回前 10 条与每域 error/warning/info 计数。
 - **跨表勾稽**：营运超收/状态金额不一致/履约中合同过期；人事薪资无考勤；企划预算超支；工程合规逾期；财务 BIP 借贷不平；税务申报无财务数据/财务数据无申报/有税无所得/税额超 25%。
-- **财务域附加**：数据仓质量画像（行数/整行重复/高缺失列/空表，单表失败不拖垮）、看板陈旧快照（>7 天 warning）、连续失败（最近两条 failed→error）、看板产物一致性（`verify_snapshot` 失败项）、看板 KPI vs 业务库双源对照（带空库守卫）、税务勾稽。
+- **财务域附加**：数据池清洗质量画像（行数/整行重复/高缺失列/空表，单表失败不拖垮）、看板陈旧快照（>7 天 warning）、连续失败（最近两条 failed→error）、看板产物一致性（`verify_snapshot` 失败项）、看板 KPI vs 业务库双源对照（带空库守卫）、税务勾稽。
 - **空库防误报**：只有对应业务表有数据时才执行相关检查；真实空库只报表缺失/不可用，不产生假问题。
 
 ### 16.3 看板：计划任务通道 + 重试 + 产物校验
@@ -856,6 +960,10 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - 判定顺序：引擎项目名 → 备注 → PDF 全文（懒加载）→ 同批同购方唯一项目继承 → 未归类。
 - 入库即归类；`POST /batches/{id}/reclassify` 可重算（`asyncio.to_thread`，未归类才补取全文），**该接口在规则不可用时返回 400 且不改任何数据**；**人工修正（corrected）永不被覆盖**；已导出批次重新归类会回落 parsed 并清 `export_file`（旧包下载 409）。
 - 导出：整批 ZIP + 按项目 ZIP（`outbox/batch_{id}_projects/` + `batch_{id}_projects.json`）；ZIP 名「项目+月份.zip」/「发票汇总+月份.zip」，跨月为区间；下载由前端 Blob + `a.download` 显式落名，响应头同时给 ASCII 兜底与 `filename*`。
+- 项目 PDF（即时合并，**无需先导出**）：`GET /api/finance/invoice/batches/{batch_id}/projects/pdf?project=<项目名>`；`project` 必填 1–100 字（与项目 ZIP 同口径），同步 `def` 路由由 FastAPI 线程池执行，合并期间不阻塞事件循环。合并范围 = 本批次 + 本项目的 `parsed/incomplete` 明细（含红冲票与「未归类」，排除 `duplicate/failed`），顺序沿用导出明细的明细 ID 升序（`InvoiceItem.id`），每张原件全部页面按原页序直拼，不插封面/清单/分隔页。只读 `stored_path`：文件须存在、可读，且 `resolve()` 后位于本批 `inbox/batch_{id}`，不读其他批次或任意本机路径；产物是 `finance_invoice/tmp` 下唯一临时文件，正常响应结束由 `FileResponse` 后台任务删除，客户端中断等异常遗留由后续合并时的 1 小时陈旧文件清理兜底，失败清理半成品。
+- 项目 PDF 失败即整体失败：缺件、零页、损坏、加密且无法读取、路径越界统一汇总为中文错误（**409**）并列出票号/源文件，**禁止跳过**生成少票 PDF，且不留半成品临时文件；批次不存在 404、项目无有效明细 404；`uploaded/failed` 批次给「可重试/需重新上传」提示（409）；`project` 缺失、空白或超 100 字 422；合并不修改批次状态、明细与导出产物，也不受「未导出下载 ZIP 409」限制。
+- 项目 PDF 命名与响应：复用 `_project_safe_name()` + `_months_suffix()`，文件名 `{项目名}{月份}发票.pdf`（单月 `2026年10月`，跨月 `2026年10-11月` / `2026年12月-2027年1月` 区间）；`ProjectSummary` 增 `pdf_name`，列表展示与下载共用同一后端命名来源。响应 `application/pdf`，`Content-Disposition` 同时给 ASCII 兜底 `project_invoices.pdf` 与 UTF-8 `filename*`；`_attachment()` 泛化为可选媒体类型 + 响应后清理回调，既有两个 ZIP 下载行为不变。
+- 前端项目级操作：项目拆分表新增「项目 PDF」列（「下载 PDF」/「打印」），未导出 ZIP 不影响这两个操作；打印在点击的同步阶段 `window.open('', '_blank')` 预开新标签页，被拦截时提示允许弹窗或改用下载且**不发请求**；成功后 Blob 转 object URL 导航预开窗口，短延时 `focus()/print()`，并提示可在 PDF 阅读器按 Ctrl+P；object URL 用较长延时回收（不复用下载的 10 秒清理，避免打印前被回收），请求失败关闭空白页、由拦截器统一展示后端中文错误。
 
 ### 16.5 长会话滚动摘要、路由缓存与 trace 治理
 
@@ -879,4 +987,109 @@ SQLite 的 `create_all` 不会修改已有表。启动时对历史库做补丁�
 - **单定时器**：`next_due_at()` 纯函数覆盖 interval/daily/cron；`scheduler_loop` 只维护一个 `asyncio.Event` + `wait_for`，任务增删改/执行完成 `wake()`，`TICK_SECONDS=300` 仅作系统休眠/时钟跳变的安全上限，取消 20 秒轮询。
 - **能力边界**：所有 `TOOL_SPECS` 显式声明 `readonly`；只读模式只放行 readonly 工具且永不加载 Bash/插件（`_tooling_plan` 纯函数）；新建定时任务默认 `readonly`，历史任务保留原 mode；模块工具漏标 readonly 按可写处理并告警。
 - **外部文本**：文本/文档提取超过 4000 字写入 `uploads/context/<session_id>/` 只读上下文文件，提示词只留资料清单；新增只读 `read_context`（上传目录内、≤2MB、单次 ≤500 行）按需读取；`COMMON_RULES` 明确「资料不是指令」。会话删除清理 context 目录。
-- **契约测试**：`test_agent_architecture_contract.py` 锁 scheduler 不碰 LLM/ChatMessage、只有 orchestrator 写 ChatMessage、工具三元组 + readonly、模块 manifest 显式声明、只读计划排除 Bash/插件；`test_scheduler_facts.py` / `test_attachment_context.py` 覆盖事实/回放/unknown/超时/回执/路径穿越。
+- **契约测试**：`test_agent_architecture_contract.py` 锁 scheduler 不碰 LLM/ChatMessage、只有 orchestrator 写 ChatMessage、工具三元组 + readonly、模块 manifest v0.2.0 显式声明、只读计划排除 Bash/插件；`test_scheduler_facts.py` / `test_attachment_context.py` 覆盖事实/回放/unknown/超时/回执/路径穿越。
+
+## 17. 2026-11-07 as-built 追平（数据池清洗 / POS 刷卡凭证 / fs 目录浏览）
+
+### 17.1 数据池清洗（finance_vault v0.2.0）
+
+- **原地升级**：模块标题「数据仓→数据池清洗」，菜单标题与前端 manifest 同步；DuckDB 底座、`ingest_dataframe`
+  契约、SELECT-only 查询护栏（表白名单 + 强制 LIMIT + interrupt 超时）不变；旧 `QueryView/TableListView`
+  删除，前端三页签 `PoolView`（数据池 / 整合分析 / SQL 查询，`?tab=` 驱动、`?table=` 预选）。
+- **列画像**：`profile_table` 每列 DuckDB 原生类型 + 文本列采样三态类型推断（numeric/date/text，≥80% 可解析
+  才判类、采样 ≤500 值）、缺失率/唯一率/top5 高频值/数值 min-max；表级警告四类 + 整行重复；超扫描上限
+  降级 sampled 只算缺失率。单连接短会话 + 写锁串行，与 DQ 质量画像同口径。
+- **配方清洗**：4 算子（脏值归一 / 整行全空剔除 / 全空列剔除 / 整行去重）+ required_columns + invalid_policy
+  （drop_row/null_cell）+ IQR 离群只标记；固定顺序 7 步、行级首因剔除、逐算子统计（rows/cells/cols）+ 样本
+  留痕 ≤10 行；未知算子键忽略并警告（配方跨表复用容错）；应用后落 `{表名}_clean` 新数据集并写
+  `mod_vault_clean_log` 配方日志，原始数据不动。
+- **整合分析（单表聚合）**：维度 + 指标（sum/avg/count/min/max）+ 过滤（9 算子白名单）+ 排序；**pandas
+  内存分组完成，不拼 SQL**（Mimosa PreToolUse 拦截 SQL 字符串拼接，也规避注入面）；文本型数值列先数值化
+  （与清洗同口径）；导出 xlsx 走 `safe_cell`；另存经 `ingest_dataframe` 登记后可再查询、可再清洗。
+- **清洗日志**：配方 + 逐算子报告 + 样本 + 双侧缺失率对照，按 id 倒序，支持配方复用与重放。
+
+### 17.2 POS 刷卡凭证（finance_pos，v1.19.0）
+
+- **端点**：`GET /api/finance/pos/vouchers/config`（源/输出目录回退值）、`POST /api/finance/pos/vouchers/generate`
+  （月份 + 可选源/输出目录；400=输入问题、503=运行期失败）、`GET /api/finance/pos/vouchers`（批次列表）、
+  `GET .../files/{name}`（单文件下载）、`POST .../merge`（选中凭证合并 PDF 下载）、`DELETE .../{batch_id}`
+  （删批次，目录一并清理）、`DELETE /api/finance/pos/runs/{run_id}`（删运行，running 拒绝）。
+- **管线概要**（算法细节见《算法实现逻辑》§11）：月度目录发现（配置基目录或人工指定，归档布局
+  `{基目录}/{YYYY}年/{MM}` 或直接当月目录二选一）→ 解析 SHOP 对账单「终端小计」行与回单 PDF 文本层
+  「单位客户专用回单」分块 → 双键匹配 → 对账单打印补丁（隐藏其他终端数据行，行号与 sheet XML `r=` 对齐）
+  → LibreOffice 分块转 A4 横排 PDF → 回单按 Y 边界裁切 → 每笔交易「对账单页+回单页」合并凭证 +
+  月度手续费凭证（汇总首页 + 全部对账单页）→ 中间产物清理 + `manifest.json` 留痕（含匹配/未匹配/金额不符清单）。
+- **匹配口径**：终端一致 + 报表日期 ≤ 清算日 ≤ 报表日期 + 容差天（默认 2）；金额命中优先、日期最近兜底；
+  同一小计可承接多笔回单（分批清算）；金额未命中不剔除、进 manifest 的 amount_mismatch 清单。交易凭证直接按当前匹配小计的
+  `report_date + terminal` 取对账单 PDF，不再按回单号暂存关联，跨来源文件同号回单不会互相覆盖。
+- **配置**：六项 `finance_pos_*`（源目录 / 输出目录 / 终端→项目映射 / 回单通配 / 日期容差 / 金额容差），
+  见 §12；前端凭证页签配「浏览」弹窗（`DirectoryPicker.vue`）逐层选择本机目录。
+- **前端打印**：单个凭证可「打印」，勾选多份可「合并打印选中」；复用现有单文件/合并接口与共享 PDF 打印工具，
+  点击同步预开标签页，Blob 导航后尝试自动打印；弹窗拦截不发请求，请求/导航失败关闭空白页，可 Ctrl+P 或改用下载。
+- **目录浏览**：`GET /api/fs/drives`（允许浏览的根目录，非 Windows 不返回盘符列表）+ `GET /api/fs/browse`（列子目录，
+  不读文件内容；resolve 后按白名单判包含、跳过 `$`/`.` 条目、单层上限 500 项）；只读，普通 GET 不在 OriginGuard 拦截范围，跨站读取依赖 CORS 与回环监听。
+
+### 17.3 依赖与环境（v1.19.0）
+
+- `requirements.txt` 显式声明 `pypdf>=5.0,<7` 与 `pypdfium2>=4.30,<6`（vouchers 裁切/合并与 OCR/回单解析
+  直用，原先仅靠 pdfplumber 传递安装，全新机器会 `ModuleNotFoundError`）。
+- 干净 venv 冒烟：全新虚拟环境 `pip install -r requirements.txt` → 四域环境变量下导入应用 OK（v1.19.0）
+  → 聚焦测试 111 passed / 1 个既有失败（`test_execute_project_inference_failure_marks_error_for_retry`，
+  与本轮无关）。跨平台可用性评估见根目录 `2026-11-07_跨平台可用性评估.md`。
+
+## 18. 2026-11-11/12 全量审计整改 as-built
+
+- **数据池清洗**：新增 `GET /tables/{table}/usage`（登记/视图/物理修订表/清洗日志引用/一致性问题，含 `requires_force`）、`DELETE /tables/{table}?confirm=<数据集名>&force=<bool>`（缺失 `confirm` 422、名称不符 400、被引用未 `force` 409）、`POST /tables/{table}/rename`（视图/物理修订表/登记/清洗日志引用同锁同步）；`clean/apply` 与 `aggregate/save` 默认拒绝目标=源表或已存在（409），`allow_overwrite=true` 才覆盖；详见 §17.1。
+- **税务**：企业存在已提交申报时删除 409；财报导入能识别税号/名称才真实落库（否则 `persisted=false` 仅预览），`/import/{enterprise_id}` 可指定企业；四税种（印花税/增值税/个税/残保金）同纳税人同期间重复 409，`PUT /filings/{id}` 受控更正（已导出/已提交 409、不换纳税人/期间），已提交删除 409；CIT 与四税种计税入口统一 `require_tax_scope`；个税专项附加标准见 §4.4。
+- **银行流水**：预览只返回掩码与 `account_token`；导出只接受令牌（或唯一掩码，歧义 400），完整账号不出后端。
+- **POS / 现金流**：`execute` 并发 409、0 字节产物 503 且不归档；现金流运行记录 `actual_year`，失败/重跑分支清空产物。
+- **知识库**：自定义 embedding 地址必须单独填写专用 Key（绝不复用聊天模型 Key）；`rebuild_vectors` 默认全量、显式 `limit` 返回 `remaining`；`GET /settings` 返回 `resolved_detail` 中文原因。
+- **MCP**：请求已发出后的超时/断流不重放，返回 `result_unknown`；入站单行 ≤1,048,576 字符（≈4MB UTF-8 最坏）；自动重连有界退避，断开/禁用不被自动复活。
+- **定时任务**：`mode` 入参白名单（历史非法值读出后执行侧回退 `readonly`）；interval 手动运行不顺延下次到点；`/api/fs` 默认根含 `FINANCE_DATA_DIR` 与 POS 源/输出目录，`FS_BROWSE_ROOTS` 可覆盖。
+- **看板**：计划任务通道单次尝试 660s 估算（2×15s 查询 + 30s 触发 + `max(600s, 600s)`），直接回退每次尝试 600s 总预算，前端 1500s；`logs/run.lock` 是「管线在途」的唯一信号，启动 60s 宽限内未出现即快速失败。
+- **发布与门禁**：`dev/package_release.py` 版本取 `backend/app/config.py` 单一源并校验前端 `package.json`/`package-lock.json` 两处；预检调用 `dev/check_pii.py --archive HEAD`（含本地词表，只输出规则/位置）；`backend/requirements-lock.txt` 由全新 Windows/Py3.13 venv 重新生成，含 `pytest-xdist`/OCR/向量依赖；PII 门禁 `dev/check_pii.py` + `dev/hooks/pre-push` + `dev/install_hooks.bat`。
+- **CI**：`.github/workflows/ci.yml` 产出 pytest/vitest JUnit，失败也上传 artifact（`if: always()`），安装/测试/构建分步超时；远端历史失败日志因未登录 GitHub CLI 且分支未推送**未能取得**，不能据此宣称 Actions 已通过。
+
+## 19. 银行回单整理 as-built（finance_receipt）
+
+- **模块**：`backend/app/modules/finance_receipt/`（`parsers.py` 文件发现与页内切分、`pdf_builder.py` 固定版式排版与 XLSX 清单、`service.py` 批次/复核/生成/下载、`router.py` 接口），表 `mod_receipt_batch`、`mod_receipt_item`，前缀 `/api/finance/receipt`，菜单「财务 / 账务处理 / 银行回单整理」order 96，前端 `frontend/src/modules/finance-receipt/`。
+- **账期**：由用户显式给出起止日期（含端点）；选择月份仅给出可编辑建议（上月 25 日 ~ 当月末），不自动推断 23/24/25 日波动或季度、年末结账日。文件按日期区间交集发现，账期外的记录不纳入。
+- **识别**：建行表头「中国建设银行单位客户专用回单」，中行「国内支付业务收款/付款回单、客户付费回单、利息收入回单」，平安「收付款业务回单、收费回单(付款通知)、协定存款利息回单」。页内按表头 Y 坐标切分，相邻块上边界不越过上一张下边界。五类优先级：待清算（付款方或用途含收单清算款）→ 结息 → 手续费 → 按收付款方向归正常收入/转账支出；无法判断记 `unclassified`。ZIP 内成员与散放文件按账户+回单号去重。
+- **复核与生成**：`unclassified` 且纳入的记录称「待确认」，存在即 `POST …/generate` 返回 409；生成只含纳入项，按账户×类别分册，产物先写临时目录再原子替换，失败清理临时目录并把批次标为 `failed`，源文件缺失时中文 400 列出文件名。
+- **版式**：A4 纵向；建行、平安每页 3 槽，中行每页 2 槽，按固定槽位顺序分页（3、3、…、余数），末页空槽留白；超大横版单独成页；页眉标明银行、完整账号、类别、本页笔数、类别总笔数、账期与页码，字体为 PyMuPDF 内置 `china-s`。
+- **产物与下载**：分册 `账户目录/{银行}{尾号}_{类别}_{账期}.pdf`，清单 `回单分类明细_{账期}.xlsx`（分类明细 + 分类汇总，文本经 `safe_cell` 防公式注入）；`GET …/files/{file_id}` 支持 `disposition=inline|attachment`（中文名 `filename*=utf-8''`），`POST …/merge` 仅合并 PDF 分册，`GET …/download` 打包 ZIP 保留账户目录；`GET …/items/{id}/preview` 返回单笔矢量裁切 PDF，源文件经批次登记路径读取，不接受任意路径。
+- **配置**：`finance_receipt_source_dir`、`finance_receipt_output_dir`（均纳入 `get_fs_browse_roots()` 默认白名单）。
+- **依赖**：新增 `PyMuPDF>=1.28,<2`（`backend/requirements.txt`）。
+- **已知限制**：仅支持带文字层的三家银行版式；OFD、扫描件、加密文件不支持；全部真实数据只读，测试使用合成 PDF 与临时目录。
+## 20. 租赁核算 as-built（finance_lease，2026-11-20 工作树）
+
+- **定位**：**承租人**使用权资产 / 租赁负债的初始计量 + 正常后续计量；不替代 BIP 账簿，不做租赁总账，不回写凭证。
+- **模块**：`backend/app/modules/finance_lease/`（`calculation.py`、`checks.py`、`importer.py`、`exporter.py`、`entries.py`、`reconciliation.py`、`service.py`、`router.py`），前缀 `/api/finance/lease`（22 路由），菜单「财务 / 账务处理 / 租赁核算」order 98，前端 `frontend/src/modules/finance-lease/`。
+- **表（6）**：`mod_lease_contract`（合同，合同号唯一）、`mod_lease_payment`（付款期，`(contract_id, sequence)` 唯一）、`mod_lease_calculation`（测算批次，`(contract_id, input_hash, rule_version)` 唯一）、`mod_lease_assessment`（付款期级现值/折现因子/U 列利息/负债滚动）、`mod_lease_period`（月份级折旧/应付/利息）、`mod_lease_bip_map`（BIP 对账科目映射，科目位 + 科目编码 + 方向）。
+- **状态**：合同 `draft/archived`（archived 只读）；测算 `calculated/confirmed`，仅 `calculated → confirmed`；已确认快照不可改写，有测算历史的合同删除 409，重复提交同输入同规则版本幂等返回既有批次。
+- **计算规则**（`RULE_VERSION = "lease-mvp-1"` 参与幂等键）：`months = DATEDIF(起-1天, 止+1天, "M")` 逐期自算；`period_rate = ROUND_HALF_UP(年利率 × months / 12, 4)`；`d_1 = 1`、`d_i = ROUND_HALF_UP(d_{i-1} × (1 + Q_{i-1}), 9)`；首行不折现，其余 `ROUND(amount_i / d_i, 2)`；`U_i = ROUND(B_i × Q_i, 2)`（付款后余额计息）并**在实际计租期内按月均摊**；月折旧 = 使用权资产原值 ÷ 月期总数；金额 `Decimal(ROUND_HALF_UP)` 两位、禁止 `round()`，不吸收尾差。
+- **简化口径**：**使用权资产 = 租赁负债现值**；不含预付租金、初始直接费用、复原成本、租赁激励；不支持可变租赁付款、担保余值、购买选择权、短期/低价值豁免。
+- **校验**（`checks.py`）：三组恒等式（Σ月折旧 = 使用权资产原值、Σ应付 = 租赁付款额、Σ月利息 = 未确认融资费用）+ 负债期末归零、剩余计划付款、月折旧/月利息规则、合同区间、源表月数与 DATEDIF、分录汇总借贷平衡；状态只有 `ok/failed/unknown`，缺数据一律 `unknown`（不按 0 通过）；容差合计 1 元 / 单项 0.01 元，只认模块常量。
+- **导入**（`importer.py`）：表头标签锚点（前 50 行），免租期与 0 月期按行保留，期数必须从 1 连续；**预览只解析不落库，apply 无行级错误才整表替换**；10MB / 20,000 行；合计行即停止解析。
+- **导出**（`exporter.py`）：5 页签（数据源 / 评估表 / 期间表 / 校验 / 分录），`safe_cell` 防公式注入；当前结果 `stale` 或含 `failed/unknown` 时 409，历史快照须 `allow_stale=true`。分录页为**逐笔底稿分录**：初始确认 1 张凭证（`LEASE-{id}-INIT`）+ 每月折旧/利息分别 1 张（`LEASE-{id}-DEP-{YYYY-MM}` / `LEASE-{id}-INT-{YYYY-MM}`，金额为 0 不出），导出前 `entries.py::validate_entries` 按凭证号逐张校验借贷相等（不平衡拒绝导出）；范围仅初始确认与月度折旧/利息，不生成付款实收/变更/终止分录、不回写 BIP。校验页的 `entry_recognition`/`entry_monthly` 是**汇总级检查**（合计容差 1 元），与逐凭证平衡不可混为一谈。
+- **期间表展示口径**：导出期间表列名为「本行月数（每月=1）」（按月展开，每期月数看评估表「月期数」，**不是**源底稿 R 列月期总数）；导出「使用权资产净值」= 快照现值 − 累计已存折旧（含本月）的派生展示值，逐月滚动、不重算折旧规则、不吸收尾差，差异仍按既有容差判定；页面「租赁付款（整期）」为所属付款期金额，期内每月重复展示、**不可逐月求和**，按月金额只有折旧/利息/应付。
+- **BIP 只读对账（工作树新增，`reconciliation.py` + `reconciliation_schemas.py`）**：粒度 = 承租人 + BIP 账簿 + 期间 + 科目位（五科目位：使用权资产原值 / 使用权资产累计折旧 / 租赁付款额（剩余付款）/ 未确认融资费用余额 / 租赁负债净额）；映射存 `mod_lease_bip_map`（科目位 + BIP 科目编码 + 方向 debit/credit），`PUT /reconciliation/mappings` 只替换给定承租人+账簿范围，**绝不写 BIP**；余额读取经 `finance_ledger_bip.bip_balance` 公共只读适配（manifest `requires` 已声明），不 import 其 models、不写凭证/余额/批次；模块侧只取**当前 input_hash 一致 + confirmed + 期间行覆盖期间**的最新批次，归档/未确认/stale/无测算/未覆盖一律 `unknown`；**任一名下合同不可用则整批科目 `unknown`**，不做部分求和与整额 BIP 比较；BIP 实际数按映射方向取期末借方−贷方（方向金额全空才按方向取期末余额绝对值并标注来源），冲突/多行/缺行/缺映射均 `unknown`；容差固定 **0.01**；结果实时计算不落库（聚合按 failed > unknown > ok）。
+- **不做**：租金变更、主体变更、终止与调整分录、合并抵销、BIP 凭证/余额**回写**（只读对账是唯一例外）、印花税重复实现、自动推断折现率或同一控制；长期待摊与工会经费由独立模块 `finance_deferred` / `finance_union` 承担。
+
+## 21. 长期待摊 as-built（finance_deferred，2026-11-20 工作树）
+
+- **定位**：仅**租入资产改良支出**的直线摊销底稿；不做非租赁类长期待摊，不做自动转销、不做凭证/BIP 回写。
+- **表（3）**：`mod_deferred_item`（项目参数，项目编码唯一）、`mod_deferred_run`（测算批次，`(item_id, input_hash, rule_version)` 唯一）、`mod_deferred_period`（月份级摊销行）。前缀 `/api/finance/deferred`（9 路径 / 13 操作），菜单「财务 / 账务处理 / 长期待摊」order 99。
+- **计算**（`calculation.py`，`RULE_VERSION = "deferred-mvp-1"`）：净额 = ROUND_HALF_UP(含税 ÷ (1+税率), 2)、税额 = 含税 − 净额、月摊 = ROUND_HALF_UP(净额 ÷ 月数, 2)、每月等额；**末期尾差 = 净额 − 月摊 × 月数 如实留在末期余额**，不吸收/不倒挤/不自动转销。
+- **风险与确认**：摊销到期月 = 起摊月 + 月数 − 1 的月末，晚于租赁到期日只产出 `warning`（不缩短年限）；末期尾差同样 `warning`；`failed`/`unknown` 阻断确认与导出；存在 `warning` 时确认必须 `risk_acknowledged=true` 且 `risk_note` 非空。
+- **状态**：项目 `draft/archived`（归档只读，有测算历史删除 409）；测算 `calculated/confirmed` 单向；输入或规则版本变化后旧批次 `stale`，确认/当前导出 409，历史快照导出须 `allow_stale=true`。
+- **导出**：三页签（项目参数 / 月度摊销 / 校验），`safe_cell` 防公式注入；`warning` 已披露可导出。
+
+## 22. 工会经费计提 as-built（finance_union，2026-11-20 工作树）
+
+- **定位**：手工工资基数 + 批次费率的工会经费计提底稿；**不读 HR**、不做 60/40 分成、缴纳凭据、税前扣除判断、支付与 BIP 回写。
+- **表（2）**：`mod_union_batch`（主体 + 期间唯一索引）、`mod_union_line`（`(batch_id, department)` 唯一）；前缀 `/api/finance/union`（8 路径 / 12 操作），菜单「财务 / 账务处理 / 工会经费计提」order 100。
+- **计算**（`calculation.py`，`RULE_VERSION = "union-v1"`）：本期计提 = ROUND_HALF_UP(工资基数 × 批次费率, 2)；上期差异 = 上期实际 − 上期已计提（负数 = 应冲回）；本期建议入账 = 本期计提 + 上期差异。费率**唯一来源是批次**，行级无覆盖字段；金额两位 HALF_UP、禁止 `round()`。
+- **缺失即 unknown**：本期工资基数 / 上期已计提 / 上期实际任一 `None` → 该行 `line_status=unknown` 且三个派生值为 `None`；合计只汇总 `ok` 行，缺数据行数单列；显式 0 与缺失严格区分。
+- **状态**：批次 `draft/confirmed`；PATCH/DELETE 仅草稿；确认要求无缺数据行、无差异、至少一行；确认后整体只读（行、费率、备注、删除全拒）。无快照表，预览/导出均按当前数据实时计算。
+- **导出**：三页签（批次信息 / 部门明细 / 校验），真实值完整（含未通过/未知结论），不重算。

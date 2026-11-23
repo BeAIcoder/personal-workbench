@@ -111,6 +111,38 @@ def test_bip_three_templates_end_to_end_merge(client, tmp_path, monkeypatch):
     assert client.get("/api/finance/ledger/bip/imports").json()["total"] == 4
 
 
+def test_lease_payment_template_previews_without_persisting(client):
+    """租赁核算付款计划模板：能被导入端点解析，且预览只解析不落库。
+
+    模板数据源页自带 3 期合成示例（首期期初支付）；免租期/0 月期按行保留的规则
+    由 `test_finance_lease_io.py` 覆盖，这里只保证「模板文件 ↔ 导入端点」真实可用。
+    """
+    created = client.post("/api/finance/lease/contracts", json={
+        "contract_no": "TPL-LEASE-001",
+        "name": "模板契约合同",
+        "lessee": "示例承租人",
+        "start_date": "2026-01-01",
+        "end_date": "2027-06-30",
+        "annual_rate": "0.035",
+    })
+    assert created.status_code == 201, created.text
+    contract_id = created.json()["id"]
+
+    out = _upload(
+        client,
+        f"/api/finance/lease/contracts/{contract_id}/payments/import/preview",
+        "租赁核算-付款计划-模板.xlsx",
+    )
+    assert out["errors"] == [], out.get("errors")
+    assert out["sheet_name"] == "数据源"
+    assert [item["sequence"] for item in out["items"]] == [1, 2, 3]
+    assert out["items"][0]["prepay_flag"] is True
+
+    payments = client.get(f"/api/finance/lease/contracts/{contract_id}/payments")
+    assert payments.status_code == 200, payments.text
+    assert payments.json() == []  # 预览不落库
+
+
 def test_personal_csv_import(client):
     out = _upload(client, "/api/finance/ledger/personal/import/csv", "个人记账-导入模板.csv")
     assert out["imported"] == 2
@@ -124,11 +156,11 @@ def test_expense_header_row_located_on_template():
 
 
 def test_template_list_endpoint(client):
-    """模板清单端点：10 份模板全部就位（与前端「下载模板」清单同源）。"""
+    """模板清单端点：15 份模板全部就位（与前端「下载模板」清单同源）。"""
     r = client.get("/api/templates")
     assert r.status_code == 200
     data = r.json()
-    assert data["total"] == 10
+    assert data["total"] == 15
     assert all(item["available"] for item in data["items"]), data["items"]
 
 
@@ -141,6 +173,28 @@ def test_template_download_whitelisted(client):
     disposition = r.headers.get("content-disposition", "")
     assert "attachment" in disposition.lower()
     assert "filename*=utf-8''" in disposition.lower()
+
+
+def test_manage_templates_parse(client):
+    """四份经营管理模板都能被导入端点识别（模板失效=使用说明失效）。"""
+    cases = (
+        ("经营管理-内控管理表格-模板.xlsx", "control", 50),
+        ("经营管理-云南项目周报-模板.xlsx", "weekly", 20),
+        ("经营管理-曲靖项目周报-模板.xlsx", "weekly", 20),
+        ("经营管理-月度工作情况表-模板.xlsx", "monthly", 10),
+    )
+    for name, report_type, minimum in cases:
+        with open(TPL / name, "rb") as handle:
+            response = client.post(
+                "/api/business/manage/imports/preview",
+                files={"file": (name, handle.read())},
+                data={"report_type": report_type},
+            )
+        assert response.status_code == 200, (name, response.text)
+        body = response.json()
+        total = sum(item["count"] for item in body["sections"] if item["kind"] == "metric")
+        assert total >= minimum, (name, total)
+        assert body["period"], name
 
 
 def test_template_download_rejects_unknown_name(client):

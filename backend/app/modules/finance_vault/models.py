@@ -23,3 +23,22 @@ class VaultDataset(Base):
     columns_json: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class VaultCleanLog(Base):
+    """数据池清洗运行日志：配方 JSON + 逐算子报告（可复用重放，2026-11-07）。"""
+
+    __tablename__ = "mod_vault_clean_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # 清洗源数据集表名（索引便于按表取历史配方）
+    source_table: Mapped[str] = mapped_column(String(64), index=True)
+    # 清洗结果数据集表名（preview 不落日志，apply 才写）
+    result_table: Mapped[str] = mapped_column(String(64), default="")
+    rows_in: Mapped[int] = mapped_column(Integer, default=0)
+    rows_kept: Mapped[int] = mapped_column(Integer, default=0)
+    # 清洗配方（算子开关 + invalid_policy，OpenRefine 式可复用）
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 逐算子统计报告（Data-Juicer 式 ops:[{op, hit_rows}] + 样本/警告）
+    report_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

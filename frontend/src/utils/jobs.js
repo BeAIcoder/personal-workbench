@@ -1,5 +1,17 @@
 // 定时任务页的纯展示逻辑：调度文案、专家名映射、模式与运行状态映射
 
+// 后端 JobMode 白名单（backend/app/schemas.py）。历史行可能是已下线的值，
+// 编辑时统一归一到 readonly，避免原样提交 422（SCH-01 的历史脏行）。
+export const JOB_MODES = ['readonly', 'standard', 'deep']
+
+export function normalizeJobMode(mode) {
+  return JOB_MODES.includes(mode) ? mode : 'readonly'
+}
+
+// 「立即运行」是长任务：后端 AGENT_JOB_TIMEOUT_SECONDS=1800s 才判 unknown。
+// 前端超时必须大于服务端预算，否则浏览器先断、用户重按又触发同一任务。
+export const JOB_RUN_TIMEOUT_MS = 1900 * 1000
+
 export const modeLabel = { standard: '标准执行', readonly: '只读咨询', deep: '深度研究' }
 
 export const runStatusLabel = { ok: '成功', error: '失败', skipped: '跳过', unknown: '结果未知', '': '未运行' }

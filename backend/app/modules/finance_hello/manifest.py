@@ -8,8 +8,6 @@ manifest = ModuleManifest(
     title="财务模块示例",
     version="0.1.0",
     prefix="/api/finance/hello",
-    tables=["mod_hello_entry"],
-    menu={"group": "财务", "icon": "Coin", "order": 99},
     agent_tools=[
         {
             "name": "hello_ping",

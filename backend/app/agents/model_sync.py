@@ -276,22 +276,75 @@ def parse_openai_models(payload) -> list[RemoteModel]:
     return out
 
 
+def _opencode_family(record) -> str:
+    """api_family：顶层字段优先（兼容旧夹具），否则取 api 字典入口键（官方真实 payload）。
+
+    官方 Go 列表把入口挂在 ``api`` 下（chat-completions / messages / responses /
+    generate-content）；多入口时按对话入口优先，连字符归一成下划线（与同步层
+    chat_completions/messages 口径一致）。无法识别返回 unknown，交给同步层过滤。
+    """
+    family = str(record.get("api_family") or record.get("protocol") or "").strip().lower()
+    if not family:
+        api = record.get("api")
+        if isinstance(api, dict):
+            keys = [str(k).strip().lower() for k in api.keys()]
+            for pref in ("chat-completions", "chat_completions", "messages", "responses"):
+                if pref in keys:
+                    family = pref
+                    break
+            else:
+                family = keys[0] if keys else ""
+    return family.replace("-", "_")[:30] or UNKNOWN_API_FAMILY
+
+
+def _opencode_modalities(record, side: str):
+    """模态：优先 ``modalities.{input,output}``（官方真实 payload），回退顶层字段。
+
+    官方用 MIME 类型（image/jpeg、text/plain），统一归一到主类型（image/text），
+    否则视觉派生按 "image" 精确匹配会漏判。
+    """
+    modalities = record.get("modalities")
+    raw = modalities.get(side) if isinstance(modalities, dict) else None
+    if raw is None:
+        raw = record.get(f"{side}_modalities")
+    values = _modalities(raw)
+    if not values:
+        return None
+    # MIME 归一后去重保序（image/jpeg + image/png → image 只保留一个）
+    return list(dict.fromkeys(v.split("/", 1)[0].strip()[:20] for v in values if v.split("/", 1)[0].strip())) or None
+
+
 def parse_opencode_models(payload) -> list[RemoteModel]:
     """OpenCode 列表：逐条保留 api_family（缺失=unknown），协议过滤交给同步层。
 
     列表 URL 与对话 base 由预设分开配置；这里只解析列表，不使用对话 base。
+    兼容两种 payload：顶层 api_family/context_length（旧夹具）与官方
+    api 字典 + limit + modalities + capabilities（2026-11 起的真实返回）。
     """
     out = []
     for record in _require_entries(payload, "data", "models"):
-        family = str(record.get("api_family") or record.get("protocol") or "").strip().lower()[:30]
+        limit = record.get("limit") if isinstance(record.get("limit"), dict) else {}
+        capabilities = record.get("capabilities") if isinstance(record.get("capabilities"), dict) else {}
+        reasoning = capabilities.get("reasoning") if isinstance(capabilities.get("reasoning"), dict) else {}
+        tools = capabilities.get("tools") if isinstance(capabilities.get("tools"), dict) else {}
+        levels = reasoning.get("effort") if isinstance(reasoning.get("effort"), list) else None
+        input_modalities = _opencode_modalities(record, "input")
         out.append(RemoteModel(
             model=_record_id(record),
             display_name=str(record.get("name") or record.get("display_name") or "")[:120],
-            context_size=_to_int(record.get("context_length") or record.get("context_window")),
-            input_modalities=_modalities(record.get("input_modalities")),
-            output_modalities=_modalities(record.get("output_modalities")),
-            supports_vision=_vision(record.get("input_modalities")),
-            api_family=family or UNKNOWN_API_FAMILY,
+            context_size=_to_int(
+                record.get("context_length") or record.get("context_window") or limit.get("context")
+            ),
+            max_tokens=_to_int(
+                record.get("max_output_tokens") or record.get("max_tokens") or limit.get("output")
+            ),
+            input_modalities=input_modalities,
+            output_modalities=_opencode_modalities(record, "output"),
+            supports_thinking=_bool_or(reasoning.get("supported")),
+            thinking_levels=[str(x).strip().lower()[:20] for x in levels if str(x).strip()][:12] if levels else None,
+            supports_tools=_bool_or(tools.get("supported")),
+            supports_vision=_vision(input_modalities),
+            api_family=_opencode_family(record),
             status=str(record.get("status") or "")[:30],
         ))
     return out
@@ -595,8 +648,15 @@ def _send(request_method: str, url: str, headers: dict, content: bytes | None) -
                             raise RemoteFetchError(
                                 f"模型列表响应过大（超过 {MAX_RESPONSE_BYTES // 1024 // 1024}MB），已拒绝解析"
                             )
+                    # iter_bytes() 已按 content-encoding 解压：重建响应时必须去掉
+                    # content-encoding/content-length，否则 resp.json() 会二次解压报
+                    # DecodingError（gzip 压缩的列表接口，如 OpenCode Go）
+                    rebuilt_headers = [
+                        (k, v) for k, v in resp.headers.multi_items()
+                        if k.lower() not in ("content-encoding", "content-length")
+                    ]
                     return httpx.Response(
-                        resp.status_code, headers=resp.headers, content=bytes(body), request=resp.request
+                        resp.status_code, headers=rebuilt_headers, content=bytes(body), request=resp.request
                     )
         except httpx.TimeoutException as exc:
             raise RemoteFetchError(f"模型列表请求超时（{TIMEOUT_SECONDS:.0f} 秒）") from exc

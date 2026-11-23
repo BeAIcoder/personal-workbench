@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from ...database import get_db
 from ...upload import read_upload_limited
-from . import service
+from . import service, vouchers_service
 from .schemas import PosRunListOut, PosRunOut
+from .schemas import VoucherBatchListOut, VoucherBatchOut, VoucherGenerateIn, VoucherMergeIn
 
 router = APIRouter(tags=["财务模块·POS 对账"])
 
@@ -65,10 +66,17 @@ def execute_run(run_id: int, project: str | None = None, db: Session = Depends(g
         return service.execute_run(db, run_id, project=project)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.RunBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except service.EngineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/runs/{run_id}", status_code=204, summary="删除运行（running 中拒绝；运行目录一并清理）")
+def delete_run(run_id: int, db: Session = Depends(get_db)):
+    service.delete_run(db, run_id)
 
 
 @router.get("/runs/{run_id}/artifacts/{name}", summary="下载单个产物")
@@ -95,3 +103,56 @@ def download_all(run_id: int, db: Session = Depends(get_db)):
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=pos_run_{run_id}.zip"},
     )
+
+
+@router.get("/vouchers/config", summary="凭证目录默认值（源目录/输出目录回退项）")
+def voucher_config():
+    return vouchers_service.vouchers_config()
+
+
+@router.post("/vouchers/generate", response_model=VoucherBatchOut,
+             summary="生成月度刷卡凭证（回单×对账单匹配合并；源目录/输出目录可人工指定）")
+async def generate_vouchers(month: VoucherGenerateIn, db: Session = Depends(get_db)):
+    try:
+        return await run_in_threadpool(
+            vouchers_service.generate_vouchers, db, month.month,
+            month.statement_dir or "", month.output_dir or "",
+        )
+    except vouchers_service.VoucherGenerationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/vouchers", response_model=VoucherBatchListOut, summary="凭证批次列表")
+def list_voucher_batches(limit: int = Query(default=50, ge=1, le=200), db: Session = Depends(get_db)):
+    items = vouchers_service.list_batches(db, limit)
+    return {"total": len(items), "items": items}
+
+
+@router.get("/vouchers/{batch_id}/files/{name}", summary="下载单个凭证文件")
+def download_voucher_file(batch_id: int, name: str, db: Session = Depends(get_db)):
+    batch = vouchers_service.get_batch(db, batch_id)
+    try:
+        path = vouchers_service._batch_file_path(batch, name)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(str(path), filename=Path(name).name)
+
+
+@router.post("/vouchers/{batch_id}/merge", summary="合并选中的凭证 PDF 下载")
+def merge_vouchers(batch_id: int, body: VoucherMergeIn, db: Session = Depends(get_db)):
+    try:
+        data, filename = vouchers_service.merge_files(db, batch_id, body.names)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return StreamingResponse(
+        BytesIO(data),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.delete("/vouchers/{batch_id}", status_code=204, summary="删除凭证批次")
+def delete_voucher_batch(batch_id: int, db: Session = Depends(get_db)):
+    vouchers_service.delete_batch(db, batch_id)

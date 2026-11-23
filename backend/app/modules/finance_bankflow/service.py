@@ -8,15 +8,21 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
+import threading
 from copy import copy
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import openpyxl
 import yaml
+
+from ...config import get_finance_data_dir
 
 # 模板结构与全部格式由官方骨架 template_skeleton.xlsx 提供（表头/样式/列宽/数据验证/辅助 sheet）。
 
@@ -71,6 +77,73 @@ def resolve_account(acc_map: dict[str, dict[str, str]], account: str) -> dict[st
     return max(candidates, key=lambda item: item[0])[1]
 
 
+# ---------------- 账号令牌（预览只回掩码，导出按令牌服务端反查） ----------------
+
+_TOKEN_KEY_PATH: Path | None = None  # 测试可覆盖为 tmp 路径
+_TOKEN_PREFIX = "BK"
+# 数据目录不可写时的进程内兜底：令牌在本次服务生命周期内仍然稳定（预览→导出可用）
+_PROCESS_TOKEN_KEY = secrets.token_bytes(32)
+# 首次生成密钥的进程内互斥：并发首用只允许一个赢家，避免先发出的令牌失效
+_TOKEN_KEY_LOCK = threading.Lock()
+
+
+def _token_key_path() -> Path:
+    return _TOKEN_KEY_PATH or (get_finance_data_dir() / "finance_bankflow" / "account_token.key")
+
+
+def _read_token_key(path: Path) -> bytes | None:
+    """读取已落盘密钥；缺失/过短/不可读返回 None。"""
+    try:
+        key = path.read_bytes()
+    except OSError:
+        return None
+    return key if len(key) >= 32 else None
+
+
+def _token_key() -> bytes:
+    """本机稳定密钥：首次使用生成随机 32 字节并落盘（财务数据目录内，不入库）。
+
+    令牌只在本机可复算；密钥文件丢失时旧令牌全部失效（预览→导出需同一次流程，
+    重新预览即可），不会把完整账号暴露给前端或日志。落盘失败（只读/受限目录）
+    退回进程内随机密钥，不阻断预览与导出。首次生成持模块锁并二次检查，
+    并发首用不会各自生成、互相覆盖。
+    """
+    path = _token_key_path()
+    key = _read_token_key(path)
+    if key is not None:
+        return key
+    with _TOKEN_KEY_LOCK:
+        key = _read_token_key(path)  # 等锁期间可能已被其它线程写入
+        if key is not None:
+            return key
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            key = secrets.token_bytes(32)
+            tmp = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+            tmp.write_bytes(key)
+            tmp.replace(path)
+            return key
+        except OSError:
+            return _PROCESS_TOKEN_KEY
+
+
+def account_token(account: str) -> str:
+    """账号稳定令牌：HMAC-SHA256(本机密钥, 账号) 截断；同一账号跨请求稳定、不可逆。"""
+    digest = hmac.new(_token_key(), str(account).encode("utf-8"), hashlib.sha256).hexdigest()
+    return _TOKEN_PREFIX + digest[:24].upper()
+
+
+def resolve_account_token(token: str, accounts) -> str | None:
+    """令牌 → 完整账号（服务端反查：只在上传流水中出现的账号里匹配）。"""
+    candidate = (token or "").strip().upper()
+    if not candidate or not candidate.isascii():
+        return None
+    for account in accounts:
+        if hmac.compare_digest(account_token(account), candidate):
+            return account
+    return None
+
+
 # ---------------- 流水解析 ----------------
 
 # 核心必需列（建行/中行银企直联导出共有）。流水号列两家不同：建行有「银行交易流水号」，
@@ -122,18 +195,38 @@ def _norm_date(v: Any) -> str | None:
     return None
 
 
+_MONEY = Decimal("0.01")
+
+
+def _money(value: Any) -> float:
+    """金额统一 Decimal ROUND_HALF_UP 两位。
+
+    Python round() 是银行家舍入且受二进制浮点表示影响（round(1.005, 2) == 1.0），
+    与财务口径不一致；先转 Decimal(str(v)) 再由字符串精确舍入。
+    """
+    number = Decimal(str(value))
+    if not number.is_finite():
+        raise ValueError("金额不是有限数值")
+    return float(number.quantize(_MONEY, rounding=ROUND_HALF_UP))
+
+
 def _norm_amount(v: Any) -> float | None:
-    """金额归一：'-' / '' / None → None；其余转 float（容千分位逗号），失败返回 None。"""
+    """金额归一：'-' / '' / None → None；其余 HALF_UP 两位（容千分位逗号），失败返回 None。"""
     if v is None:
         return None
+    if isinstance(v, bool):
+        return None
     if isinstance(v, (int, float)):
-        return round(float(v), 2)
+        try:
+            return _money(v)
+        except (ValueError, InvalidOperation):
+            return None
     text = str(v).strip()
     if text in ("", "-"):
         return None
     try:
-        return round(float(text.replace(",", "")), 2)
-    except ValueError:
+        return _money(text.replace(",", ""))
+    except (ValueError, InvalidOperation):
         return None
 
 
@@ -281,7 +374,10 @@ def summarize_flow(data: bytes) -> dict[str, Any]:
         meta = resolve_account(acc_map, account) or {}
         out.append(
             {
-                "account": account,
+                # 预览只回掩码 + 稳定令牌：完整账号留在服务端，避免 API 响应/前端状态泄露 PII
+                "account": mask_account(account),
+                "account_token": account_token(account),
+                "tail": account[-4:] if len(account) >= 4 else account,
                 "ent": meta.get("ent") or "",
                 "name": meta.get("name") or "",
                 "bank": info["bank"],

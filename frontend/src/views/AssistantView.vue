@@ -13,6 +13,7 @@
       :aria-hidden="drawerClosed ? 'true' : null"
       @keydown.esc.stop="onDrawerEsc"
     >
+      <HelpLink section="3.1" />
       <SessionList
         :sessions="sessions"
         :current-session-id="currentSessionId"
@@ -69,6 +70,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import HelpLink from '../components/HelpLink.vue'
 import { assistantApi } from '../api'
 import { drawerClosed as isDrawerClosed, escClosesDrawer, NARROW_MEDIA } from '../utils/assistantDrawer'
 import { sessionListParams } from '../utils/assistant'
@@ -148,13 +150,17 @@ const sessions = ref([])
 const currentSessionId = ref('')
 const archivedTab = ref(false)  // false=进行中 / true=已归档
 const chatRef = ref(null)
+// 列表请求序号：快速切页签/连续刷新时，慢的旧响应不得覆盖新列表
+let sessionsSeq = 0
 
 async function loadSessions() {
+  const seq = ++sessionsSeq
   try {
     const { data } = await assistantApi.sessions.list(sessionListParams(archivedTab.value))
+    if (seq !== sessionsSeq) return
     sessions.value = data.sessions
   } catch {
-    /* 服务未启动 */
+    // 服务未启动：保持当前列表；过期请求的失败同样不产生任何写入
   }
 }
 

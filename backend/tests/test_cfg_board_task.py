@@ -1,14 +1,25 @@
 """分项C：报表看板计划任务名/管线目录推导的配置化测试。
 
 只验证配置解析链（_task_name / pipeline_dir），不触发真实管线与计划任务，
-不写入真实数据目录。每个用例都显式 monkeypatch settings 字段，
-与本机/环境变量里的真实配置隔离。
+不写入真实数据目录。每个用例都显式 monkeypatch settings 字段；目录推导一律在
+tmp_path 下伪造锚点/兄弟项目/模块文件（同 test_cfg_engine_anchor.py 口径），
+不依赖仓库目录名（曾写死 personal-workbench / 01-财税自动化，换目录即红）。
 """
-from pathlib import Path
+import pathlib
 
 import pytest
 
 from app.modules.finance_board import service as svc
+
+
+def _fake_anchor_tree(tmp_path: pathlib.Path, anchor_name: str) -> tuple[pathlib.Path, pathlib.Path]:
+    """伪造「锚点目录 / 仓库 / 微信报表监控」结构，返回 (锚点目录, 假 service.py)。"""
+    anchor = tmp_path / anchor_name
+    (anchor / "微信报表监控").mkdir(parents=True)
+    fake = anchor / "personal-workbench" / "backend" / "app" / "modules" / "finance_board" / "service.py"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text("", encoding="utf-8")
+    return anchor, fake
 
 
 def test_task_name_default_fallback(monkeypatch):
@@ -45,32 +56,36 @@ def test_pipeline_dir_configured_path_wins(monkeypatch, tmp_path):
     pdir = tmp_path / "微信报表监控"
     pdir.mkdir()
     monkeypatch.setattr(svc.settings, "finance_board_pipeline_path", str(pdir))
-    # 锚点故意设为不存在的名字，若仍返回配置目录即证明配置优先
+    # 锚点与模块文件都指向不存在的假结构，若仍返回配置目录即证明配置优先
     monkeypatch.setattr(svc.settings, "finance_asset_anchor", "不存在的锚点xyz")
+    _anchor, fake_file = _fake_anchor_tree(tmp_path, "无关目录")
+    monkeypatch.setattr(svc, "__file__", str(fake_file))
     assert svc.pipeline_dir() == pdir
 
 
-def test_pipeline_dir_anchor_from_settings(monkeypatch):
-    """锚点目录名取 settings.finance_asset_anchor。"""
+def test_pipeline_dir_anchor_from_settings(monkeypatch, tmp_path):
+    """锚点目录名取 settings.finance_asset_anchor，目录链来自模块自身 __file__。"""
+    anchor, fake_file = _fake_anchor_tree(tmp_path, "自定义资产锚点")
     monkeypatch.setattr(svc.settings, "finance_board_pipeline_path", "")
-    monkeypatch.setattr(svc.settings, "finance_asset_anchor", "personal-workbench")
-    d = svc.pipeline_dir()
-    assert d.name == "微信报表监控"
-    assert d.parent.name == "personal-workbench"
+    monkeypatch.setattr(svc.settings, "finance_asset_anchor", "自定义资产锚点")
+    monkeypatch.setattr(svc, "__file__", str(fake_file))
+    assert svc.pipeline_dir() == (anchor / "微信报表监控").resolve()
 
 
-def test_pipeline_dir_anchor_empty_falls_back(monkeypatch):
-    """锚点配置为空时兜底 01-财税自动化，行为与改造前一致。"""
+def test_pipeline_dir_anchor_empty_falls_back(monkeypatch, tmp_path):
+    """锚点配置为空时兜底 01-财税自动化，行为与改造前一致（不再依赖真实仓库路径）。"""
+    anchor, fake_file = _fake_anchor_tree(tmp_path, "01-财税自动化")
     monkeypatch.setattr(svc.settings, "finance_board_pipeline_path", "")
     monkeypatch.setattr(svc.settings, "finance_asset_anchor", "")
-    d = svc.pipeline_dir()
-    assert d.name == "微信报表监控"
-    assert d.parent.name == "01-财税自动化"
+    monkeypatch.setattr(svc, "__file__", str(fake_file))
+    assert svc.pipeline_dir() == (anchor / "微信报表监控").resolve()
 
 
-def test_pipeline_dir_anchor_not_found(monkeypatch):
+def test_pipeline_dir_anchor_not_found(monkeypatch, tmp_path):
     """目录链上找不到锚点时抛中文 PipelineUnavailableError（文案不变）。"""
+    _anchor, fake_file = _fake_anchor_tree(tmp_path, "无关目录")
     monkeypatch.setattr(svc.settings, "finance_board_pipeline_path", "")
     monkeypatch.setattr(svc.settings, "finance_asset_anchor", "不存在的锚点xyz")
+    monkeypatch.setattr(svc, "__file__", str(fake_file))
     with pytest.raises(svc.PipelineUnavailableError, match="无法定位微信报表监控目录"):
         svc.pipeline_dir()

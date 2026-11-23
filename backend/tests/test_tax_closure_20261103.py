@@ -463,7 +463,7 @@ def test_internal_calculation_error_is_chinese_and_hides_details(client, monkeyp
     )
 
     def boom(*args, **kwargs):
-        raise RuntimeError("secret-internal-path-C:/x")
+        raise RuntimeError("secret-internal-path-C:/path/to/x")
 
     monkeypatch.setattr(CorporateIncomeTaxCalculator, "calculate", staticmethod(boom))
     resp = client.post(f"{P}/tax-returns/calculate", json={
@@ -545,15 +545,18 @@ def test_a200000_excel_escapes_user_text_formulas(client):
 # --------------------------------------------------------------------------
 
 def test_dsf_branch_uses_its_own_policy_key(client):
+    # 同期间同纳税人已防重（2026-11-11，R11-008）：两条申报用不同单位名，各验一个政策分支
     exempt = client.post("/api/finance/dsf/filings", json={
-        "year": "2026", "total_employees": 20, "total_salary": 2_000_000,
+        "year": "2026", "taxpayer_name": "小型用人单位",
+        "total_employees": 20, "total_salary": 2_000_000,
         "disabled_employees": 0,
     })
     assert exempt.status_code == 201, exempt.text
     assert exempt.json()["calc_result"]["policy"]["policy_key"] == "disability_fund_exemption"
 
     tiered = client.post("/api/finance/dsf/filings", json={
-        "year": "2026", "total_employees": 100, "total_salary": 10_000_000,
+        "year": "2026", "taxpayer_name": "大型用人单位",
+        "total_employees": 100, "total_salary": 10_000_000,
         "disabled_employees": 0,
     })
     assert tiered.status_code == 201, tiered.text

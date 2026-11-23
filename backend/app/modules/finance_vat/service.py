@@ -29,6 +29,9 @@ def calc_general(period: str, output_items: list[dict], input_vat: float,
     input_vat: 当期可抵扣进项税额合计
     input_transfer_out: 进项税额转出（已抵扣进项要加回，符号为 +）
     """
+    from ..finance_tax.config.tax_scope import require_tax_scope
+
+    require_tax_scope("value_added_tax")  # 准入门禁必须是首行：封禁时不进入任何计算
     if not output_items:
         raise ValueError("销项明细不能为空")
     details = []
@@ -86,7 +89,9 @@ def calc_small_scale(period: str, sales_amount: float, levy_rate: float = 0.01,
     filing_period: month 月度（10 万门槛）/ quarter 季度（30 万门槛，默认）。
     """
     from ..finance_tax.config.policy_validity import policy_status
+    from ..finance_tax.config.tax_scope import require_tax_scope
 
+    require_tax_scope("value_added_tax")  # 准入门禁首行（小规模入口）
     year = str(period)[:4]
     raw_sales_amount = sales_amount or 0
     raw_levy_rate = levy_rate
